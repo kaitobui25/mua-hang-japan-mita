@@ -1,0 +1,3 @@
+# Chốt giá khi thanh toán, nhân viên mua hộ sau đó
+
+Mita Japan phục vụ trước tiên khách tại Việt Nam, chốt **tiền hàng VND** tại thời điểm thanh toán qua cổng thanh toán tự động và để nhân viên mua hàng Amazon sau khi thanh toán thành công. Phí vận chuyển được tính và thu riêng ở giai đoạn sau (xem ADR 0007). Khi không thể mua theo điều kiện đã chốt do hết hàng hoặc giá nguồn tăng vượt ngưỡng chấp nhận, khách được hoàn tiền cho phần không thể thực hiện; đơn nhiều mặt hàng được xử lý một phần (ADR 0008). Mô hình này ưu tiên checkout nhanh nhưng chuyển rủi ro giá và tồn kho biến động của tiền hàng sang Mita Japan; cách tính chi tiết và điều kiện hoàn tiền còn phải chốt.
