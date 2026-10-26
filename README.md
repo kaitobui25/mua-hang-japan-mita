@@ -21,6 +21,7 @@ Mở **http://127.0.0.1:3000**. API tại `http://127.0.0.1:4000/api/health`, Po
 - Seed whey: <https://www.amazon.co.jp/gp/bestsellers/hpc/3457072051>.
 - Seed đồ ăn trẻ em: <https://www.amazon.co.jp/s?k=%E3%83%99%E3%83%93%E3%83%BC%E3%83%95%E3%83%BC%E3%83%89&i=food-beverage>.
 - `cd backend; npm run worker:once` thu thập một lần bằng HTTP parser; khi thay đổi markup, worker có fallback qua BrowserOS Neo MCP (`127.0.0.1:9010/mcp`) nếu Neo đang chạy. HTTP 403/429/CAPTCHA dừng và yêu cầu xử lý, không dùng Neo để vượt chặn. `npm run worker:daily` dùng pg-boss để lập lịch 04:00 JST hằng ngày. Tối đa 200 ASIN mỗi danh mục, ASIN độc nhất; lỗi chỉ cập nhật trạng thái đồng bộ, không xóa snapshot tốt.
+- `./scripts/start-local.ps1` tự bật daily worker nếu chưa chạy; có thể chạy lại script để phục hồi dịch vụ sau khi khởi động lại Windows.
 - `cd backend; npx tsx src/worker.ts import` nạp snapshot quan sát thật từ `backend/data/observed-amazon.json`, chỉ để chạy local trong trường hợp nguồn tạm lỗi. Mỗi giá có `observedAt` nguồn; **giá quá 24 giờ sẽ bị khóa checkout**.
 
 Trang Amazon có thể hiển thị dữ liệu và giá khác giữa phiên, khu vực và thời điểm. Mita chưa xác minh quyền công khai ảnh, nội dung và giá lấy từ Amazon; `rightsStatus: local_test_only` chỉ dành cho môi trường phát triển, không công bố website thương mại khi chưa có quyền sử dụng và quy trình kiểm duyệt hàng nhập khẩu.

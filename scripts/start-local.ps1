@@ -39,5 +39,11 @@ function Start-MitaService([string]$name,[string]$folder,[string]$script,[int]$p
 }
 Start-MitaService 'api' $backend 'start' 4000
 Start-MitaService 'web' $root 'dev' 3000
+$dailyWorker = Get-CimInstance Win32_Process -Filter "name='node.exe'" | Where-Object { $_.CommandLine -match 'src[\\/]worker\.ts daily' } | Select-Object -First 1
+if ($dailyWorker) {
+  Write-Host "daily catalog worker already running PID=$($dailyWorker.ProcessId)"
+} else {
+  Start-MitaService 'worker' $backend 'worker:daily' 0
+}
 Write-Host 'Local Mita: http://127.0.0.1:3000'
-Write-Host 'Start daily sync separately: cd backend; npm run worker:daily'
+Write-Host 'Daily catalog sync: 04:00 Asia/Tokyo'
