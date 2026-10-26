@@ -1,0 +1,50 @@
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { db } from '../db/pool.js';
+import { discoverHttp, seeds, SourceError, type Observation } from './source.js';
+import { ingestObservations } from './store.js';
+import { discoverNeo } from './neo.js';
+
+export async function syncCatalog() {
+  const runResult = await db.query<{ id: string }>('INSERT INTO sync_runs DEFAULT VALUES RETURNING id');
+  const id = Number(runResult.rows[0].id);
+  let discovered = 0, saved = 0, errors = 0, blocked = false;
+  try {
+    for (const seed of seeds) {
+      try {
+        let observations: Observation[];
+        try {
+          observations = await discoverHttp(seed.categorySlug, seed.url);
+        } catch (error) {
+          // Markup/JS issues can use the already-running local Neo browser.
+          // Access denial always stops: browser fallback must not bypass blocks.
+          if (!(error instanceof SourceError) || error.state !== 'parse_error') throw error;
+          console.warn(`${seed.categorySlug}: HTML parser failed; trying local BrowserOS Neo`);
+          observations = await discoverNeo(seed.categorySlug, seed.url);
+        }
+        discovered += observations.length;
+        saved += await ingestObservations(observations, id);
+        console.log(`${seed.categorySlug}: ${observations.length} discovered`);
+      } catch (error) {
+        errors++;
+        const status = error instanceof SourceError ? error.state : 'temporary';
+        if (status === 'blocked') blocked = true;
+        console.error(`${seed.categorySlug}: ${status}:`, error);
+        await db.query('INSERT INTO sync_errors(sync_run_id,category_slug,adapter,state,message) VALUES($1,$2,$3,$4,$5)', [id, seed.categorySlug, 'http', status, String(error)]);
+      }
+    }
+    const state = blocked ? 'needs_human' : errors ? (saved ? 'partial' : 'failed') : 'success';
+    await db.query('UPDATE sync_runs SET finished_at=now(),state=$2,discovered_count=$3,saved_count=$4,error_count=$5 WHERE id=$1', [id, state, discovered, saved, errors]);
+    console.log(`Sync ${id}: ${state}; saved ${saved}; errors ${errors}`);
+    return { id, state, discovered, saved, errors };
+  } catch (error) {
+    await db.query('UPDATE sync_runs SET finished_at=now(),state=$2,note=$3 WHERE id=$1', [id, 'failed', String(error)]);
+    throw error;
+  }
+}
+
+export async function importObservedSnapshot() {
+  const path = fileURLToPath(new URL('../../data/observed-amazon.json', import.meta.url));
+  const raw = JSON.parse(await readFile(path, 'utf8')) as Observation[];
+  return ingestObservations(raw);
+}

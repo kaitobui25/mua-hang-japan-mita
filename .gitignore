@@ -1,0 +1,14 @@
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+.env.local
+.env.*.local
+npm-debug.log*
+dist/
+backend/.local-db/
+backend/.local-postgres.log
+backend/*.log
+backend/.env
+.env
+.agents/runtime/
