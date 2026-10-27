@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FREE_TRANSLATION_MODELS, TranslationUnavailable, translateProduct, readFreeQuota, type ProductText } from '../src/translation/openrouter.js';
+import { FREE_TRANSLATION_MODELS, TranslationUnavailable, translateProduct, translateNamesBatch, readFreeQuota, type ProductText } from '../src/translation/openrouter.js';
 
 const original: ProductText = {
   name: 'SAVAS ホエイプロテイン ココア味 980g', brand: 'SAVAS', features: ['たんぱく質 20g'],
@@ -108,4 +108,33 @@ test('batch suppresses a provider after its 429 instead of burning quota on ever
   await translateProduct(original, { apiKey: 'test-secret', fetcher: mock, unavailableModels: blockedModels });
   await translateProduct(original, { apiKey: 'test-secret', fetcher: mock, unavailableModels: blockedModels });
   assert.deepEqual(seen, [FREE_TRANSLATION_MODELS[0], FREE_TRANSLATION_MODELS[1], FREE_TRANSLATION_MODELS[1]]);
+});
+
+test('translate multiple Japanese product names in one free inference request preserving identity and units', async () => {
+  const names = [{ asin: 'B000000001', name: 'SAVAS たんぱく質 500mg', brand: 'SAVAS' },
+    { asin: 'B000000002', name: 'DHC ビタミン 60粒', brand: 'DHC' }];
+  let calls = 0;
+  const mock = (async (_url: unknown, init: RequestInit = {}) => {
+    calls++;
+    const body = JSON.parse(String(init.body));
+    assert.equal(body.model, FREE_TRANSLATION_MODELS[0]);
+    assert.match(body.messages[1].content, /B000000001/);
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ translations: [
+      { asin: 'B000000001', name: 'SAVAS protein 500mg' },
+      { asin: 'B000000002', name: 'DHC vitamin 60 viên' }
+    ] }) } }] });
+  }) as typeof fetch;
+  const result = await translateNamesBatch(names, { apiKey: 'test-secret', fetcher: mock });
+  assert.equal(calls, 1);
+  assert.equal(result.model, FREE_TRANSLATION_MODELS[0]);
+  assert.equal(result.names.get('B000000002'), 'DHC vitamin 60 viên');
+});
+
+test('batch rejects re-ordered ASINs, altered units, or missing names without publishing', async () => {
+  const names = [{ asin: 'B000000001', name: 'SAVAS 500mg', brand: 'SAVAS' }];
+  for (const bad of [{ asin: 'B000000009', name: 'SAVAS 500mg' }, { asin: 'B000000001', name: 'SAVAS 500g' }]) {
+    const mock = (async () => Response.json({ choices: [{ message: { content: JSON.stringify({ translations: [bad] }) } }] })) as typeof fetch;
+    await assert.rejects(translateNamesBatch(names, { apiKey: 'test-secret', fetcher: mock }),
+      (error: unknown) => error instanceof TranslationUnavailable);
+  }
 });

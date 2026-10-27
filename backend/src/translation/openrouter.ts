@@ -102,6 +102,79 @@ export class TranslationUnavailable extends Error {
   }
 }
 
+export type NameInput = { asin: string; name: string; brand: string | null };
+
+/** Translate several product names with one free provider request. Detail fields are not invented. */
+export async function translateNamesBatch(
+  products: NameInput[],
+  options: { apiKey?: string; fetcher?: typeof fetch; timeoutMs?: number;
+    beforeRequest?: (model: string) => Promise<void>; unavailableModels?: Set<string> } = {}
+): Promise<{ names: Map<string, string>; model: string }> {
+  const apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY;
+  if (!apiKey) throw new TranslationUnavailable(['missing_api_key']);
+  if (!products.length || products.length > 10 || JSON.stringify(products).length > maxInput ||
+    new Set(products.map(product => product.asin)).size !== products.length ||
+    products.some(product => !/^[A-Z0-9]{10}$/.test(product.asin))) {
+    throw new TranslationUnavailable(['invalid_name_batch']);
+  }
+  const fetcher = options.fetcher ?? fetch;
+  const causes: string[] = [];
+  for (const model of FREE_TRANSLATION_MODELS) {
+    // Free Inkling is restricted to agentic harnesses, not this translation worker.
+    if (model === 'thinkingmachines/inkling-small:free' || options.unavailableModels?.has(model)) continue;
+    try {
+      await options.beforeRequest?.(model);
+      const response = await fetcher(url, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(options.timeoutMs ?? 45000),
+        body: JSON.stringify({
+          model, temperature: 0, max_tokens: 2200,
+          messages: [
+            { role: 'system', content: 'Translate the product names from Japanese into natural Vietnamese. Prefer Vietnamese, then English, then Japanese where no natural equivalent exists. Preserve ASIN, brand, original numbers, units, product codes, and exact product meaning. No marketing or health claims. Respond with ONLY valid JSON object {"translations":[{"asin":"...","name":"..."}]} in the same order and count as input. Never omit a product or add one.' },
+            { role: 'user', content: JSON.stringify(products) }
+          ]
+        })
+      });
+      if (response.status === 401) throw new TranslationUnavailable(['unauthorized_api_key']);
+      if (response.status === 402) throw new TranslationUnavailable(['account_budget_exhausted']);
+      if (response.status === 429 && response.headers.has('x-ratelimit-limit')) throw new TranslationUnavailable(['rate_limit_platform']);
+      if (!response.ok) {
+        if ([403, 429, 500, 502, 503, 504].includes(response.status)) options.unavailableModels?.add(model);
+        causes.push(`${model}:http_${response.status}`);
+        continue;
+      }
+      const payload = await response.json() as { choices?: { message?: { content?: unknown } }[] };
+      const value = parseContent(payload.choices?.[0]?.message?.content) as { translations?: unknown };
+      const translations = value && typeof value === 'object' ? value.translations : null;
+      if (!Array.isArray(translations) || translations.length !== products.length) throw new Error('invalid_name_batch');
+      const result = new Map<string, string>();
+      for (const [index, item] of translations.entries()) {
+        const source = products[index];
+        if (!item || typeof item !== 'object' || item.asin !== source.asin || typeof item.name !== 'string') {
+          throw new Error('name_identity_changed');
+        }
+        const text = assertTranslation({ name: source.name, brand: source.brand,
+          features: [], ingredients: [], usage: [], specs: {}, cautions: [] },
+        { name: item.name, features: [], ingredients: [], usage: [], specs: {}, cautions: [] });
+        result.set(source.asin, text.name);
+      }
+      return { names: result, model };
+    } catch (error) {
+      if (error instanceof TranslationUnavailable) throw error;
+      const timeout = error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name);
+      // A provider that cannot deliver a valid reply is retried on a later
+      // scheduled batch, not for every title in the same limited free quota.
+      options.unavailableModels?.add(model);
+      causes.push(`${model}:${timeout ? 'timeout' : 'invalid_or_unavailable'}`);
+    }
+  }
+  if (options.unavailableModels && FREE_TRANSLATION_MODELS.filter(m => m !== 'thinkingmachines/inkling-small:free').every(m => options.unavailableModels!.has(m))) {
+    causes.push('providers_temporarily_unavailable');
+  }
+  throw new TranslationUnavailable(causes);
+}
+
 export async function translateProduct(
   source: ProductText,
   options: { apiKey?: string; fetcher?: typeof fetch; timeoutMs?: number; beforeRequest?: (model: string) => Promise<void>;
@@ -165,7 +238,7 @@ export async function translateProduct(
       if (error instanceof TranslationUnavailable) throw error;
       // No response body or headers are logged: providers may echo sensitive input.
       const isTimeout = error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name);
-      if (isTimeout) options.unavailableModels?.add(model);
+      options.unavailableModels?.add(model);
       errors.push(`${model}:${isTimeout ? 'timeout' : 'invalid_or_unavailable'}`);
     }
   }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sourceHash, sourceText, translationFailureStopsBatch } from '../src/translation/jobs.js';
+import { sourceHash, sourceText, translationFailureStopsBatch, prioritizeDetailCandidates } from '../src/translation/jobs.js';
 import { TranslationUnavailable } from '../src/translation/openrouter.js';
 
 test('source content hash is stable for unchanged text and changes with Japanese source', () => {
@@ -31,4 +31,14 @@ test('one bad product does not stop the batch; exhausted shared quota does', () 
   assert.equal(translationFailureStopsBatch(new TranslationUnavailable(['providers_temporarily_unavailable'])), true);
   assert.equal(translationFailureStopsBatch(new TranslationUnavailable(['unauthorized_api_key'])), true);
   assert.equal(translationFailureStopsBatch(new TranslationUnavailable(['free_quota_exhausted'])), true);
+});
+
+test('detail translation always tries never-attempted products before repeated failing products', () => {
+  const rows = [
+    { asin: 'A000000001', detail_attempted_at: new Date('2026-10-27T10:00:00Z') },
+    { asin: 'A000000002', detail_attempted_at: null },
+    { asin: 'A000000003', detail_attempted_at: new Date('2026-10-27T09:00:00Z') }
+  ];
+  assert.deepEqual(prioritizeDetailCandidates(rows).map(row => row.asin),
+    ['A000000002', 'A000000003', 'A000000001']);
 });
