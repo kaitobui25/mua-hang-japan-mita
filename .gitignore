@@ -1,5 +1,7 @@
 node_modules/
 .next/
+.next-public/
+.next-vps/
 out/
 *.tsbuildinfo
 .env.local

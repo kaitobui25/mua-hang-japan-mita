@@ -2,9 +2,13 @@
   "name": "mita-japan-storefront",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1",
     "build": "next build",
+    "build:release:linux": "bash deploy/mita/build-web-release.sh",
     "start": "next start --hostname 127.0.0.1",
     "lint": "tsc --noEmit"
   },

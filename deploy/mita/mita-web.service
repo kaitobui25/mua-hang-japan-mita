@@ -1,0 +1,32 @@
+[Unit]
+Description=Mita Japan Next.js storefront (standalone)
+After=network.target mita-api.service
+Wants=mita-api.service
+
+[Service]
+Type=simple
+User=mita
+Group=mita
+WorkingDirectory=/opt/mita/current/web
+Environment=NODE_ENV=production
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=3100
+Environment=API_PORT=4100
+Environment=NEXT_PUBLIC_READ_ONLY=1
+Environment=PUBLIC_READ_ONLY=1
+Environment=NEXT_TELEMETRY_DISABLED=1
+Environment=NODE_OPTIONS=--max-old-space-size=192
+ExecStart=/opt/mita/node22/bin/node /opt/mita/current/web/server.js
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+MemoryAccounting=true
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

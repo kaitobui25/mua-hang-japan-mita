@@ -14,15 +14,16 @@ if (command === 'once') {
   finally { await db.end(); }
 } else if (command === 'daily') {
   const startedAt = new Date();
-  const boss = new PgBoss({ connectionString: config.databaseUrl, schema: 'mita_queue' });
-  boss.on('error', () => console.error('Catalog scheduler error; check local database.'));
+  // pg-boss DatabaseOptions.max controls its own pg.Pool (separate from db).
+  const boss = new PgBoss({ connectionString: config.databaseUrl, schema: 'mita_queue', max: config.bossPoolMax, connectionTimeoutMillis: 10000 });
+  boss.on('error', () => console.error('Catalog scheduler error; check database/tunnel connectivity.'));
   let stopping = false;
   let importWork: Promise<void> = Promise.resolve();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const pollImports = () => {
     importWork = (async () => {
       try { await processNextImport(); }
-      catch { console.error('ASIN import queue error; check local database.'); }
+      catch { console.error('ASIN import queue error; check database/tunnel connectivity.'); }
       if (!stopping) timer = setTimeout(pollImports, 3000);
     })();
   };
