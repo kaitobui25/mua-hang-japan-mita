@@ -40,4 +40,6 @@ Sản phẩm Mita hiện được tự động upsert từ Amazon theo ASIN; n�
 
 **Q7 — ACCEPTED (xem ADR 0009):** Admin chỉ đọc trạng thái đồng bộ tự động theo lịch; không có nút `Đồng bộ Amazon ngay` hoặc API kích hoạt quét toàn bộ. Yêu cầu nhập ASIN đơn lẻ theo Q1 vẫn hoạt động độc lập.
 
-**Q8 — PENDING (xem ADR 0009):** Cảnh báo khi sync lỗi/bỏ lỡ lịch chỉ xuất hiện ở Tổng quan, hay gửi thêm email cho chủ cửa hàng?
+**Q8 — ACCEPTED (xem ADR 0009):** Chỉ hiển thị cảnh báo lỗi/partial/needs_human/bỏ lỡ lịch tại Tổng quan Admin; không gửi email hoặc thông báo chủ động. Dữ liệu lỗi phải được lấy từ lịch sử chạy thực tế.
+
+**Q9 — PENDING (xem ADR 0009):** Chỉ truy cập Admin qua localhost hay cần truy cập an toàn từ xa qua internet?

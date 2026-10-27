@@ -126,3 +126,7 @@ _Tránh_: Cứ đến 04:00 là đồng bộ chắc chắn thành công
 **Trạng thái đồng bộ chỉ đọc trong Admin (Q7 đã chốt)**:
 Admin chỉ hiển thị lần chạy Amazon hằng ngày từ `sync_runs` / `sync_errors`, gồm trạng thái, thời điểm thật và lỗi. Không có nút hoặc API quản trị khởi chạy quét toàn bộ danh mục; `Thêm một ASIN` đã chốt ở Q1 là yêu cầu nhập sản phẩm riêng. Khi thiếu lần chạy theo lịch, cần hiển thị rõ chưa có dữ liệu xác nhận.
 _Tránh_: Có lịch 04:00 JST nghĩa là đã chạy thành công, hoặc Admin được phép chạy lại toàn bộ theo nút
+
+**Cảnh báo lỗi đồng bộ trong Admin (Q8 đã chốt)**:
+Thông báo chỉ xuất hiện tại trang Tổng quan Admin khi lần đồng bộ Amazon thất bại, thành công một phần, cần can thiệp hoặc không có lần chạy theo lịch được xác nhận. Hiển thị thời điểm, trạng thái, lỗi ghi nhận; **không gửi email, SMS hay thông báo đẩy**, và không tự chạy lại scraper.
+_Tránh_: Đã bật email tự động; thông báo lỗi đồng nghĩa có thể vượt CAPTCHA hoặc 403/429
