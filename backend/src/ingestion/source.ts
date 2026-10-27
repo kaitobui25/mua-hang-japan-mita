@@ -6,11 +6,26 @@ export const seeds = [
   { categorySlug: 'thuc-pham-cho-be', url: 'https://www.amazon.co.jp/s?k=%E3%83%99%E3%83%93%E3%83%BC%E3%83%95%E3%83%BC%E3%83%89&i=food-beverage' }
 ] as const;
 
+export type StructuredDetail = {
+  features: string[]; ingredients: string[]; usage: string[];
+  specs: Record<string, string>; cautions: string[];
+};
+export type DetailSnapshot = StructuredDetail & {
+  variantAttributes: Record<string, string>;
+  childAsins: string[];
+  sourceObservedAt: string;
+  provenance: {
+    sourceUrl: string; adapter: string; sections: string[];
+    fieldObservedAt?: Record<string, string>;
+    variantGroup?: { parentAsin: string; sourceUrl: string };
+  };
+};
 export type Observation = {
   asin: string; name: string; brand?: string | null; categorySlug: string;
   sourceUrl: string; imageUrl?: string | null; priceJpy?: number | null;
   observedAt: string; sourceAdapter: string;
   parentAsin?: string | null; sourceProductId?: string | null;
+  imageUrls?: string[]; detail?: DetailSnapshot;
   availability?: 'in_stock' | 'out_of_stock' | 'unknown';
 };
 
@@ -53,9 +68,9 @@ export async function getHtml(url: string): Promise<string> {
   }
   if (response.status === 403 || response.status === 429) throw new SourceError('blocked', `Amazon HTTP ${response.status}; manual review required`);
   if (response.status >= 500 || response.status === 408) throw new SourceError('temporary', `Amazon HTTP ${response.status}`);
-  if (!response.ok) throw new SourceError('parse_error', `Unexpected source HTTP ${response.status}`);
+  if (!response.ok) throw new SourceError('temporary', `Unexpected source HTTP ${response.status}`);
   const html = await response.text();
-  if (/captcha|enter the characters you see below|ロボットではない/i.test(html.slice(0, 10000))) {
+  if (/captcha|enter the characters you see below|ロボットではない/i.test(html)) {
     throw new SourceError('blocked', 'Amazon requested human verification');
   }
   return html;
@@ -122,7 +137,7 @@ export async function discoverHttp(categorySlug: string, url: string, options: D
   const issues: DiscoveryIssue[] = [];
   const delay = options.delay ?? sleep;
   const pageCount = options.maxPages ?? (categorySlug === 'thuc-pham-bo-sung' ? 6 : 5);
-  for (let page = 1; page <= pageCount && results.size < config.maxDiscover; page++) {
+  for (let page = 1; page <= pageCount; page++) {
     const target = new URL(url);
     if (page > 1) target.searchParams.set(categorySlug === 'thuc-pham-bo-sung' ? 'pg' : 'page', String(page));
     let html: string;
@@ -140,7 +155,7 @@ export async function discoverHttp(categorySlug: string, url: string, options: D
     if (!observations.length) break;
     let newlySeen = 0;
     for (const observation of observations) {
-      if (!results.has(observation.asin) && results.size < config.maxDiscover) {
+      if (!results.has(observation.asin)) {
         results.set(observation.asin, observation);
         newlySeen++;
       }

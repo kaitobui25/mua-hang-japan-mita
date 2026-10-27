@@ -1,3 +1,4 @@
+import { parseDetail, normalizeAmazonInput } from './detail.js';
 import { config } from '../config.js';
 import { parseJpy, SourceError, type Observation } from './source.js';
 
@@ -22,7 +23,6 @@ export function parseNeoOutcome(value: unknown, categorySlug: string): Observati
       imageUrl: item.imageUrl?.startsWith('https://') ? item.imageUrl : null,
       priceJpy: parseJpy(item.rawPrice ?? '')
     });
-    if (unique.size >= config.maxDiscover) break;
   }
   if (!unique.size) throw new SourceError('parse_error', 'BrowserOS Neo extracted no valid products', 'browseros-neo');
   return [...unique.values()];
@@ -30,7 +30,7 @@ export function parseNeoOutcome(value: unknown, categorySlug: string): Observati
 
 // BrowserOS Neo is a local-only fallback for JS markup changes. Never use it
 // to get around Amazon 403 / 429 / CAPTCHA or human verification.
-export async function discoverNeo(categorySlug: string, url: string): Promise<Observation[]> {
+async function runNeo(script: string): Promise<unknown> {
   let session = '';
   let nextId = 0;
   async function rpc(method: string, params: Record<string, unknown>, notification = false): Promise<RpcResult> {
@@ -62,6 +62,20 @@ export async function discoverNeo(categorySlug: string, url: string): Promise<Ob
   } catch (error) {
     throw new SourceError('needs_human', `BrowserOS Neo is unavailable: ${String(error)}`, 'browseros-neo');
   }
+  let response: RpcResult;
+  try {
+    response = await rpc('tools/call', { name: 'run', arguments: { code: script, timeout: 30000 } });
+  } catch (error) {
+    throw new SourceError('needs_human', `BrowserOS Neo execution is unavailable: ${String(error)}`, 'browseros-neo');
+  }
+  const payload = response.result?.structuredContent;
+  if (!payload?.ok) throw new SourceError('parse_error', 'BrowserOS Neo could not read rendered page', 'browseros-neo');
+  const nested = payload.value as { value?: unknown } | unknown[] | undefined;
+  const value = nested && !Array.isArray(nested) && typeof nested === 'object' && 'value' in nested ? nested.value : nested;
+  return value;
+}
+
+export async function discoverNeo(categorySlug: string, url: string): Promise<Observation[]> {
   const script = `
     const page = await browser.open(${JSON.stringify(url)});
     try {
@@ -75,7 +89,6 @@ export async function discoverNeo(categorySlug: string, url: string): Promise<Ob
         if (blocked) return { blocked: true, items: [] };
         const items = Array.from(document.querySelectorAll('div[data-asin]'))
           .filter(el => /^[A-Z0-9]{10}$/.test(el.getAttribute('data-asin') || ''))
-          .slice(0, 8)
           .map(el => ({
             asin: el.getAttribute('data-asin'),
             name: el.querySelector('h2')?.textContent?.trim() || el.querySelector('img[alt]')?.getAttribute('alt')?.trim() || '',
@@ -88,15 +101,27 @@ export async function discoverNeo(categorySlug: string, url: string): Promise<Ob
       });
     } finally { await page.close(); }
   `;
-  let response: RpcResult;
+  return parseNeoOutcome(await runNeo(script), categorySlug);
+}
+
+export async function collectDetailNeo(asin: string, categorySlug: string): Promise<Observation> {
+  asin = normalizeAmazonInput(asin);
+  const url = `https://www.amazon.co.jp/dp/${asin}`;
+  const html = await runNeo(`
+    const page = await browser.open(${JSON.stringify(url)});
+    try {
+      try { await page.waitForSelector('#productTitle', {timeout:10000}); } catch {}
+      return await page.evaluate(() => document.documentElement.outerHTML);
+    } finally { await page.close(); }
+  `);
+  if (typeof html !== 'string') throw new SourceError('parse_error', 'Neo returned no detail markup', 'browseros-neo');
   try {
-    response = await rpc('tools/call', { name: 'run', arguments: { code: script, timeout: 30000 } });
+    const observation = parseDetail(html, asin, categorySlug);
+    observation.sourceAdapter = 'browseros-neo-detail';
+    if (observation.detail) observation.detail.provenance.adapter = observation.sourceAdapter;
+    return observation;
   } catch (error) {
-    throw new SourceError('needs_human', `BrowserOS Neo execution is unavailable: ${String(error)}`, 'browseros-neo');
+    if (error instanceof SourceError) error.adapter = 'browseros-neo';
+    throw error;
   }
-  const payload = response.result?.structuredContent;
-  if (!payload?.ok) throw new SourceError('parse_error', 'BrowserOS Neo could not read rendered page', 'browseros-neo');
-  const nested = payload.value as { value?: unknown } | unknown[] | undefined;
-  const value = nested && !Array.isArray(nested) && typeof nested === 'object' && 'value' in nested ? nested.value : nested;
-  return parseNeoOutcome(value, categorySlug);
 }

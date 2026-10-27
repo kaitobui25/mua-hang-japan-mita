@@ -102,3 +102,12 @@ test('HTTP parses source-supplied family ID but never guesses it from similar na
   assert.equal(products[0].parentAsin, 'B0ABCDEF12');
   assert.equal(products[1].parentAsin, null);
 });
+
+test('bounded listing discovery retains overflow ASINs for the detail backlog instead of silently dropping them', async () => {
+  const ids = Array.from({ length: 205 }, (_, i) => `D${String(i).padStart(9, '0')}`);
+  const result = await discoverHttp(seed.categorySlug, seed.url, {
+    maxPages: 1, fetchPage: async () => ids.map(id => card(id)).join(''), delay: async () => {}
+  });
+  assert.equal(result.observations.length, 205);
+  assert.equal(new Set(result.observations.map(item => item.asin)).size, 205);
+});

@@ -1,6 +1,9 @@
 import { db } from './db/pool.js';
 import { getPricingPolicy, isFresh, toVnd, type PricingPolicy } from './pricing.js';
 import { config } from './config.js';
+import { applyTranslations } from './translation/catalog.js';
+import { uniqueImages } from './ingestion/enrichment.js';
+import type { DetailSnapshot } from './ingestion/source.js';
 import type { PoolClient } from 'pg';
 
 export type DbProduct = {
@@ -10,6 +13,7 @@ export type DbProduct = {
   price_jpy: number | null; price_observed_at: Date | null;
   availability: string; sale_status: string; last_seen_at: Date;
   admin_hidden_at: Date | null;
+  image_urls?: string[]; detail?: DetailSnapshot | null;
 };
 
 // Read the singleton setting in SQL so catalog/detail/overview reflect Admin changes
@@ -25,7 +29,10 @@ export function publicProduct(p: DbProduct, policy: PricingPolicy) {
   const canCheckout = canCheckoutProduct(p);
   return {
     id: p.asin, asin: p.asin, name: p.name, brand: p.brand, categorySlug: p.category_slug,
-    sourceUrl: p.source_url, imageUrl: p.image_url, sourceAdapter: p.source_adapter,
+    sourceUrl: p.source_url, imageUrl: p.image_url,
+    imageUrls: uniqueImages(p.image_urls?.length ? p.image_urls : [p.image_url]),
+    detail: p.detail ?? null, variantAttributes: p.detail?.variantAttributes ?? {},
+    sourceAdapter: p.source_adapter,
     rightsStatus: p.rights_status, priceJpy: p.price_jpy,
     priceVnd: p.price_jpy !== null ? toVnd(p.price_jpy, policy) : null,
     priceObservedAt: p.price_observed_at?.toISOString() ?? null,
@@ -36,11 +43,35 @@ export function publicProduct(p: DbProduct, policy: PricingPolicy) {
   };
 }
 
+async function enrichProducts(products: DbProduct[], client: Pick<PoolClient, 'query'>) {
+  if (!products.length) return;
+  const ids = products.map(p => p.asin);
+  const images = await client.query<{ asin: string; urls: string[] }>(
+    'SELECT asin,array_agg(source_url ORDER BY position) AS urls FROM product_images WHERE asin=ANY($1::varchar(10)[]) GROUP BY asin', [ids]);
+  const details = await client.query<{
+    asin: string; features: string[]; ingredients: string[]; usage: string[]; specs: Record<string,string>;
+    cautions: string[]; variant_attributes: Record<string,string>; child_asins: string[];
+    source_observed_at: Date; provenance: DetailSnapshot['provenance'];
+  }>('SELECT * FROM product_details WHERE asin=ANY($1::varchar(10)[])', [ids]);
+  for (const product of products) {
+    product.image_urls = images.rows.find(row => row.asin === product.asin)?.urls ?? [];
+    const d = details.rows.find(row => row.asin === product.asin);
+    product.detail = d ? {
+      features: d.features, ingredients: d.ingredients, usage: d.usage, specs: d.specs, cautions: d.cautions,
+      variantAttributes: d.variant_attributes,
+      // Child discovery evidence is private: unverified/hidden child ASINs must not leak here.
+      childAsins: [], sourceObservedAt: d.source_observed_at.toISOString(), provenance: d.provenance
+    } : null;
+  }
+  await applyTranslations(products, client);
+}
+
 export async function getProductDetails(asin: string, connection?: PoolClient) {
   const client = connection ?? db;
   const result = await client.query<DbProduct>(`SELECT * FROM products WHERE asin = $1 AND ${publicVisibilitySql}`, [asin.toUpperCase()]);
   const product = result.rows[0];
   if (!product) return null;
+  await enrichProducts([product], client);
   const policy = await getPricingPolicy(client);
   if (!product.variant_group_basis || !product.variant_group_id) {
     return { ...publicProduct(product, policy), variants: [] };
@@ -49,6 +80,7 @@ export async function getProductDetails(asin: string, connection?: PoolClient) {
   const siblings = await client.query<DbProduct>(`SELECT * FROM products
     WHERE category_slug = $1 AND variant_group_basis = $2 AND variant_group_id = $3 AND ${publicVisibilitySql}
     ORDER BY name ASC, asin ASC`, [product.category_slug, product.variant_group_basis, product.variant_group_id]);
+  await enrichProducts(siblings.rows, client);
   return { ...publicProduct(product, policy), variants: siblings.rows.length > 1 ? siblings.rows.map(p => publicProduct(p, policy)) : [] };
 }
 
@@ -58,7 +90,8 @@ export async function listCatalog(options: { category?: string; q?: string; page
   const where: string[] = [publicVisibilitySql];
   const params: unknown[] = [];
   if (category) { params.push(category); where.push(`category_slug = $${params.length}`); }
-  if (q) { params.push(`%${q}%`); where.push(`(name ILIKE $${params.length} OR brand ILIKE $${params.length} OR asin ILIKE $${params.length})`); }
+  if (q) { params.push(`%${q}%`); where.push(`(name ILIKE $${params.length} OR brand ILIKE $${params.length} OR asin ILIKE $${params.length}
+    OR EXISTS (SELECT 1 FROM product_translations tr WHERE tr.asin=products.asin AND tr.locale='vi' AND tr.status='success' AND tr.name ILIKE $${params.length}))`); }
   const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const sorting: Record<string, string> = {
     name: 'name ASC',
@@ -79,6 +112,7 @@ export async function listCatalog(options: { category?: string; q?: string; page
   )
   SELECT * FROM ranked WHERE variant_rank = 1
   ORDER BY ${ordering}, asin ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`, [...params, limit, (page - 1) * limit]);
+  await enrichProducts(rows.rows, client);
   const policy = await getPricingPolicy(client);
   return { items: rows.rows.map(p => publicProduct(p, policy)), total: Number(total.rows[0].count), page, limit, lastUpdatedAt: rows.rows[0]?.last_seen_at.toISOString() ?? null };
 }

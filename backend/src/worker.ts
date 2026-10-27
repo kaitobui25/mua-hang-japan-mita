@@ -4,13 +4,24 @@ import { db } from './db/pool.js';
 import { importObservedSnapshot, syncCatalog } from './ingestion/sync.js';
 import { processNextImport } from './admin/imports.js';
 import { dailyCron, dailyTimezone, shouldRunDaily } from './ingestion/schedule.js';
+import { translatePendingProducts } from './translation/jobs.js';
+
+async function syncAndTranslate() {
+  const result = await syncCatalog();
+  try { await translatePendingProducts(); }
+  catch { console.error('Translation database job failed; catalog data remains available.'); }
+  return result;
+}
 
 const command = process.argv[2];
 if (command === 'once') {
-  try { await syncCatalog(); }
+  try { await syncAndTranslate(); }
   finally { await db.end(); }
 } else if (command === 'import') {
   try { console.log('Imported observed products:', await importObservedSnapshot()); }
+  finally { await db.end(); }
+} else if (command === 'translate') {
+  try { await translatePendingProducts(); }
   finally { await db.end(); }
 } else if (command === 'daily') {
   const startedAt = new Date();
@@ -22,7 +33,7 @@ if (command === 'once') {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const pollImports = () => {
     importWork = (async () => {
-      try { await processNextImport(); }
+      try { if (await processNextImport()) await translatePendingProducts(1); }
       catch { console.error('ASIN import queue error; check database/tunnel connectivity.'); }
       if (!stopping) timer = setTimeout(pollImports, 3000);
     })();
@@ -32,7 +43,7 @@ if (command === 'once') {
     await boss.createQueue('catalog.daily');
     await boss.work('catalog.daily', { includeMetadata: true }, async jobs => {
       for (const job of jobs) {
-        if (shouldRunDaily(job.createdOn, startedAt)) await syncCatalog();
+        if (shouldRunDaily(job.createdOn, startedAt)) await syncAndTranslate();
         else console.log('Skipped daily scan from downtime/outside the scheduled window.');
       }
     });
@@ -49,7 +60,7 @@ if (command === 'once') {
     process.once('SIGTERM', () => void halt());
   } catch (error) { await boss.stop(); await db.end(); throw error; }
 } else {
-  console.error('Usage: tsx src/worker.ts once|import|daily');
+  console.error('Usage: tsx src/worker.ts once|import|translate|daily');
   process.exitCode = 1;
   await db.end();
 }

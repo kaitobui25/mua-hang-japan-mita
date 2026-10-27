@@ -39,7 +39,7 @@ test('ASIN detail parser requires matching identity and actual product fields', 
   assert.equal(result.priceJpy, 1000);
   assert.equal(result.asin, asin);
   assert.throws(() => parseDetail(html, 'A000000002', category));
-  assert.throws(() => parseDetail(html.replace('¥1,000', ''), asin, category));
+  assert.equal(parseDetail(html.replace('¥1,000', ''), asin, category).priceJpy, null);
   assert.throws(() => parseDetail(html.replace('https://m.media-amazon.com', 'http://evil.test'), asin, category));
   assert.throws(() => parseDetail('captcha ' + html, asin, category), (e: unknown) => e instanceof SourceError && e.state === 'needs_human');
 });

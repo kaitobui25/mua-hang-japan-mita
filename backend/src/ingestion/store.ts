@@ -1,4 +1,5 @@
 import { db } from '../db/pool.js';
+import { uniqueImages } from './enrichment.js';
 import type { Observation } from './source.js';
 import type { PoolClient } from 'pg';
 
@@ -34,17 +35,50 @@ export async function ingestObservations(observations: VariantObservation[], run
         (asin, category_slug, name, brand, image_url, source_url, source_adapter, rights_status, price_jpy, price_observed_at, availability, sale_status, variant_group_basis, variant_group_id)
         VALUES($1,$2,$3,$4,$5,$6,$7,'local_test_only',$8,$9,$13,$10,$11,$12)
         ON CONFLICT(asin) DO UPDATE SET
-          category_slug=EXCLUDED.category_slug, name=EXCLUDED.name, brand=COALESCE(EXCLUDED.brand,products.brand),
-          image_url=COALESCE(EXCLUDED.image_url,products.image_url), source_adapter=EXCLUDED.source_adapter,
+          name=EXCLUDED.name, brand=COALESCE(EXCLUDED.brand,products.brand),
+          image_url=CASE WHEN EXISTS (SELECT 1 FROM product_images WHERE asin=products.asin) THEN products.image_url ELSE COALESCE(EXCLUDED.image_url,products.image_url) END, source_adapter=EXCLUDED.source_adapter,
           variant_group_basis=COALESCE(EXCLUDED.variant_group_basis,products.variant_group_basis),
           variant_group_id=COALESCE(EXCLUDED.variant_group_id,products.variant_group_id),
-          price_jpy=COALESCE(EXCLUDED.price_jpy,products.price_jpy),
-          price_observed_at=COALESCE(EXCLUDED.price_observed_at,products.price_observed_at),
+          price_jpy=CASE WHEN EXCLUDED.price_observed_at >= COALESCE(products.price_observed_at, '-infinity'::timestamptz) THEN EXCLUDED.price_jpy ELSE products.price_jpy END,
+          price_observed_at=GREATEST(EXCLUDED.price_observed_at,products.price_observed_at),
           availability=CASE WHEN EXCLUDED.availability='unknown' THEN products.availability ELSE EXCLUDED.availability END,
           sale_status=CASE WHEN COALESCE(EXCLUDED.price_observed_at,products.price_observed_at) IS NOT NULL THEN 'ready' ELSE 'pending_review' END,
           last_seen_at=now(), updated_at=now()`,
         [o.asin, o.categorySlug, o.name, o.brand ?? null, o.imageUrl ?? null, sourceUrl, o.sourceAdapter,
           observedAt ? o.priceJpy : null, observedAt, observedAt ? 'ready' : 'pending_review', group?.basis ?? null, group?.id ?? null, o.availability ?? 'unknown']);
+      const detailAt = o.detail && Number.isFinite(Date.parse(o.detail.sourceObservedAt)) && Date.parse(o.detail.sourceObservedAt) <= Date.now()
+        ? new Date(o.detail.sourceObservedAt) : null;
+      if (o.detail && detailAt) {
+        // Product row locking from the upsert serializes gallery/detail replacement.
+        const previous = await connection.query<{ source_observed_at: Date }>('SELECT source_observed_at FROM product_details WHERE asin=$1', [o.asin]);
+        if (!previous.rows[0] || previous.rows[0].source_observed_at <= detailAt) {
+          const images = uniqueImages(o.imageUrls ?? []);
+          if (images.length) {
+            await connection.query('DELETE FROM product_images WHERE asin=$1', [o.asin]);
+            for (const [index, url] of images.entries()) {
+              await connection.query('INSERT INTO product_images(asin,position,source_url,source_observed_at) VALUES($1,$2,$3,$4)', [o.asin, index + 1, url, detailAt]);
+            }
+            await connection.query('UPDATE products SET image_url=$2 WHERE asin=$1', [o.asin, images[0]]);
+          }
+          const d = o.detail;
+          await connection.query(`INSERT INTO product_details
+            (asin,features,ingredients,usage,specs,cautions,variant_attributes,child_asins,source_observed_at,provenance)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            ON CONFLICT(asin) DO UPDATE SET
+              features=CASE WHEN EXCLUDED.features='[]'::jsonb THEN product_details.features ELSE EXCLUDED.features END,
+              ingredients=CASE WHEN EXCLUDED.ingredients='[]'::jsonb THEN product_details.ingredients ELSE EXCLUDED.ingredients END,
+              usage=CASE WHEN EXCLUDED.usage='[]'::jsonb THEN product_details.usage ELSE EXCLUDED.usage END,
+              specs=CASE WHEN EXCLUDED.specs='{}'::jsonb THEN product_details.specs ELSE EXCLUDED.specs END,
+              cautions=CASE WHEN EXCLUDED.cautions='[]'::jsonb THEN product_details.cautions ELSE EXCLUDED.cautions END,
+              variant_attributes=CASE WHEN EXCLUDED.variant_attributes='{}'::jsonb THEN product_details.variant_attributes ELSE EXCLUDED.variant_attributes END,
+              child_asins=CASE WHEN EXCLUDED.child_asins='[]'::jsonb THEN product_details.child_asins ELSE EXCLUDED.child_asins END,
+              source_observed_at=EXCLUDED.source_observed_at,
+              provenance=product_details.provenance || EXCLUDED.provenance || jsonb_build_object(
+                'fieldObservedAt', COALESCE(product_details.provenance->'fieldObservedAt','{}'::jsonb) || COALESCE(EXCLUDED.provenance->'fieldObservedAt','{}'::jsonb))`,
+          [o.asin, JSON.stringify(d.features), JSON.stringify(d.ingredients), JSON.stringify(d.usage), JSON.stringify(d.specs),
+            JSON.stringify(d.cautions), JSON.stringify(d.variantAttributes), JSON.stringify(d.childAsins), detailAt, JSON.stringify(d.provenance)]);
+        }
+      }
       if (observedAt && validPrice) {
         await connection.query('INSERT INTO price_observations(asin,price_jpy,observed_at,source_adapter,sync_run_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING',
           [o.asin, o.priceJpy, observedAt, o.sourceAdapter, runId ?? null]);

@@ -14,6 +14,7 @@
     "admin:setup": "tsx src/admin/owner.ts setup",
     "admin:reset": "tsx src/admin/owner.ts reset",
     "worker:once": "tsx src/worker.ts once",
+    "worker:translate": "tsx src/worker.ts translate",
     "worker:daily": "tsx src/worker.ts daily"
   },
   "dependencies": {

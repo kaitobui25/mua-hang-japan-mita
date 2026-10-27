@@ -51,6 +51,54 @@ CREATE INDEX IF NOT EXISTS products_variant_group_idx
   ON products(category_slug, variant_group_basis, variant_group_id)
   WHERE variant_group_basis IS NOT NULL AND variant_group_id IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS product_images (
+  asin varchar(10) NOT NULL REFERENCES products(asin) ON DELETE CASCADE,
+  position smallint NOT NULL CHECK (position BETWEEN 1 AND 5),
+  source_url text NOT NULL CHECK (source_url ~ '^https://(m\.media-amazon\.com|images-na\.ssl-images-amazon\.com|images-fe\.ssl-images-amazon\.com)/'),
+  source_observed_at timestamptz NOT NULL,
+  PRIMARY KEY (asin, position),
+  UNIQUE (asin, source_url)
+);
+CREATE TABLE IF NOT EXISTS product_details (
+  asin varchar(10) PRIMARY KEY REFERENCES products(asin) ON DELETE CASCADE,
+  features jsonb NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(features) = 'array'),
+  ingredients jsonb NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(ingredients) = 'array'),
+  usage jsonb NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(usage) = 'array'),
+  specs jsonb NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(specs) = 'object'),
+  cautions jsonb NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(cautions) = 'array'),
+  variant_attributes jsonb NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(variant_attributes) = 'object'),
+  child_asins jsonb NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(child_asins) = 'array'),
+  source_observed_at timestamptz NOT NULL,
+  provenance jsonb NOT NULL CHECK (jsonb_typeof(provenance) = 'object')
+);
+-- Reserved contract for a separate translator. Original names remain in products.
+CREATE TABLE IF NOT EXISTS product_translations (
+  asin varchar(10) NOT NULL REFERENCES products(asin) ON DELETE CASCADE,
+  locale text NOT NULL DEFAULT 'vi',
+  name text,
+  detail jsonb,
+  source_hash text NOT NULL,
+  model text,
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','success','failed')),
+  translated_at timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (asin, locale)
+);
+-- Also holds discovered children before they have a valid product snapshot.
+CREATE TABLE IF NOT EXISTS product_detail_queue (
+  category_slug text NOT NULL REFERENCES categories(slug),
+  asin varchar(10) NOT NULL CHECK (asin ~ '^[A-Z0-9]{10}$'),
+  parent_asin varchar(10) CHECK (parent_asin IS NULL OR parent_asin ~ '^[A-Z0-9]{10}$'),
+  provenance jsonb NOT NULL DEFAULT '{}',
+  state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','success','failed','needs_human')),
+  last_attempt_at timestamptz,
+  last_success_at timestamptz,
+  enqueued_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (category_slug, asin)
+);
+CREATE INDEX IF NOT EXISTS product_detail_queue_fair_idx
+  ON product_detail_queue(category_slug, last_attempt_at NULLS FIRST, enqueued_at, asin);
+
 CREATE TABLE IF NOT EXISTS sync_runs (
   id bigserial PRIMARY KEY,
   started_at timestamptz NOT NULL DEFAULT now(),

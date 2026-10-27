@@ -1,4 +1,5 @@
 import { load } from 'cheerio';
+import { extractEnrichment } from './enrichment.js';
 import { fetchPageWithRetry, parseJpy, SourceError, type Observation } from './source.js';
 
 export function normalizeAmazonInput(input: unknown) {
@@ -25,14 +26,18 @@ export function parseDetail(html: string, asin: string, categorySlug: string): O
   // Scope the quote to the product buy box, never recommendations or list prices.
   const priceText = $('#corePriceDisplay_desktop_feature_div .a-price .a-offscreen, #corePrice_feature_div .a-price .a-offscreen, #priceblock_ourprice').first().text();
   const priceJpy = parseJpy(priceText);
-  const imageUrl = $('#landingImage').attr('data-old-hires') || $('#landingImage').attr('src');
+  const observedAt = new Date().toISOString();
+  const sourceUrl = `https://www.amazon.co.jp/dp/${asin}`;
+  const enrichment = extractEnrichment($, asin, observedAt, sourceUrl);
+  const imageUrl = enrichment.imageUrls[0];
   const availabilityText = $('#availability').text();
   const availability = /在庫切れ|現在お取り扱いできません|currently unavailable|out of stock/i.test(availabilityText) ? 'out_of_stock'
     : /在庫あり|in stock/i.test(availabilityText) ? 'in_stock' : 'unknown';
-  if (name.length < 8 || !priceJpy || !imageUrl || !/^https:\/\/(?:m\.media-amazon\.com|images-na\.ssl-images-amazon\.com)\//.test(imageUrl)) throw new SourceError('parse_error', 'Nguồn thiếu tên, ảnh hoặc giá JPY hợp lệ.');
-  return { asin, name: name.slice(0, 500), categorySlug, priceJpy, imageUrl, availability,
-    sourceUrl: `https://www.amazon.co.jp/dp/${asin}`, sourceAdapter: 'http-detail', observedAt: new Date().toISOString() };
+  if (name.length < 8 || !imageUrl) throw new SourceError('parse_error', 'Nguồn thiếu tên hoặc ảnh Amazon hợp lệ.');
+  return { ...enrichment, asin, name: name.slice(0, 500), categorySlug, priceJpy, imageUrl, availability,
+    sourceUrl, sourceAdapter: 'http-detail', observedAt };
 }
 export async function collectDetail(asin: string, categorySlug: string) {
+  asin = normalizeAmazonInput(asin);
   return parseDetail(await fetchPageWithRetry(`https://www.amazon.co.jp/dp/${asin}`), asin, categorySlug);
 }
