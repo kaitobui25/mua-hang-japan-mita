@@ -1,7 +1,7 @@
 # ADR 0009 — Admin tối giản cho một chủ cửa hàng
 
 **Ngày:** 27/10/2026 (JST)
-**Trạng thái:** `proposed / Q2 accepted` — Q1 về thêm sản phẩm đã chốt trong ADR 0010; Q2 chỉ xem đơn mô phỏng đã chốt ngày 27/10/2026. Số lượng tài khoản quản trị chờ Q3.
+**Trạng thái:** `proposed / Q2 + Q3 accepted` — Q1 về thêm sản phẩm đã chốt trong ADR 0010; Q2 chỉ xem đơn mô phỏng và Q3 một tài khoản chủ cửa hàng đã chốt ngày 27/10/2026. Các quyết định khác trong ADR vẫn là đề xuất.
 **Liên quan:** `.agents/plan/04_mita_minimal_admin_grill_with_docs_plan.md`, ADR 0001–0008.
 
 ## Bối cảnh
@@ -11,7 +11,7 @@ Mita đã có website bán hàng thử nghiệm, catalog và đơn hàng mô ph�
 ## Quyết định đề xuất
 
 - Một giao diện `/admin` **chung Next.js với website hiện tại** và `/api/admin/*` trên backend Fastify đang có; PostgreSQL hiện tại lưu dữ liệu và lịch sử. Không lập dự án hay dịch vụ thứ hai, không Docker.
-- **Một tài khoản owner là phương án đề xuất chờ Q3**, chưa coi là đã được owner duyệt. Dù có bao nhiêu tài khoản, đăng nhập bằng mật khẩu hash và session cookie; mọi route/API quản trị đều xác thực tại server. Có logout, rate limit, bảo vệ CSRF và nhật ký thay đổi quan trọng.
+- **Q3 đã chốt (A): một tài khoản owner duy nhất** trong Admin MVP. Không tạo màn thêm/xóa tài khoản, tài khoản nhân viên hay phân quyền nhiều cấp. Đăng nhập bằng mật khẩu hash và session cookie; mọi route/API quản trị đều xác thực tại server. Có logout, rate limit, bảo vệ CSRF và nhật ký thay đổi quan trọng.
 - Chỉ **4 trang**: `Tổng quan`, `Sản phẩm`, `Đơn hàng`, `Cấu hình`.
 - Tổng quan chỉ có hai số chính (số đơn mô phỏng 7 ngày, số sản phẩm đang hiển thị), tình trạng đồng bộ Amazon và 5 đơn mới nhất. Không biểu đồ, không tài chính giả.
 - **Q2 đã chốt (A): Trang Đơn hàng chỉ xem** danh sách/chi tiết đơn mô phỏng, **không cập nhật ghi chú hoặc trạng thái nội bộ**. Không có thao tác “Đã thu tiền”, “Giao hàng”, “Hoàn tiền”, “Xóa đơn” khi chưa có nghiệp vụ/cổng thanh toán thật.
@@ -26,10 +26,11 @@ Mita đã có website bán hàng thử nghiệm, catalog và đơn hàng mô ph�
 ## Điều kiện bắt buộc khi thực hiện
 
 - Kiểm thử từ chối API nếu thiếu session, session hết hạn/đăng xuất, rate-limit mật khẩu sai, CSRF, leak PII khách hàng.
+- Tài khoản owner phải được tạo qua bước thiết lập an toàn, không có username/password mặc định công khai hoặc lưu plaintext trong repository. Cần cách khôi phục quyền truy cập an toàn nhưng không cần tính năng quản lý nhân viên.
 - Bảo vệ Admin không chỉ bằng frontend redirect; giữ HTTPS và cookie Secure khi triển khai internet.
 - Dữ liệu đồng bộ phải báo theo `sync_runs` thực tế; lịch `04:00 JST` vẫn cần một vòng kiểm thử vận hành riêng.
 - Thay đổi giao diện và báo cáo **không** tự cho phép xuất bản nội dung Amazon khi chưa xác minh quyền sử dụng.
 
 ## Chưa chốt
 
-Owner đã chốt **thêm sản phẩm bằng link/ASIN Amazon** trong ADR 0010 và **Q2 = A, đơn mô phỏng chỉ xem** trong ADR này. **Q3 còn mở:** chỉ một tài khoản chủ cửa hàng hay nhiều tài khoản quản trị riêng? Đề xuất giữ một tài khoản để giảm phạm vi MVP.
+Owner đã chốt **Q1 = A, thêm sản phẩm bằng link/ASIN Amazon** (ADR 0010), **Q2 = A, chỉ xem đơn mô phỏng** và **Q3 = A, một tài khoản owner duy nhất** (ADR này). **Q4 còn mở:** cấu hình tỷ giá VND/JPY thủ công hay tự đồng bộ từ nguồn bên ngoài (xem ADR 0010).

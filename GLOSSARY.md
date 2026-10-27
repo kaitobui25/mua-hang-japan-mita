@@ -79,6 +79,10 @@ Các thuật ngữ dưới đây dùng cho bản kế hoạch Admin dự thảo 
 Người được phép đăng nhập giao diện nội bộ để xem tình hình, quản lý việc hiển thị sản phẩm và thay đổi chính sách giá; không phải tài khoản mua hàng của khách.
 _Tránh_: Bất kỳ ai truy cập được URL `/admin` đều có quyền chỉnh sửa
 
+**Tài khoản owner duy nhất (Q3 đã chốt)**:
+Admin MVP có đúng một tài khoản đăng nhập của chủ cửa hàng, được thiết lập với mật khẩu hash và phiên xác thực an toàn; không có đăng ký Admin công khai, màn quản lý nhân viên hoặc phân quyền nhiều cấp.
+_Tránh_: Mật khẩu mặc định hardcode, tài khoản Admin dùng chung với khách mua hàng
+
 **Đơn mô phỏng**:
 Đơn có trạng thái `simulation_created`, dùng để thử luồng đặt hàng; không có bằng chứng giao dịch thanh toán hoặc mua hàng thật.
 _Tránh_: Đơn đã thanh toán, doanh thu đã thu

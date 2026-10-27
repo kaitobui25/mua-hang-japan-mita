@@ -28,4 +28,8 @@ Sản phẩm Mita hiện được tự động upsert từ Amazon theo ASIN; n�
 
 **Q1 — ACCEPTED:** Phương án A (Amazon link/ASIN). Không xây phương án B trong MVP.
 
-**Q2 — ACCEPTED (xem ADR 0009):** Chỉ xem danh sách và chi tiết đơn mô phỏng, không có ghi chú hoặc API cập nhật trạng thái đơn ở Admin MVP. **Q3 đang mở:** số tài khoản quản trị.
+**Q2 — ACCEPTED (xem ADR 0009):** Chỉ xem danh sách và chi tiết đơn mô phỏng, không có ghi chú hoặc API cập nhật trạng thái đơn ở Admin MVP.
+
+**Q3 — ACCEPTED (xem ADR 0009):** Chỉ một tài khoản owner trong Admin MVP, không hỗ trợ tài khoản nhân viên hoặc phân quyền nhiều cấp.
+
+**Q4 — PENDING:** Cách lấy tỷ giá tính giá bán VND/JPY: (A) owner nhập thủ công và lưu vào policy, hay (B) đồng bộ qua một dịch vụ tỷ giá bên ngoài. Phương án B cần quyết định nguồn dữ liệu, lịch cập nhật và cách ứng xử khi nguồn lỗi; không được tự coi tỷ giá nguồn là giá bán đã chốt.
