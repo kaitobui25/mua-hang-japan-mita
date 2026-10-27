@@ -7,7 +7,7 @@ import { discoverNeo, collectDetailNeo, openNeoManualVerification } from './neo.
 import { collectDetail } from './detail.js';
 import { config } from '../config.js';
 import type { PoolClient } from 'pg';
-import { AMAZON_ACCESS_LOCK } from './source-access.js';
+import { AMAZON_ACCESS_LOCK, recordAmazonPause } from './source-access.js';
 
 export async function collectCategory(
   seed: { categorySlug: string; url: string },
@@ -213,9 +213,7 @@ export async function syncCatalog(options: {
         errors++;
         if (issue.state === 'blocked' || issue.state === 'needs_human') {
           blocked = true;
-          await lock.query(`INSERT INTO source_access_blocks(source,reason) VALUES('amazon.co.jp',$1)
-            ON CONFLICT(source) DO UPDATE SET reason=EXCLUDED.reason,blocked_at=now()`,
-          ['Amazon requested manual verification before further collection']);
+          await recordAmazonPause(lock, 'Amazon requested manual verification before further collection');
         }
         await lock.query('INSERT INTO sync_errors(sync_run_id,category_slug,asin,adapter,state,message) VALUES($1,$2,$3,$4,$5,$6)',
           [id, seed.categorySlug, issue.asin ?? null, issue.adapter, issue.state, issue.page ? `Page ${issue.page}: ${issue.message}` : issue.message]);

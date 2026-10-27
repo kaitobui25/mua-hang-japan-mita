@@ -71,7 +71,7 @@ test('separate worker cannot spend free translation quota while another process 
   try {
     await owner.query('SELECT pg_advisory_lock(70400300)');
     process.env.OPENROUTER_API_KEY = 'fixture-not-a-real-key';
-    assert.deepEqual(await translatePendingProducts(1), { translated: 0, failed: 0, skipped: 0 });
+    assert.deepEqual(await translatePendingProducts(1), { translated: 0, failed: 0, skipped: 0, paused: true });
   } finally {
     if (previous === undefined) delete process.env.OPENROUTER_API_KEY;
     else process.env.OPENROUTER_API_KEY = previous;

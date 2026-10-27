@@ -107,8 +107,12 @@ CREATE TABLE IF NOT EXISTS product_detail_queue (
 CREATE TABLE IF NOT EXISTS source_access_blocks (
   source text PRIMARY KEY,
   reason text NOT NULL,
-  blocked_at timestamptz NOT NULL DEFAULT now()
+  blocked_at timestamptz NOT NULL DEFAULT now(),
+  continuation_due_at timestamptz,
+  timeout_recorded_at timestamptz
 );
+ALTER TABLE source_access_blocks ADD COLUMN IF NOT EXISTS continuation_due_at timestamptz;
+ALTER TABLE source_access_blocks ADD COLUMN IF NOT EXISTS timeout_recorded_at timestamptz;
 CREATE INDEX IF NOT EXISTS product_detail_queue_fair_idx
   ON product_detail_queue(category_slug, last_attempt_at NULLS FIRST, enqueued_at, asin);
 

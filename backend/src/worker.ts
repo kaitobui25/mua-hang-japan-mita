@@ -1,4 +1,5 @@
 import { PgBoss } from 'pg-boss';
+import { Pool } from 'pg';
 import { config } from './config.js';
 import { db } from './db/pool.js';
 import { importObservedSnapshot, syncCatalog, seedExistingDetails, acknowledgeSourceAccess } from './ingestion/sync.js';
@@ -7,10 +8,12 @@ import { dailyCron, dailyTimezone, shouldRunDaily } from './ingestion/schedule.j
 import { translatePendingProducts } from './translation/jobs.js';
 import { openNeoManualVerification } from './ingestion/neo.js';
 import { seeds } from './ingestion/source.js';
+import { claimDueAmazonContinuation, seedAmazonPause } from './ingestion/source-access.js';
+import { nextTranslationDelayMs, TRANSLATION_IDLE_DELAY_MS } from './translation/schedule.js';
 
 // Prevent the scheduled scan, import queue and translation timer from spending the
 // same free daily model quota concurrently in this Windows worker process.
-let translationWork: Promise<unknown> | undefined;
+let translationWork: ReturnType<typeof translatePendingProducts> | undefined;
 function runTranslation(limit = 30) {
   if (!translationWork) {
     translationWork = translatePendingProducts(limit).finally(() => { translationWork = undefined; });
@@ -46,11 +49,17 @@ if (command === 'once') {
       (SELECT count(*)::int FROM products p WHERE p.category_slug=c.slug) AS products,
       (SELECT count(*)::int FROM product_details d JOIN products p ON p.asin=d.asin WHERE p.category_slug=c.slug) AS detailed,
       (SELECT count(*)::int FROM product_translations t JOIN products p ON p.asin=t.asin WHERE p.category_slug=c.slug AND t.status='success' AND t.locale='vi') AS translated,
+      (SELECT count(*)::int FROM product_translations t JOIN products p ON p.asin=t.asin
+        WHERE p.category_slug=c.slug AND t.status='success' AND t.locale='vi' AND t.name_only) AS title_only,
+      (SELECT count(*)::int FROM product_translations t JOIN products p ON p.asin=t.asin
+        WHERE p.category_slug=c.slug AND t.status='success' AND t.locale='vi' AND NOT t.name_only) AS fully_translated,
       (SELECT count(*)::int FROM product_detail_queue q WHERE q.category_slug=c.slug AND q.state='pending') AS pending,
       (SELECT count(*)::int FROM product_detail_queue q WHERE q.category_slug=c.slug AND q.state='failed') AS failed,
       (SELECT count(*)::int FROM product_detail_queue q WHERE q.category_slug=c.slug AND q.state='needs_human') AS needs_human
       FROM categories c WHERE c.slug IN ('thuc-pham-bo-sung','thuc-pham-cho-be') ORDER BY c.slug`);
     console.table(rows);
+    const pauses = await db.query(`SELECT source,reason,continuation_due_at,timeout_recorded_at FROM source_access_blocks`);
+    if (pauses.rows.length) console.table(pauses.rows);
   } finally { await db.end(); }
 } else if (command === 'backfill:ack') {
   try {
@@ -92,25 +101,68 @@ if (command === 'once') {
   const startedAt = new Date();
   // pg-boss DatabaseOptions.max controls its own pg.Pool (separate from db).
   const boss = new PgBoss({ connectionString: config.databaseUrl, schema: 'mita_queue', max: config.bossPoolMax, connectionTimeoutMillis: 10000 });
+  // OpenRouter inference may occupy the only default DB connection for many
+  // seconds. Keep the CAPTCHA deadline observable with DB_POOL_MAX=1.
+  const continuationPool = new Pool({ connectionString: config.databaseUrl, max: 1 });
   boss.on('error', () => console.error('Catalog scheduler error; check database/tunnel connectivity.'));
   let stopping = false;
   let importWork: Promise<void> = Promise.resolve();
+  let continuationWork: Promise<void> = Promise.resolve();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let continuationTimer: ReturnType<typeof setTimeout> | undefined;
   let translationTimer: ReturnType<typeof setTimeout> | undefined;
-  const pollTranslations = async () => {
-    try { await runTranslation(); }
-    catch { console.error('Background translation unavailable; source catalog retained.'); }
-    if (!stopping) translationTimer = setTimeout(() => void pollTranslations(), 2 * 60 * 60 * 1000);
+  // One shared scheduler for startup polling, manual import and CAPTCHA
+  // fallback: an actively progressing batch replaces an old 2-hour timer.
+  const scheduleTranslation = (delayMs: number) => {
+    if (stopping) return;
+    if (translationTimer) clearTimeout(translationTimer);
+    translationTimer = setTimeout(() => void pollTranslations(), delayMs);
+  };
+  const triggerTranslation = async (limit = 30) => {
+    try {
+      const result = await runTranslation(limit);
+      scheduleTranslation(nextTranslationDelayMs(result));
+      return result;
+    } catch {
+      console.error('Background translation unavailable; source catalog retained.');
+      scheduleTranslation(TRANSLATION_IDLE_DELAY_MS);
+      return null;
+    }
+  };
+  const pollTranslations = async () => { await triggerTranslation(); };
+  const pollContinuation = () => {
+    continuationWork = (async () => {
+      try {
+        // A durable 30s deadline turns a source-wide CAPTCHA pause into
+        // independent catalog work. This timer never awaits Admin Import,
+        // which may wait behind translator's occupied DB_POOL_MAX=1 connection.
+        if (await claimDueAmazonContinuation(continuationPool)) {
+          console.warn('Amazon still blocked after 30s; local translation fallback dispatched. No Amazon retry or auto-ACK.');
+          void triggerTranslation().then(result => {
+            if (result) console.log(`CAPTCHA fallback finished: ${result.translated} translations updated, ${result.failed} unavailable, ${result.skipped} unchanged.`);
+          });
+        }
+      } catch {
+        console.error('CAPTCHA continuation timer unavailable; retrying without clearing the source block.');
+      } finally {
+        if (!stopping) continuationTimer = setTimeout(pollContinuation, 3000);
+      }
+    })();
   };
   const pollImports = () => {
     importWork = (async () => {
-      try { if (await processNextImport()) void runTranslation(1).catch(() => {}); }
+      try {
+        if (await processNextImport()) void triggerTranslation(1);
+      }
       catch { console.error('ASIN import queue error; check database/tunnel connectivity.'); }
       if (!stopping) timer = setTimeout(pollImports, 3000);
     })();
   };
   try {
     console.log('Queued existing ASINs for next scheduled detail scan:', await seedExistingDetails());
+    const pauseConnection = await continuationPool.connect();
+    try { await seedAmazonPause(pauseConnection); }
+    finally { pauseConnection.release(); }
     await boss.start();
     await boss.createQueue('catalog.daily');
     await boss.work('catalog.daily', { includeMetadata: true }, async jobs => {
@@ -120,22 +172,25 @@ if (command === 'once') {
       }
     });
     await boss.schedule('catalog.daily', dailyCron, {}, { tz: dailyTimezone });
+    pollContinuation();
     pollImports();
     // Translation can catch up while PC is on even when it missed the 04:00
     // scan; this does NOT perform an off-schedule Amazon scrape.
-    translationTimer = setTimeout(() => void pollTranslations(), 5000);
+    scheduleTranslation(5000);
     console.log('Mita catalog worker active, 04:00 Asia/Tokyo daily');
     const halt = async () => {
       stopping = true;
       if (timer) clearTimeout(timer);
+      if (continuationTimer) clearTimeout(continuationTimer);
       if (translationTimer) clearTimeout(translationTimer);
+      await continuationWork;
       await importWork;
       if (translationWork) await translationWork.catch(() => {});
-      await boss.stop(); await db.end(); process.exit(0);
+      await boss.stop(); await continuationPool.end(); await db.end(); process.exit(0);
     };
     process.once('SIGINT', () => void halt());
     process.once('SIGTERM', () => void halt());
-  } catch (error) { await boss.stop(); await db.end(); throw error; }
+  } catch (error) { await boss.stop(); await continuationPool.end(); await db.end(); throw error; }
 } else {
   console.error('Usage: tsx src/worker.ts once|import|translate|backfill:seed|backfill:status|backfill:ack|captcha:open|backfill|daily');
   process.exitCode = 1;

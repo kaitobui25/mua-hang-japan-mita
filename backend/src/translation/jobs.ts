@@ -118,11 +118,13 @@ export function translationFailureStopsBatch(error: unknown): boolean {
   return false;
 }
 
+export type TranslationRun = { translated: number; failed: number; skipped: number; paused: boolean };
+
 /** PC worker only. At most 30 translations per run to avoid exhausting free daily quota. */
-export async function translatePendingProducts(limit = 30): Promise<{ translated: number; failed: number; skipped: number }> {
+export async function translatePendingProducts(limit = 30): Promise<TranslationRun> {
   if (!process.env.OPENROUTER_API_KEY) {
     console.log('Translation deferred: OPENROUTER_API_KEY not configured on PC worker.');
-    return { translated: 0, failed: 0, skipped: 0 };
+    return { translated: 0, failed: 0, skipped: 0, paused: true };
   }
   // One translator across manual CLI, scheduled PC workers and remote DB-tunnel
   // connections. Session-scoped PG lock is released even when inference fails.
@@ -133,19 +135,19 @@ export async function translatePendingProducts(limit = 30): Promise<{ translated
     acquired = Boolean(result.rows[0]?.acquired);
     if (!acquired) {
       console.log('Translation deferred: another worker holds the quota lock.');
-      return { translated: 0, failed: 0, skipped: 0 };
+      return { translated: 0, failed: 0, skipped: 0, paused: true };
     }
   let quota;
   try { quota = await readFreeQuota(); }
   catch (error) {
     console.error('Translation deferred: OpenRouter quota status unavailable.');
-    return { translated: 0, failed: 0, skipped: 0 };
+    return { translated: 0, failed: 0, skipped: 0, paused: true };
   }
   // Reserve a few calls for the owner; free models have a shared UTC daily limit.
   let remaining = Math.max(0, quota.remaining - 2);
   if (remaining === 0) {
     console.log('Translation deferred: free daily quota exhausted.');
-    return { translated: 0, failed: 0, skipped: 0 };
+    return { translated: 0, failed: 0, skipped: 0, paused: true };
   }
   let previousRequestAt = 0;
   const unavailableModels = new Set<string>();
@@ -168,7 +170,7 @@ export async function translatePendingProducts(limit = 30): Promise<{ translated
       AND (t.status IS DISTINCT FROM 'failed' OR t.updated_at < now() - interval '6 hours')
       ORDER BY CASE WHEN t.status='failed' THEN 1 ELSE 0 END,
         length(p.name) ASC, COALESCE(t.updated_at, '1970-01-01'::timestamptz) ASC, p.asin ASC`);
-  let translated = 0, failed = 0, skipped = 0;
+  let translated = 0, failed = 0, skipped = 0, paused = false;
   // First, translate short titles in groups of five. Full detail translations
   // remain a separate stage; no made-up descriptions are persisted.
   const candidates = rows.filter(row => !(row.status === 'success' && (
@@ -186,7 +188,7 @@ export async function translatePendingProducts(limit = 30): Promise<{ translated
       translated += await saveNamesIfCurrent(entries, result.model, lock);
       console.log(`Translated names: ${translated} in current batch`);
     } catch (error) {
-      if (error instanceof TranslationUnavailable && error.causes.includes('free_quota_exhausted')) break;
+      if (error instanceof TranslationUnavailable && error.causes.includes('free_quota_exhausted')) { paused = true; break; }
       failed += batch.length;
       console.error(`Title batch unavailable: ${error instanceof TranslationUnavailable ? error.causes.join(', ') : 'unavailable'}`);
       // A malformed/limited batch is retried on a later sweep, not every two hours.
@@ -199,12 +201,12 @@ export async function translatePendingProducts(limit = 30): Promise<{ translated
           WHERE product_translations.status <> 'success' OR product_translations.source_hash <> EXCLUDED.source_hash`,
         [row.asin, nameHash(row)]);
       }
-      if (translationFailureStopsBatch(error)) break;
+      if (translationFailureStopsBatch(error)) { paused = true; break; }
     }
   }
   if (translated + failed >= limit || remaining <= 0) {
     console.log(`Translation: ${translated} title(s) updated, ${failed} unavailable this run; details deferred`);
-    return { translated, failed, skipped };
+    return { translated, failed, skipped, paused: paused || remaining <= 0 };
   }
   for (const row of prioritizeDetailCandidates(rows)) {
     // Reload before spending a free inference request: a running backfill may
@@ -222,17 +224,17 @@ export async function translatePendingProducts(limit = 30): Promise<{ translated
       translated++;
       if (translated % 5 === 0) console.log(`Translation: ${translated} ASINs updated in this batch`);
     } catch (error) {
+      if (error instanceof TranslationUnavailable && error.causes.includes('free_quota_exhausted')) { paused = true; break; }
       failed++;
-      if (error instanceof TranslationUnavailable && error.causes.includes('free_quota_exhausted')) break;
       await markDetailTranslationFailed(row.asin, hash, lock);
       // Never overwrite a previous valid translation or output raw remote errors.
       console.error(`Translation failed for ASIN ${row.asin}: ${error instanceof TranslationUnavailable ? error.causes.join(', ') : 'unavailable'}`);
       // Shared quota/network outage: defer the remaining batch. Product-specific errors: continue.
-      if (translationFailureStopsBatch(error)) break;
+      if (translationFailureStopsBatch(error)) { paused = true; break; }
     }
   }
   console.log(`Translation: ${translated} updated, ${failed} failed, ${skipped} up-to-date`);
-  return { translated, failed, skipped };
+  return { translated, failed, skipped, paused: paused || remaining <= 0 };
   } finally {
     try { if (acquired) await lock.query('SELECT pg_advisory_unlock(70400300)'); }
     finally { lock.release(); }

@@ -5,7 +5,7 @@ import { normalizeAmazonInput, collectDetail } from '../ingestion/detail.js';
 import { ingestObservations } from '../ingestion/store.js';
 import { SourceError, isAmazonCaptcha, type Observation } from '../ingestion/source.js';
 import { openNeoManualVerification } from '../ingestion/neo.js';
-import { AMAZON_ACCESS_LOCK } from '../ingestion/source-access.js';
+import { AMAZON_ACCESS_LOCK, recordAmazonPause } from '../ingestion/source-access.js';
 
 export async function enqueueImport(input: unknown, category: unknown, actor: number) {
   let asin: string;
@@ -71,9 +71,7 @@ export async function processNextImport(collector: (asin: string, category: stri
       } catch (error) {
         const state = error instanceof SourceError && ['blocked', 'needs_human'].includes(error.state) ? 'needs_human' : 'failed';
         if (state === 'needs_human') {
-          await client.query(`INSERT INTO source_access_blocks(source,reason)
-            VALUES('amazon.co.jp','Admin ASIN import requires manual Amazon verification')
-            ON CONFLICT(source) DO UPDATE SET reason=EXCLUDED.reason,blocked_at=now()`);
+          await recordAmazonPause(client, 'Admin ASIN import requires manual Amazon verification');
         }
         // Store a source message, never arbitrary SQL/connection errors or secrets.
         const message = error instanceof SourceError ? error.message.slice(0, 1000) : 'Không thể lưu sản phẩm; kiểm tra worker và cơ sở dữ liệu.';

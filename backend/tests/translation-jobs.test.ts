@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { sourceHash, sourceText, translationFailureStopsBatch, prioritizeDetailCandidates } from '../src/translation/jobs.js';
 import { TranslationUnavailable } from '../src/translation/openrouter.js';
+import { nextTranslationDelayMs, TRANSLATION_ACTIVE_DELAY_MS, TRANSLATION_IDLE_DELAY_MS } from '../src/translation/schedule.js';
 
 test('source content hash is stable for unchanged text and changes with Japanese source', () => {
   const row = {
@@ -41,4 +42,13 @@ test('detail translation always tries never-attempted products before repeated f
   ];
   assert.deepEqual(prioritizeDetailCandidates(rows).map(row => row.asin),
     ['A000000002', 'A000000003', 'A000000001']);
+});
+
+test('unattended worker continues productive translation after 30s, respects quota failures', () => {
+  assert.equal(TRANSLATION_ACTIVE_DELAY_MS, 30_000);
+  assert.equal(nextTranslationDelayMs({ translated: 12 }), 30_000);
+  assert.equal(nextTranslationDelayMs({ translated: 1 }), 30_000);
+  assert.equal(nextTranslationDelayMs({ translated: 0 }), TRANSLATION_IDLE_DELAY_MS);
+  assert.equal(nextTranslationDelayMs({ translated: 12, paused: true }), TRANSLATION_IDLE_DELAY_MS,
+    'partial progress followed by exhausted quota must back off');
 });

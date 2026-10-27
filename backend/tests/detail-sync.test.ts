@@ -8,6 +8,7 @@ import { db } from '../src/db/pool.js';
 import { ingestObservations } from '../src/ingestion/store.js';
 import { syncCatalog, seedExistingDetails, processCategoryDetails, acknowledgeSourceAccess } from '../src/ingestion/sync.js';
 import { SourceError, type Observation } from '../src/ingestion/source.js';
+import { claimDueAmazonContinuation, recordAmazonPause, seedAmazonPause } from '../src/ingestion/source-access.js';
 
 const category = 'thuc-pham-bo-sung';
 after(async () => { await db.end(); });
@@ -124,6 +125,46 @@ test('daily sync refreshes existing ASINs on discovery errors, records backlog a
     assert.deepEqual(listingOpened, ['https://www.amazon.co.jp/gp/bestsellers/hpc/3457072051?pg=2']);
     assert.equal((await isolated.query('SELECT count(*)::int AS n FROM source_access_blocks')).rows[0].n, 1);
     await acknowledgeSourceAccess('ALL', true, isolated);
+    // 30s unattended continuation is durable, atomic and never clears Amazon.
+    await recordAmazonPause(isolated, 'CAPTCHA test');
+    const initial = await isolated.query('SELECT continuation_due_at FROM source_access_blocks WHERE source=$1', ['amazon.co.jp']);
+    await recordAmazonPause(isolated, 'same CAPTCHA');
+    assert.deepEqual((await isolated.query('SELECT continuation_due_at FROM source_access_blocks WHERE source=$1',
+      ['amazon.co.jp'])).rows[0].continuation_due_at, initial.rows[0].continuation_due_at, 'repeat denial must not reset deadline');
+    await isolated.query(`UPDATE source_access_blocks SET continuation_due_at=now()+interval '30 seconds'
+      WHERE source='amazon.co.jp'`);
+    assert.equal(await claimDueAmazonContinuation(isolated), false);
+    await isolated.query(`UPDATE source_access_blocks SET continuation_due_at=now()-interval '1 second'
+      WHERE source='amazon.co.jp'`);
+    assert.equal(await claimDueAmazonContinuation(isolated), true);
+    assert.equal(await claimDueAmazonContinuation(isolated), false, 'two workers cannot claim the same deadline');
+    await seedAmazonPause(isolated);
+    assert.equal(await claimDueAmazonContinuation(isolated), false, 'restart must not repeat an acknowledged timeout');
+    assert.equal((await isolated.query('SELECT count(*)::int AS n FROM source_access_blocks')).rows[0].n, 1);
+    await acknowledgeSourceAccess('ALL', true, isolated);
+    assert.equal((await isolated.query('SELECT count(*)::int AS n FROM source_access_blocks')).rows[0].n, 0);
+    // Existing blocked ASINs from pre-migration installations get a deadline.
+    await isolated.query(`UPDATE product_detail_queue SET state='needs_human' WHERE asin=$1`, [child]);
+    await seedAmazonPause(isolated);
+    assert.equal((await isolated.query('SELECT continuation_due_at IS NOT NULL AS queued FROM source_access_blocks')).rows[0].queued, true);
+    await acknowledgeSourceAccess('ALL', true, isolated);
+    // Startup and owner ACK race over separate DB sessions. Seeding must wait
+    // for the same advisory mutex and must not resurrect an acknowledged block.
+    await isolated.query(`UPDATE product_detail_queue SET state='needs_human' WHERE asin=$1`, [child]);
+    const owner = new pg.Client({ connectionString: config.databaseUrl });
+    await owner.connect();
+    try {
+      await owner.query(`SET search_path TO ${namespace}`);
+      await owner.query('SELECT pg_advisory_lock(70400200)');
+      const seedWhileAcking = seedAmazonPause(isolated);
+      try {
+        assert.equal(await acknowledgeSourceAccess('ALL', true, owner), 1);
+      } finally {
+        await owner.query('SELECT pg_advisory_unlock(70400200)');
+      }
+      await seedWhileAcking;
+      assert.equal((await isolated.query('SELECT count(*)::int AS n FROM source_access_blocks')).rows[0].n, 0);
+    } finally { await owner.end(); }
   } finally {
     await isolated.query('RESET search_path');
     await isolated.query(`DROP SCHEMA ${namespace} CASCADE`);
