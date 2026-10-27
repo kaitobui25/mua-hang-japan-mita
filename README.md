@@ -33,6 +33,13 @@ Mở **http://127.0.0.1:3000**. API tại `http://127.0.0.1:4000/api/health`, Po
 - `cd backend; npx tsx src/worker.ts import` nạp snapshot quan sát thật từ `backend/data/observed-amazon.json`, chỉ để chạy local trong trường hợp nguồn tạm lỗi. Mỗi giá có `observedAt` nguồn; **giá quá 24 giờ sẽ bị khóa checkout**.
 - Các biến thể ASIN chỉ được gộp khi nguồn cung cấp `parentAsin` hoặc `sourceProductId` rõ ràng; không suy đoán từ tên sản phẩm. Database cũ không được tự động ghép nhóm, nên chưa nhất thiết có biến thể đang hiển thị sau nâng cấp.
 
+### Ảnh, mô tả và bản dịch tiếng Việt
+
+- Worker PC lấy trang chi tiết mỗi ASIN (bao gồm backlog từ các lần trước), lưu tối đa 5 **URL** ảnh thực, các phần đặc điểm/thành phần/cách dùng/thông số/cảnh báo và thuộc tính biến thể có bằng chứng. Lượt xử lý tối đa 200 ASIN độc nhất **trên mỗi danh mục**, gồm ASIN con; refresh khi lịch 04:00 JST chạy thực tế. Nếu Amazon chặn hoặc thiếu dữ liệu, giữ snapshot tốt cuối cùng và ghi lỗi.
+- Worker PC dịch **sau khi** có nội dung nguồn bằng OpenRouter qua `OPENROUTER_API_KEY` ở môi trường Windows (không đưa key vào `.env.example`, Git, VPS hay log). Thử năm model `:free` theo đúng thứ tự đã chốt trong [plan 07](.agents/plan/07_mita_product_detail_enrichment_grill_plan.md); 429, timeout, response lỗi hoặc bản dịch sai cấu trúc sẽ chuyển sang model kế tiếp. Không tự trả phí. Bản dịch hợp lệ tự hiển thị; tên Nhật gốc vẫn giữ trong DB để truy vết và tìm kiếm.
+- Chạy riêng bản dịch khi không cần scrape: `cd backend; npm run worker:translate`. Mỗi lượt dịch xử lý tối đa 30 sản phẩm; chạy lại sau khi model free hết giới hạn. Nếu cả năm model đều lỗi, website vẫn dùng tên gốc và không tự tạo thông tin sản phẩm giả. Worker không tự chạy khi PC tắt.
+- **Phát hành VPS:** các bảng mới `product_images`, `product_details`, `product_translations`, `product_detail_queue` phải được tạo bằng migration có kiểm soát **trước** khi push commit `[deploy]`; GitHub Actions hiện chỉ build/deploy code và không migrate PostgreSQL. Không chạy dịch tại VPS và không mở API key OpenRouter cho web/backend VPS.
+
 Trang Amazon có thể hiển thị dữ liệu và giá khác giữa phiên, khu vực và thời điểm. Mita chưa xác minh quyền công khai ảnh, nội dung và giá lấy từ Amazon; `rightsStatus: local_test_only` chỉ dành cho môi trường phát triển, không công bố website thương mại khi chưa có quyền sử dụng và quy trình kiểm duyệt hàng nhập khẩu.
 
 ## Luồng thử nghiệm

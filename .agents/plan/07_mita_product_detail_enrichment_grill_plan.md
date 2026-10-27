@@ -1,7 +1,7 @@
 # 07 — Implement: Gallery, tiếng Việt OpenRouter, mô tả và biến thể Amazon
 
-**Ngày:** 27/10/2026 JST  
-**Trạng thái:** `implementing` — owner đã chốt Q1–Q9; ngày 27/10/2026 đổi Q1 từ OpenCode sang **OpenRouter trực tiếp trên PC**, bắt đầu triển khai.  
+**Ngày:** 27/10/2026 JST
+**Trạng thái:** `implemented-local` — owner đã chốt Q1–Q9, đổi Q1 sang **OpenRouter trực tiếp trên PC**; đã code, commit và nghiệm thu local. Chưa push/deploy Hermes; production cần migration riêng trước `[deploy]`.
 **Phạm vi:** hai danh mục catalog hiện tại; giữ hệ thống Mita Next.js/Fastify/PostgreSQL và worker trên Windows.
 
 ## 1. Yêu cầu đã xác định
@@ -82,4 +82,11 @@
 
 **Điều kiện chạy dịch thật:** `OPENROUTER_API_KEY` trên PC hiện có mặt; chưa xác thực thành công API cho từng model. Cần thử trực tiếp trên mẫu sản phẩm, xác nhận quota, ghi lỗi sạch không lộ khóa. Tất cả gọi từ PC, không lưu khóa trong DB/Git, không chạy dịch tại VPS.
 
-**Phạm vi hiện tại:** triển khai theo thứ tự từng milestone, test + commit từng mốc; không đưa migration trực tiếp vào CI `[deploy]` vì CI chỉ rollback code, không rollback DB.
+## 8. Kết quả implement local 27/10/2026
+
+- Commit theo mốc: `852ff61` (plan/ADR/glossary), `bb39493` (OpenRouter 5-model fallback), `160dc05` (gallery và selectors), `c931729` (PostgreSQL/detail ingestion/translation worker/API/tests).
+- Backend **56/56 tests PASS**, TypeScript + production backend build PASS. Frontend TypeScript + Next.js production build PASS. Schema additive được thử migrate lặp lại trên DB disposable; local `start-local.ps1` đã chạy migration và ứng dụng.
+- OpenRouter API key trên Windows được xác nhận HTTP 200. Bản dịch mẫu có lúc thành công bằng model thứ 2; thử ASIN thật `B09G2LRY98` gặp lần lượt 429 / timeout / 429 / 403 / timeout ở 5 model, không ghi nội dung dịch giả; cần quota/provider hoạt động để tự sinh bản dịch tiếp theo.
+- BrowserOS Neo MCP mở thành công `http://127.0.0.1:3000/san-pham/B09G2LRY98`. API local có 122 sản phẩm; HTTP detail cho ASIN này quan sát được 1 ảnh hợp lệ nên gallery tối đa 5 ảnh chưa có dữ liệu thực tế đủ 5 để nghiệm thu trực quan.
+- Worker Windows vẫn theo lịch 04:00 JST khi đang hoạt động. `npm run worker:translate` chạy lại tác vụ dịch trên PC độc lập với đồng bộ nguồn. Khi không có bản dịch hiện hành hợp lệ, UI vẫn hiển thị tên nguồn để giữ catalog hoạt động.
+- **Chưa chạy migration trên PostgreSQL VPS**, chưa đẩy code lên GitHub/triển khai Hermes. Pipeline `[deploy]` không tự migrate DB, cần cập nhật schema riêng trước khi phát hành code lên production. Không có backup theo quyết định owner.
