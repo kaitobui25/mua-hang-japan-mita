@@ -96,7 +96,7 @@ Tổng tiền hàng VND được ghi trong đơn thử nghiệm; chỉ dùng đ�
 _Tránh_: Doanh thu, lãi hoặc dòng tiền thực tế
 
 **Ẩn sản phẩm**:
-Quyết định của chủ cửa hàng không hiển thị một ASIN trên catalog công khai và không cho checkout; scraper vẫn có thể ghi nhận giá nhưng không tự bật lại sản phẩm. Có thể `Hiện lại`.
+**Q6 đã chốt:** thao tác “Xóa” trong Admin chỉ đặt cờ ẩn, không xóa bản ghi, lịch sử giá hay tham chiếu đơn. ASIN ẩn không xuất hiện trong catalog/chi tiết công khai và bị chặn checkout; scraper hoặc thao tác thêm lại ASIN vẫn có thể cập nhật dữ liệu nguồn nhưng **không tự bật lại**. Chỉ chủ cửa hàng có thể chọn `Hiện lại`; sau đó sản phẩm vẫn phải đáp ứng điều kiện bán và giá mới trong 24 giờ.
 _Tránh_: Xóa vĩnh viễn bản ghi, xóa lịch sử đơn
 
 **Sản phẩm đủ điều kiện hiển thị**:

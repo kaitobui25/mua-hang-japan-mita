@@ -1,7 +1,7 @@
 # Mita Japan — Grill with Docs: Admin tối giản
 
 **Ngày:** 27/10/2026 (JST)
-**Trạng thái:** `draft / Q1–Q5 accepted / awaiting Q6` — năm câu hỏi đầu đã được owner chốt; cách xử lý việc xóa/ẩn sản phẩm đang chờ Q6, chưa triển khai code.
+**Trạng thái:** `draft / Q1–Q6 accepted / awaiting Q7` — sáu câu hỏi đầu đã được owner chốt; việc cho phép chạy đồng bộ Amazon thủ công đang chờ Q7, chưa triển khai code.
 **Ưu tiên:** chủ cửa hàng chưa quen quản trị website, cần giao diện dễ hiểu, ít thao tác, không thêm tính năng chỉ vì các website khác có.
 **Căn cứ:** `GLOSSARY.md`, ADR 0001–0008, `docs/adr/0009-minimal-owner-admin.md`, `docs/adr/0010-admin-catalog-and-pricing-rules.md`, code backend/frontend hiện tại. Không dùng Docker.
 
@@ -19,7 +19,7 @@
 1. **Q3 — ĐÃ CHỐT: một tài khoản chủ cửa hàng duy nhất trong Admin MVP**; không tạo tính năng thêm nhân viên, quản lý nhiều tài khoản hoặc màn phân quyền.
 2. **Bốn mục menu cố định:** `Tổng quan`, `Sản phẩm`, `Đơn hàng`, `Cấu hình`.
 3. **Một việc chính trên mỗi màn**; nút `Lưu`, `Thêm`, `Ẩn/Hiện` chỉ xuất hiện ở vị trí cần thiết. Tránh bảng nhiều cột, popup liên tiếp, biểu đồ không phục vụ quyết định.
-4. **Đề xuất cho Q6:** không xóa vật lý sản phẩm vì scraper có thể nhập lại và dữ liệu có liên quan lịch sử đơn. “Xóa khỏi cửa hàng” = **Ẩn** (có thể khôi phục); ingestion không được tự bật lại. **Chưa chốt với owner.**
+4. **Q6 — ĐÃ CHỐT (A):** thao tác “Xóa khỏi cửa hàng” **chỉ ẩn sản phẩm**, không xóa vật lý ASIN hoặc lịch sử giá/đơn. Có thể `Hiện lại`; mọi lần đồng bộ hoặc nhập ASIN không được tự bỏ ẩn.
 5. **Không sửa giá Amazon bằng tay** như thể giá nguồn đã được xác minh. Chỉ quản lý tỷ giá/phụ phí, còn giá JPY/timestamp đến từ observation hợp lệ.
 6. **Không gọi thống kê đơn mô phỏng là doanh thu thực thu**; không hiển thị trạng thái “đã thanh toán” nếu chưa có cổng thanh toán và xác nhận giao dịch.
 7. Không đưa Admin ra internet, không public quyền hình ảnh/nội dung Amazon trước khi xác minh quyền sử dụng và điều kiện bán/nhập khẩu.
@@ -58,6 +58,7 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 - Thẻ 1: **Đơn mô phỏng 7 ngày** (đếm `orders`, không đồng nghĩa doanh thu).
 - Thẻ 2: **Số sản phẩm đang hiển thị** (không đếm bản ẩn; ghi rõ các sản phẩm chưa đủ điều kiện checkout vẫn có thể hiển thị).
 - Một dòng: lần đồng bộ Amazon gần nhất (`success`/`partial`/`failed`/`needs_human`, số lỗi, thời điểm thực tế), có liên kết `Xem lỗi` nếu cần; khi worker chưa chạy thì nói rõ `Chưa có lần chạy xác nhận`.
+- **Q7 đang chờ owner:** Tổng quan chỉ **xem trạng thái đồng bộ theo lịch tự động** (A, không thêm nút) hay có thêm một nút `Đồng bộ Amazon ngay` (B, tạo job theo quyền owner và giới hạn chạy)? Chưa triển khai thao tác này khi Q7 chưa chốt.
 - Bảng ngắn tối đa 5 **đơn mô phỏng mới nhất**: thời gian, mã đơn, tên, giá trị hàng (VND), xem chi tiết.
 - Không cần biểu đồ doanh thu, tỷ lệ chuyển đổi, khách mới, biểu đồ nguồn traffic trong MVP.
 
@@ -65,7 +66,8 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 
 - Ô tìm theo **ASIN hoặc tên**; một bộ lọc danh mục và một bộ lọc `Đang hiện / Đang ẩn`.
 - Bảng 5–6 cột: Ảnh nhỏ, Tên/ASIN, Danh mục, Giá VND tham khảo, Trạng thái, `Ẩn` / `Hiện lại`.
-- **Ẩn** có xác nhận ngắn; **Hiện lại** chỉ khôi phục khả năng hiển thị, **không** bỏ qua kiểm tra giá quá 24 giờ hoặc điều kiện được phép bán.
+- **Q6 đã chốt:** `Ẩn` có xác nhận ngắn; giữ bản ghi, giá lịch sử và tham chiếu từ đơn; xóa khỏi kết quả catalog công khai và chặn checkout tại API (kể cả khi khách biết ASIN). Không tự bỏ ẩn sau sync, kể cả khi owner nhập lại ASIN đã có.
+- **Hiện lại** chỉ gỡ cờ ẩn thủ công; **không** bỏ qua quyền sử dụng nội dung, điều kiện bán, hàng còn hay giá quá 24 giờ. Ghi audit thời gian và tài khoản owner cho cả hai thao tác.
 - **Thêm sản phẩm (Q1 đã chốt: A)**: owner dán **URL sản phẩm Amazon.co.jp hoặc ASIN**, chọn một trong hai danh mục hiện có, rồi bấm `Thêm`. Backend chuẩn hóa URL và ASIN, đưa yêu cầu vào hàng đợi nhập; giao diện chỉ báo `Đã tiếp nhận yêu cầu` thay vì `Đã thêm thành công` khi chưa có kết quả. Worker đọc dữ liệu nguồn và upsert theo ASIN sau khi kiểm tra đủ trường bắt buộc; trạng thái hiển thị là `pending`, `running`, `succeeded`, `failed` hoặc `needs_human`. **Chưa có collector chi tiết ASIN riêng trong code**, cần triển khai adapter chuyên biệt và kiểm thử, không tạo sản phẩm giả khi nguồn lỗi.
 - ASIN đã tồn tại: mở sản phẩm tương ứng; yêu cầu trùng đang chạy: hiện trạng thái cũ thay vì tạo công việc thứ hai. Không cho nhập tay tên, ảnh hay giá để tránh mâu thuẫn với nguồn Amazon.
 - Sản phẩm từ sync hằng ngày và từ thao tác “Thêm” sử dụng cùng kho products, không tạo kho dữ liệu khác.
@@ -106,16 +108,16 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 | Domain object | Tối thiểu cần có | Bất biến quan trọng |
 | --- | --- | --- |
 | `AdminAccount` / `AdminSession` | **Q3 đã chốt: một tài khoản owner duy nhất**, mật khẩu hash và phiên đăng nhập có hạn | Không tạo thêm tài khoản qua Admin MVP, không lưu mật khẩu dạng rõ; mọi admin mutation xác thực phía backend |
-| `ProductVisibility` | `products.admin_hidden_at` nullable (+ lý do nếu cần) | Worker không bỏ ẩn; checkout không chấp nhận sản phẩm đang ẩn |
+| `ProductVisibility` | `products.admin_hidden_at` nullable (+ lý do nếu cần) | Q6 đã chốt: worker và job nhập ASIN không được bỏ ẩn; sản phẩm ẩn không xuất hiện trong catalog/detail công khai và checkout không chấp nhận ASIN ẩn |
 | `CatalogImportRequest` | ID, category, ASIN, state, created_at, error | Q1 đã chốt: chỉ nhập từ Amazon URL/ASIN; một ASIN hợp lệ, trạng thái pending/running/succeeded/failed/needs_human; không xác nhận thành công trước khi nguồn đủ dữ liệu |
 | `PricingPolicy` | Bản ghi cấu hình đang hoạt động, version, **tỷ giá VND/JPY theo Q4 và phụ phí dịch vụ theo Q5, cả hai sửa được**, updated_at | Một lần bấm `Lưu` tạo một version nguyên tử cho cả hai thông số; thay đổi giá chỉ cho đơn mới, snapshot đơn giữ nguyên; không tự lấy tỷ giá |
 | `AdminAuditEvent` | Actor, action, object, before/after hữu ích, timestamp | Ghi thay đổi giá, ẩn/hiện và yêu cầu nhập; không lưu password/secret |
 
 **Các chuyển trạng thái cần có:**
 
-- Sản phẩm về hiển thị: `visible ↔ hidden_by_admin` độc lập với `sale_status=ready/pending_review` và `price_fresh/stale`. `visible` **không** có nghĩa `allowed_to_checkout`.
+- Sản phẩm về hiển thị (Q6 đã chốt): `visible ↔ hidden_by_admin` **chỉ do thao tác owner thay đổi**, độc lập với `sale_status=ready/pending_review` và `price_fresh/stale`. `visible` **không** có nghĩa `allowed_to_checkout`. Tái đồng bộ có thể làm mới giá khi ẩn nhưng không thay đổi cờ ẩn; không DELETE bản ghi.
 - Yêu cầu thêm ASIN: `pending → running → succeeded | failed | needs_human`; trùng ASIN thì thông báo đã tồn tại/đang xử lý, không tạo bản nhân đôi.
-- Đồng bộ: chỉ đọc trạng thái thật từ `sync_runs`; chưa thêm nút điều khiển lịch/chạy thủ công trong MVP để tránh thao tác rủi ro.
+- Đồng bộ: chỉ đọc trạng thái thật từ `sync_runs`; **nút chạy thủ công đang chờ Q7**. Dù chọn phương án nào, phải xác minh lịch tự động chạy đúng và không coi lần chạy đã được lên lịch là thành công.
 - Đơn (Q2 đã chốt): `simulation_created` **chỉ đọc toàn bộ**; không tạo API cập nhật ghi chú/trạng thái và không dựng trạng thái đã trả tiền.
 - Chính sách giá (Q4 + Q5): owner chỉnh một hoặc cả hai giá trị rồi bấm `Lưu thay đổi`, `v1 → v2` một lần; `Order` giữ snapshot giá/tỷ giá/phụ phí thuộc cùng policy version tại thời điểm tạo.
 
@@ -135,7 +137,7 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 | --- | --- | --- |
 | **A. Đăng nhập + khung Admin** | Login duy nhất một owner theo Q3, session, middleware API, sidebar 4 mục, logout | Không đăng nhập mở `/admin`/`/api/admin` bị từ chối; thử sai password rate-limited; không có màn quản lý user |
 | **B. Xem dữ liệu thật** | Dashboard + danh sách/chi tiết đơn mô phỏng **chỉ đọc theo Q2** và danh sách sản phẩm chỉ đọc | Số liệu khớp SQL; API đơn hàng không có mutation; không hiển thị doanh thu thật; thông tin đơn chỉ admin xem |
-| **C. Quản lý catalog** | Ẩn/hiện bền qua sync, thêm ASIN Amazon bằng job riêng (Q1 đã chốt), nhật ký lỗi | Hidden không lọt catalog/checkout; cập nhật tự động không bật lại; trùng ASIN không tạo job trùng; lỗi import không tạo hàng giả |
+| **C. Quản lý catalog** | Ẩn/hiện thay vì xóa theo Q6, bền qua sync và thêm lại ASIN; thêm ASIN Amazon bằng job riêng (Q1 đã chốt), nhật ký lỗi | Hidden không lọt catalog/detail công khai/checkout; cập nhật tự động và import không bật lại; lịch sử giữ nguyên; trùng ASIN không tạo job trùng; lỗi import không tạo hàng giả |
 | **D. Chính sách giá** | **Hai trường tỷ giá VND/JPY và phụ phí (%) đều chỉnh được theo Q4 + Q5**, một nút `Lưu thay đổi`, một policy version PostgreSQL, preview và audit | Một lần lưu cập nhật đồng thời cả hai; dữ liệu sai bị từ chối; checkout lấy cùng version; đơn cũ giữ nguyên; giá stale vẫn bị khóa |
 | **E. Hoàn thiện** | Tests tích hợp, accessibility cơ bản, backup/restore dev, hướng dẫn sử dụng một trang | Build/lint/test pass; thao tác nghiệp vụ tối thiểu; kiểm tra localhost sau restart |
 
@@ -152,8 +154,9 @@ Không dashboard nhiều biểu đồ, CRM, tồn kho Nhật, thanh toán/refund
 - **Q3 — ĐÃ CHỐT ngày 27/10/2026:** **A — một tài khoản chủ cửa hàng duy nhất**; không có tài khoản nhân viên, không có quản lý user hay RBAC trong Admin MVP. Việc thay đổi mật khẩu/khôi phục quyền truy cập cần quy trình thiết lập an toàn, không hardcode credentials.
 - **Q4 — ĐÃ CHỐT ngày 27/10/2026:** **A — owner tự nhập tỷ giá VND/JPY và nhấn Lưu trong Admin**; không tự đồng bộ qua API. Giá sản phẩm/đơn mới dùng tỷ giá vừa lưu; đơn cũ giữ nguyên snapshot. Đây là tỷ giá tính giá bán Mita, không phải tỷ giá ngân hàng bắt buộc.
 - **Q5 — ĐÃ CHỐT ngày 27/10/2026:** **B — cho phép sửa phụ phí dịch vụ (%) cùng tỷ giá JPY/VND, chỉ một nút `Lưu thay đổi`**. Mặc định hiện tại là 12%; các đơn cũ không thay đổi. Phụ phí dịch vụ **khác** phí vận chuyển ước tính thu sau.
-- **Q6 — Đang hỏi owner:** Khi bấm “xóa” sản phẩm, **A. Ẩn khỏi cửa hàng và có thể hiện lại** (khuyến nghị; giữ lịch sử và tránh scraper nhập lại ngay) hay **B. Xóa vĩnh viễn bản ghi sản phẩm** (phức tạp do dữ liệu giá/đơn và đồng bộ)? Chưa coi đề xuất A là quyết định đã chốt.
-- **Để vòng Grill tiếp theo:** chốt Q6 trước, sau đó mới xem còn quyết định nào thật sự cần thiết; không hỏi dồn nhiều câu một lúc.
+- **Q6 — ĐÃ CHỐT ngày 27/10/2026:** **A — “Xóa” = Ẩn và có thể Hiện lại**, không hard-delete sản phẩm, giữ lịch sử; đồng bộ Amazon và thao tác thêm ASIN **không được tự gỡ cờ ẩn**. Trạng thái ẩn chặn catalog công khai và checkout ở backend.
+- **Q7 — Đang hỏi owner:** **A. Chỉ hiển thị kết quả lần đồng bộ tự động gần nhất** (không nút mới, khuyến nghị cho Admin tối giản) hay **B. Thêm nút `Đồng bộ Amazon ngay`** ở Tổng quan, chủ cửa hàng được yêu cầu chạy sớm khi cần? Nếu B cần chống chạy trùng, giới hạn số ASIN/job, chống bấm lặp, phản hồi `running/partial/needs_human` và không vượt HTTP 403/429/CAPTCHA. **Không đánh đồng nút này với nút “Thêm một ASIN” đã chốt ở Q1.**
+- **Để vòng Grill tiếp theo:** chốt Q7 trước, không hỏi dồn nhiều câu một lúc.
 
 ## 9. Tiêu chí “đủ tốt để sử dụng”
 
