@@ -23,7 +23,7 @@ export function parseOptions(argv) {
     baseUrl: 'https://' + PUBLIC_HOST, connectIp: null, liveDns: false,
     localOnly: false, skipEkaiwa: false, requestsPerStage: 100,
     timeoutMs: 8000, maxP95Ms: null, ekaiwaMaxP95Ms: null,
-    checkHttpRedirect: false, report: null, help: false
+    checkHttpRedirect: false, allowLocalTestOnly: false, report: null, help: false
   };
   const keys = new Map([
     ['--base-url', 'baseUrl'], ['--connect-ip', 'connectIp'],
@@ -34,7 +34,7 @@ export function parseOptions(argv) {
   const flags = new Map([
     ['--live-dns', 'liveDns'], ['--local-only', 'localOnly'],
     ['--skip-ekaiwa', 'skipEkaiwa'], ['--check-http-redirect', 'checkHttpRedirect'],
-    ['--help', 'help']
+    ['--allow-local-test-only', 'allowLocalTestOnly'], ['--help', 'help']
   ]);
   for (let index = 0; index < argv.length; index++) {
     const token = argv[index];
@@ -123,9 +123,9 @@ export function assertDenied(result, label) {
   assert(DENY_STATUSES.has(result.status), label + ': expected 400/403/404/410/421; got ' + result.status);
 }
 
-export function assertVerifiedProduct(product) {
+export function assertVerifiedProduct(product, allowLocalTestOnly = false) {
   assert(product && typeof product === 'object', 'Catalog product must be an object');
-  assert.equal(product.rightsStatus, 'verified', 'Public catalog leaked non-verified rights status');
+  assert((allowLocalTestOnly ? ['verified', 'local_test_only'] : ['verified']).includes(product.rightsStatus), 'Public catalog leaked non-verified rights status');
   assert.equal(typeof product.asin, 'string', 'Catalog item missing ASIN');
 }
 
@@ -231,11 +231,11 @@ export async function run(options, transport = request, log = console.log) {
   });
 
   let publicAsin = null;
-  await check('GET /api/catalog verified-only JSON', async () => {
+  await check(options.allowLocalTestOnly ? 'GET /api/catalog local_test_only permitted JSON' : 'GET /api/catalog verified-only JSON', async () => {
     const { response, data } = await expectJson('/api/catalog?limit=100&page=1');
     assert(Array.isArray(data.items), 'Expected catalog items');
     assert(Number.isInteger(data.total) && data.total >= 0, 'Invalid catalog total');
-    for (const product of data.items) assertVerifiedProduct(product);
+    for (const product of data.items) assertVerifiedProduct(product, options.allowLocalTestOnly);
     publicAsin = data.items[0]?.asin ?? null;
     const pages = Math.ceil(data.total / 100);
     assert(pages <= 50, 'Catalog exceeds 5000 products: explicit QA sampling plan needed');
@@ -243,7 +243,7 @@ export async function run(options, transport = request, log = console.log) {
     for (let page = 2; page <= pages; page++) {
       const next = await expectJson('/api/catalog?limit=100&page=' + page);
       assert(Array.isArray(next.data.items), 'Invalid catalog page ' + page);
-      for (const product of next.data.items) assertVerifiedProduct(product);
+      for (const product of next.data.items) assertVerifiedProduct(product, options.allowLocalTestOnly);
       checked += next.data.items.length;
     }
     assert.equal(checked, data.total, 'Catalog count changed or page omitted products during QA');
@@ -252,12 +252,12 @@ export async function run(options, transport = request, log = console.log) {
   if (publicAsin) {
     await check('Public detail API ' + publicAsin, async () => {
       const { response, data } = await expectJson('/api/catalog/products/' + encodeURIComponent(publicAsin));
-      assertVerifiedProduct(data);
-      for (const variant of data.variants ?? []) assertVerifiedProduct(variant);
+      assertVerifiedProduct(data, options.allowLocalTestOnly);
+      for (const variant of data.variants ?? []) assertVerifiedProduct(variant, options.allowLocalTestOnly);
       return response;
     });
     await check('Public detail HTML ' + publicAsin, () => expectHtml('/san-pham/' + encodeURIComponent(publicAsin)));
-  } else log('SKIP product detail: no verified public catalog item');
+  } else log('SKIP product detail: no public catalog item');
   await check('Unknown catalog product cannot leak', () => deny('/api/catalog/products/__qa_no_such_asin__'));
   await check('GET catalog bad pagination rejected', async () => {
     const response = await fetchMita('/api/catalog?limit=101');

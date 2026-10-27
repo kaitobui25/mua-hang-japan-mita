@@ -17,7 +17,9 @@ test('options require explicit pre-DNS IP or live-DNS mode', () => {
 test('explicit rights and denied statuses fail closed', () => {
   assertVerifiedProduct({ asin: 'B000000001', rightsStatus: 'verified' });
   assert.throws(() => assertVerifiedProduct({ asin: 'B000000001', rightsStatus: 'local_test_only' }), /leaked/);
+  assertVerifiedProduct({ asin: 'B000000001', rightsStatus: 'local_test_only' }, true);
   assert.throws(() => assertVerifiedProduct({ asin: 'B000000001', rightsStatus: 'unverified' }), /leaked/);
+  assert.throws(() => assertVerifiedProduct({ asin: 'B000000001', rightsStatus: 'unverified' }, true), /leaked/);
   assertDenied({ status: 404 }, '/admin');
   assert.throws(() => assertDenied({ status: 200 }, '/admin'), /expected/);
   assert.equal(percentile([10, 20, 30, 40], 0.95), 40);
@@ -158,4 +160,12 @@ test('suite fails if local_test_only appears in public JSON', async () => {
   assert.equal(report.passed, false);
   assert(report.cases.some(item => !item.pass && item.label.includes('verified-only')));
   assert.equal(report.benchmark.length, 0);
+});
+
+test('explicit preview mode permits local_test_only without permitting unverified', async () => {
+  const mode = parseOptions(['--local-only', '--base-url', 'http://127.0.0.1:9999',
+    '--skip-ekaiwa', '--requests-per-stage', '2', '--allow-local-test-only']);
+  const mock = fakeTransport({ leakRights: true });
+  const report = await run(mode, mock.transport, () => {});
+  assert.equal(report.passed, true);
 });

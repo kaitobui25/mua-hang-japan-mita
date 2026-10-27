@@ -22,7 +22,7 @@ Trên VPS: Ubuntu 24.04, **giữ VPS 1 GiB RAM**, Node `v22.23.4` riêng ở `/o
 
 `mita-web.service` giới hạn memory 256 MiB và Node heap 192 MiB; `mita-api.service` giới hạn 180 MiB và heap 128 MiB. PostgreSQL và hai dịch vụ Next/Fastify cùng chia sẻ RAM với E-KAIWA, Hermes Gateway và cron trading; nếu OOM, swap I/O liên tục hoặc các dịch vụ cũ chậm đi thì **dừng Mita trước**, không nâng VPS hoặc dừng E-KAIWA trái yêu cầu owner.
 
-Website giai đoạn 1 là **public read-only**: Caddy chỉ cho API đọc catalog, chặn `/admin`, `/api/admin`, `/thanh-toan`, các API riêng, POST checkout; backend còn tắt checkout. Admin chỉ mở qua SSH về localhost. `rights_status=local_test_only` **không được công bố**; sau migration có 122 sản phẩm loại này nên khách nhìn thấy **0 sản phẩm**, đúng theo kiểm soát quyền nội dung.
+Website là **public read-only**: Caddy chỉ cho API đọc catalog, chặn `/admin`, `/api/admin`, `/thanh-toan`, các API riêng, POST checkout; backend vẫn tắt checkout. Admin chỉ mở qua SSH về localhost. **Owner đã thay đổi chính sách công bố ngày 27/10/2026:** mục Admin → Cấu hình → **Ẩn sản phẩm local_test_only**, mặc định **OFF** (công bố `local_test_only` và `verified`); **ON** chỉ công bố `verified`. Trường `rights_status` trong `products` **không bị sửa**. Nhóm `unverified` và sản phẩm `admin_hidden_at IS NOT NULL` luôn bị ẩn. Việc OFF không chứng minh quyền sử dụng ảnh/nội dung Amazon.
 
 ## Khởi động / dừng worker trên PC (thủ công)
 
@@ -49,6 +49,8 @@ ssh -N -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=
 
 Mở **`http://127.0.0.1:3100/admin/login`** trên **chính PC**. Truy cập login qua tunnel đã được kiểm chứng HTTP 200; session chưa xác thực trả 401. Caddy public không forward Admin. Không thay đổi `trustProxy`, không allow Origin tùy ý. Port local 3100 phải được giữ đúng vì API hiện xác minh Origin `127.0.0.1:3100` khi ghi Admin.
 
+Ở **Admin → Cấu hình**, switch *Ẩn sản phẩm local_test_only* lưu tức thì vào bảng singleton `catalog_settings` trong PostgreSQL VPS (có version kiểm soát sửa đồng thời và `admin_audit_events`). **OFF (mặc định)** hiện dữ liệu Amazon đã quét trên site; **ON** ẩn sản phẩm này, không xóa dữ liệu. Không cần restart khi đổi switch. Chỉ dùng Admin qua tunnel và phải đăng nhập owner. Không thay đổi `PUBLIC_READ_ONLY=1`: checkout luôn bị chặn.
+
 ## Kiểm tra production và xử lý sự cố
 
 Tại PowerShell PC:
@@ -56,7 +58,7 @@ Tại PowerShell PC:
 ```powershell
 curl.exe -I https://mitajapanshop.duckdns.org/
 curl.exe -I https://ekaiwa.duckdns.org/
-node scripts/test-vps-smoke.mjs --live-dns --check-http-redirect --requests-per-stage 100
+node scripts/test-vps-smoke.mjs --live-dns --allow-local-test-only --check-http-redirect --requests-per-stage 100
 node --test scripts/test-vps-selftest.mjs
 # Chỉ dùng khi thật sự cần đặt lại A record VPS; script từ chối tự phát hiện IP PC:
 ./scripts/duckdns.ps1 -Ip 217.142.225.255
@@ -73,6 +75,7 @@ sudo -n journalctl -u mita-web.service -n 30 --no-pager
 sudo -n journalctl -u mita-api.service -n 30 --no-pager
 sudo -n caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 sudo -n -u postgres psql -d mita -X -c 'SELECT rights_status,count(*) FROM products GROUP BY 1;'
+sudo -n -u postgres psql -d mita -X -c 'SELECT version,hide_local_test_only FROM catalog_settings WHERE id=1;'
 ```
 
 Caddy **site Mita** là `/etc/caddy/mita.caddy`, được import vào `/etc/caddy/Caddyfile` hiện phục vụ E-KAIWA. Catch-all cổng 443 trả 421 cho Host giả, không cho phép chui qua Admin. Khi chỉnh file phải `caddy validate` rồi `systemctl reload caddy`, thử lại **cả hai tên miền**; không ghi đè site E-KAIWA. Chạy song song Next/API mới dưới release `/opt/mita/releases/<release-id>/`, chỉ chuyển symlink `/opt/mita/current` sau khi build và smoke test thành công. Web artifact nên build trên Ubuntu Linux x64 với Node>=22.12 như `deploy/mita/build-web-release.sh`; không dùng Windows `node_modules` để chạy trên VPS. Bản đầu đã được smoke-test với Next standalone code build trên PC và `npm ci --omit=dev` trên Linux.
@@ -86,8 +89,14 @@ Caddy **site Mita** là `/etc/caddy/mita.caddy`, được import vào `/etc/cadd
 - PostgreSQL migrated bằng **direct transaction** từ PC: 122 `products` (`local_test_only`), 371 `price_observations`, 4 `sync_runs`, 3 `orders` (mô phỏng), 4 `order_items`, 1 `admin_accounts`; các bảng được đối chiếu số hàng trước commit, không làm thay đổi DB nguồn. Worker PC và SSH tunnel hoạt động với PostgreSQL VPS.
 - Chạy đủ **29/29 backend tests**, 9/9 QA selftests, frontend typecheck, backend build. Node18 hệ thống và E-KAIWA không thay đổi.
 
+## Cập nhật catalog switch ngày 27/10/2026
+
+- Đã tạo release `/opt/mita/releases/20261027-localtest-toggle` và chuyển `/opt/mita/current` đến release này. PostgreSQL được bổ sung bảng `catalog_settings` (owner `mita_app`, `version=1`, `hide_local_test_only=false`), **không sửa `rights_status` của 122 hàng hiện có** và không backup.
+- Public API `/api/catalog` đã trả **122 sản phẩm** khi OFF (hiện tất cả là `local_test_only`); checkout vẫn `canCheckout=false`. Admin/checkout public vẫn 404; TLS và E-KAIWA hoạt động. **65/65 public QA PASS**, benchmark 100 request/tầng 1/5/10/19 khách, p95 mức 19 **399ms**, lỗi 0; 30/30 backend tests và 10/10 QA selftests PASS.
+- Trường hợp ON, chạy QA mặc định (chỉ `verified`); trường hợp OFF, thêm `--allow-local-test-only`. Đây là công tắc công bố nội dung, **không phải xác minh bản quyền**. Nguồn/ảnh/mô tả Amazon phải đáp ứng quyền sử dụng và điều khoản tương ứng; không tự đổi status thành `verified`.
+
 ## Không backup, giới hạn hiện tại
 
 Theo quyết định owner: **không lập lịch hoặc tạo backup**; không có khả năng khôi phục dữ liệu mới nếu VPS/đĩa/DB hỏng. Thư mục dữ liệu local cũ vẫn còn sau migration nhưng **không đồng bộ** và **không phải backup** của production. Không chạy `migrate-vps.ps1 -Apply` lần thứ hai: đây chỉ là tiện ích chuyển ban đầu và từ chối bảng target đã có dữ liệu.
 
-Checkout vẫn đóng và danh mục hiện rỗng vì quyền nội dung chưa verified. Lịch scrape chỉ chạy khi worker PC và SSH tunnel đang được bật thủ công; lần quét lúc 04:00 JST tiếp theo **chưa được chứng minh thành công**, phải kiểm tra `sync_runs` sau thời điểm đó. Việc chạy tải 19 người trong vài vòng không chứng minh chắc chắn độ ổn định 24/7; cần theo dõi lâu dài RAM/swap/OOM, PostgreSQL connection và E-KAIWA.
+Checkout vẫn đóng. Catalog hiện có 122 sản phẩm công khai do owner chủ động chọn OFF; trạng thái quyền vẫn `local_test_only`. Lịch scrape chỉ chạy khi worker PC và SSH tunnel đang được bật thủ công; lần quét lúc 04:00 JST tiếp theo **chưa được chứng minh thành công**, phải kiểm tra `sync_runs` sau thời điểm đó. Việc chạy tải 19 người trong vài vòng không chứng minh chắc chắn độ ổn định 24/7; cần theo dõi lâu dài RAM/swap/OOM, PostgreSQL connection và E-KAIWA.

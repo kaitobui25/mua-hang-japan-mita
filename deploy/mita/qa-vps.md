@@ -11,7 +11,7 @@ node --test ./scripts/test-vps-selftest.mjs
 node ./scripts/test-vps-smoke.mjs --help
 ~~~
 
-The self-test uses a mock gateway and a loopback-only HTTP transport check; it makes no external network requests. It validates explicit target selection, rejection of leaked local_test_only rows, denial of private routes and the 1/5/10/19 client limit.
+The self-test uses a mock gateway and a loopback-only HTTP transport check; it makes no external network requests. It validates explicit target selection, rejection of unverified rows, default strict rights mode and explicit `--allow-local-test-only` mode, denial of private routes and the 1/5/10/19 client limit.
 
 For the HTTP staging Caddy listener on PC loopback, run:
 
@@ -48,12 +48,12 @@ node ./scripts/test-vps-smoke.mjs --connect-ip 217.142.225.255 --check-http-redi
 
 This requires Caddy to serve a valid certificate for mitajapanshop.duckdns.org even before DNS cutover. **Do not add -k, disable certificate verification, change DuckDNS, or change Caddy to make a failing test pass.** If certificate issuance is not yet possible, record the TLS failure and postpone public acceptance until the certificate is genuinely valid.
 
-After cutover, replace --connect-ip 217.142.225.255 with --live-dns and choose a fresh report filename. Never use --live-dns before DNS points to the intended VPS. Only append --max-p95-ms N and --ekaiwa-max-p95-ms N once the owner has approved those latency thresholds. Files supplied to --report must be new paths; the command refuses to overwrite existing evidence.
+After cutover, replace --connect-ip 217.142.225.255 with --live-dns and choose a fresh report filename. If the owner has switched **OFF** the Admin option *Ẩn sản phẩm local_test_only* (the current production default), append `--allow-local-test-only` to reflect this explicit publication policy; without this flag QA deliberately refuses such rows. Never use --live-dns before DNS points to the intended VPS. Only append --max-p95-ms N and --ekaiwa-max-p95-ms N once the owner has approved those latency thresholds. Files supplied to --report must be new paths; the command refuses to overwrite existing evidence.
 
 The test covers:
 
-- public HTML: home, catalog, category pages, purchase guide, cart, and first verified product detail if available;
-- public API: categories, catalog, GET/HEAD, valid detail JSON, invalid query, missing product; every returned product and variant must have rightsStatus=verified;
+- public HTML: home, catalog, category pages, purchase guide, cart, and first eligible public product detail if available;
+- public API: categories, catalog, GET/HEAD, valid detail JSON, invalid query, missing product; every returned product and variant must have rightsStatus=verified by default, or verified/local_test_only when the explicit QA flag is provided; unverified remains forbidden;
 - private admin, sync status, health, checkout, unknown API methods and paths; tests encoded private paths, forged Host (localhost:3100, 127.0.0.1:3100, evil.invalid) and forged Origin;
 - Caddy response protections: X-Content-Type-Options: nosniff, a Referrer-Policy, and either anti-framing header or CSP frame-ancestors;
 - benchmark four sequential stages **1, 5, 10, 19 concurrent GET clients**, with 100 or more requests per stage, capped at 19 in flight, on public pages and catalog endpoints;
@@ -75,6 +75,6 @@ journalctl -k --since '15 min ago' --no-pager | grep -Ei 'oom|out.of.memory|kill
 
 If privileged PostgreSQL read-only access already exists, inspect connection saturation using SELECT state, count(*) FROM pg_stat_activity GROUP BY state; and check VPS disk/storage health. Capture an idle baseline first; repeat measurements under 19 clients, at test completion, and after normal idle recovery. Check that E-KAIWA is responsive and that Hermes/cron workloads and the system Node runtime have not changed. A healthy HTTP code alone does **not** prove E-KAIWA performance is unaffected.
 
-**STOP before DNS cutover** if any private route becomes reachable, an unverified product appears, 19-client tests have HTTP errors/timeouts, sustained swap-in/out or OOM occurs, PostgreSQL exhausts its connections, or E-KAIWA/Hermes behavior materially degrades. Do not upgrade the VPS, restart unrelated services, adjust global Node, widen DB exposure, or silently publish local_test_only data to clear the gate. The selected rollout explicitly has **no backups**, so do not create backups or perform restore tests as part of QA.
+**STOP before DNS cutover** if any private route becomes reachable, an `unverified` product appears, local_test_only appears while the Admin hide switch is ON, 19-client tests have HTTP errors/timeouts, sustained swap-in/out or OOM occurs, PostgreSQL exhausts its connections, or E-KAIWA/Hermes behavior materially degrades. Do not upgrade the VPS, restart unrelated services, adjust global Node, or widen DB exposure. The owner explicitly authorized showing `local_test_only` with switch OFF; this is not permission to violate third-party image/text rights. The rollout explicitly has **no backups**, so do not create backups or perform restore tests as part of QA.
 
 The gate produces per-case PASS/FAIL output, per-stage request count/error count/p50/p95/p99 and an optional JSON report. The report only establishes behavior at the time of the test. Record the companion RAM/swap/process/PG and E-KAIWA readings with timestamps when deciding whether to proceed.
