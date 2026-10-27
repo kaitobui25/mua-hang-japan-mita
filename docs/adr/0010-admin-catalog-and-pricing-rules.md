@@ -1,7 +1,7 @@
 # ADR 0010 — Quản lý hiển thị sản phẩm và tỷ giá qua Admin
 
 **Ngày:** 27/10/2026 (JST)
-**Trạng thái:** `proposed / Q1 + Q4 + Q5 + Q6 accepted` — thêm hàng qua URL/ASIN Amazon, tỷ giá/phụ phí cùng một lần Lưu, và ẩn sản phẩm thay vì xóa đã được chốt ngày 27/10/2026; nút đồng bộ thủ công đang chờ Q7.
+**Trạng thái:** `proposed / Q1 + Q4 + Q5 + Q6 accepted` — thêm hàng qua URL/ASIN Amazon, tỷ giá/phụ phí cùng một lần Lưu và ẩn sản phẩm thay vì xóa đã chốt ngày 27/10/2026; Q7 không cho quét toàn bộ từ Admin đã chốt trong ADR 0009. Phương thức cảnh báo lỗi đang chờ Q8.
 **Liên quan:** ADR 0002, 0003, 0006, 0007; `.agents/plan/04_mita_minimal_admin_grill_with_docs_plan.md`.
 
 ## Bối cảnh
@@ -38,4 +38,6 @@ Sản phẩm Mita hiện được tự động upsert từ Amazon theo ASIN; n�
 
 **Q6 — ACCEPTED:** Phương án A — ẩn/hiện lại thay vì xóa vĩnh viễn. Chỉ owner chủ động thay đổi cờ ẩn; đồng bộ nguồn/nhập lại ASIN không tự đổi trạng thái này. Giữ nguyên lịch sử giá và dữ liệu đơn.
 
-**Q7 — PENDING (liên quan ADR 0009, phần Tổng quan):** Chỉ xem kết quả đồng bộ theo lịch (A, Admin ít nút), hay thêm một nút yêu cầu đồng bộ Amazon ngay (B, phải tạo job an toàn, chống chạy trùng và không vượt chặn nguồn)?
+**Q7 — ACCEPTED (xem ADR 0009):** Admin chỉ đọc trạng thái đồng bộ tự động theo lịch; không có nút `Đồng bộ Amazon ngay` hoặc API kích hoạt quét toàn bộ. Yêu cầu nhập ASIN đơn lẻ theo Q1 vẫn hoạt động độc lập.
+
+**Q8 — PENDING (xem ADR 0009):** Cảnh báo khi sync lỗi/bỏ lỡ lịch chỉ xuất hiện ở Tổng quan, hay gửi thêm email cho chủ cửa hàng?

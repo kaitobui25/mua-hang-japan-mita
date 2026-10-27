@@ -1,7 +1,7 @@
 # ADR 0009 — Admin tối giản cho một chủ cửa hàng
 
 **Ngày:** 27/10/2026 (JST)
-**Trạng thái:** `proposed / Q2 + Q3 accepted` — Q1 về thêm sản phẩm đã chốt trong ADR 0010; Q2 chỉ xem đơn mô phỏng và Q3 một tài khoản chủ cửa hàng đã chốt ngày 27/10/2026. Các quyết định khác trong ADR vẫn là đề xuất.
+**Trạng thái:** `proposed / Q2 + Q3 + Q7 accepted` — Q2 chỉ xem đơn mô phỏng, Q3 một tài khoản chủ cửa hàng và Q7 chỉ xem tình trạng sync tự động đã chốt ngày 27/10/2026. Phương thức cảnh báo đồng bộ lỗi đang chờ Q8.
 **Liên quan:** `.agents/plan/04_mita_minimal_admin_grill_with_docs_plan.md`, ADR 0001–0008.
 
 ## Bối cảnh
@@ -14,7 +14,7 @@ Mita đã có website bán hàng thử nghiệm, catalog và đơn hàng mô ph�
 - **Q3 đã chốt (A): một tài khoản owner duy nhất** trong Admin MVP. Không tạo màn thêm/xóa tài khoản, tài khoản nhân viên hay phân quyền nhiều cấp. Đăng nhập bằng mật khẩu hash và session cookie; mọi route/API quản trị đều xác thực tại server. Có logout, rate limit, bảo vệ CSRF và nhật ký thay đổi quan trọng.
 - Chỉ **4 trang**: `Tổng quan`, `Sản phẩm`, `Đơn hàng`, `Cấu hình`.
 - Tổng quan chỉ có hai số chính (số đơn mô phỏng 7 ngày, số sản phẩm đang hiển thị), tình trạng đồng bộ Amazon và 5 đơn mới nhất. Không biểu đồ, không tài chính giả.
-- **Q7 chưa chốt:** chỉ hiển thị trạng thái đồng bộ Amazon theo lịch, hay thêm một nút yêu cầu chạy đồng bộ ngay trên Tổng quan? Không mặc định thêm nút khi chưa được owner quyết định.
+- **Q7 đã chốt (A): chỉ hiển thị trạng thái và lỗi đồng bộ Amazon tự động trên Tổng quan**, không có nút `Đồng bộ Amazon ngay` hoặc endpoint quản trị chạy quét toàn bộ danh mục. Trạng thái dựa trên `sync_runs` / `sync_errors` thực tế; nếu chưa chạy hoặc bỏ lỡ lịch thì báo rõ. Chức năng thêm một ASIN theo Q1 là tác vụ riêng, không phải quét toàn bộ. **Q8 còn mở:** có gửi thêm email khi đồng bộ gặp lỗi hay không?
 - **Q2 đã chốt (A): Trang Đơn hàng chỉ xem** danh sách/chi tiết đơn mô phỏng, **không cập nhật ghi chú hoặc trạng thái nội bộ**. Không có thao tác “Đã thu tiền”, “Giao hàng”, “Hoàn tiền”, “Xóa đơn” khi chưa có nghiệp vụ/cổng thanh toán thật.
 - Admin không sở hữu hay điều khiển trực tiếp tiến trình scraping; chỉ gửi yêu cầu nhập/sửa trạng thái dữ liệu qua backend, không tạo trình duyệt khi mở trang.
 
@@ -34,4 +34,4 @@ Mita đã có website bán hàng thử nghiệm, catalog và đơn hàng mô ph�
 
 ## Chưa chốt
 
-Owner đã chốt **Q1 = A, thêm sản phẩm bằng link/ASIN Amazon**, **Q4 = A, tự nhập tỷ giá VND/JPY**, **Q5 = B, được chỉnh phụ phí dịch vụ (%) cùng tỷ giá bằng một nút Lưu**, **Q6 = A, ẩn sản phẩm thay vì xóa, có thể hiện lại và không bị sync tự bỏ ẩn** (ADR 0010), cùng **Q2 = A, chỉ xem đơn mô phỏng** và **Q3 = A, một tài khoản owner duy nhất** (ADR này). **Q7 còn mở:** có cần nút đồng bộ Amazon thủ công trong Admin hay chỉ xem kết quả theo lịch?
+Owner đã chốt **Q1 = A, thêm sản phẩm bằng link/ASIN Amazon**, **Q4 = A, tự nhập tỷ giá VND/JPY**, **Q5 = B, sửa phụ phí dịch vụ (%) cùng tỷ giá bằng một nút Lưu**, **Q6 = A, ẩn sản phẩm thay vì xóa và không bị sync tự bỏ ẩn** (ADR 0010), cùng **Q2 = A, chỉ xem đơn mô phỏng**, **Q3 = A, một tài khoản owner duy nhất**, **Q7 = A, Admin chỉ xem kết quả đồng bộ tự động, không có nút chạy ngay** (ADR này). **Q8 còn mở:** chỉ cảnh báo lỗi đồng bộ trong Admin hay gửi thêm email?

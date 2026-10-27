@@ -122,3 +122,7 @@ _Tránh_: Sửa cấu hình là sửa luôn giá của mọi đơn cũ
 **Lần đồng bộ được xác nhận**:
 Một `sync_run` thực tế có thời gian, số lượng và trạng thái kết quả; cấu hình lịch tự động không được xem là bằng chứng job đã chạy.
 _Tránh_: Cứ đến 04:00 là đồng bộ chắc chắn thành công
+
+**Trạng thái đồng bộ chỉ đọc trong Admin (Q7 đã chốt)**:
+Admin chỉ hiển thị lần chạy Amazon hằng ngày từ `sync_runs` / `sync_errors`, gồm trạng thái, thời điểm thật và lỗi. Không có nút hoặc API quản trị khởi chạy quét toàn bộ danh mục; `Thêm một ASIN` đã chốt ở Q1 là yêu cầu nhập sản phẩm riêng. Khi thiếu lần chạy theo lịch, cần hiển thị rõ chưa có dữ liệu xác nhận.
+_Tránh_: Có lịch 04:00 JST nghĩa là đã chạy thành công, hoặc Admin được phép chạy lại toàn bộ theo nút
