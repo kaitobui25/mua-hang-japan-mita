@@ -5,6 +5,7 @@ import { getProductDetails, listCatalog } from './catalog.js';
 import { CheckoutError, createSimulationOrder } from './orders.js';
 import { adminRoutes } from './admin/routes.js';
 import { pathToFileURL } from 'node:url';
+import { realpathSync } from 'node:fs';
 
 export function buildServer(logger = false) {
   const server = Fastify({ logger: logger ? { redact: ['req.headers.cookie', 'req.headers.authorization', 'res.headers.set-cookie'], serializers: { req: req => ({ method: req.method, url: req.url?.split('?')[0] }) } } : false, bodyLimit: 32768 });
@@ -36,6 +37,7 @@ export function buildServer(logger = false) {
   });
 
   server.post('/api/checkout', async (request, reply) => {
+    if (config.publicReadOnly) return reply.code(404).send({ error: 'Chức năng tạo đơn đang tạm đóng.' });
     try {
       return await createSimulationOrder(request.body);
     } catch (error) {
@@ -52,7 +54,10 @@ export function buildServer(logger = false) {
   return server;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Production releases are activated through a "current" symlink. Resolve the
+// entrypoint before comparing it with the ESM module URL, or node exits without
+// starting Fastify even though systemd reports a clean exit.
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const server = buildServer(true);
   const shutdown = async () => { await server.close(); await db.end(); };
   process.once('SIGINT', () => void shutdown());

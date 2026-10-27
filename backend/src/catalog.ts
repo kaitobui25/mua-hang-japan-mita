@@ -1,5 +1,6 @@
 import { db } from './db/pool.js';
 import { getPricingPolicy, isFresh, toVnd, type PricingPolicy } from './pricing.js';
+import { config } from './config.js';
 import type { PoolClient } from 'pg';
 
 export type DbProduct = {
@@ -11,9 +12,10 @@ export type DbProduct = {
   admin_hidden_at: Date | null;
 };
 
-export const publicVisibilitySql = "admin_hidden_at IS NULL AND rights_status IN ('local_test_only','verified')";
+const publicRightsSql = config.publicReadOnly ? "rights_status = 'verified'" : "rights_status IN ('local_test_only','verified')";
+export const publicVisibilitySql = `admin_hidden_at IS NULL AND ${publicRightsSql}`;
 export function canCheckoutProduct(p: DbProduct) {
-  return !p.admin_hidden_at && ['local_test_only', 'verified'].includes(p.rights_status) &&
+  return !p.admin_hidden_at && (p.rights_status === 'verified' || (!config.publicReadOnly && p.rights_status === 'local_test_only')) &&
     p.sale_status === 'ready' && !['unavailable', 'out_of_stock'].includes(p.availability) &&
     p.price_jpy !== null && p.price_jpy > 0 && isFresh(p.price_observed_at);
 }

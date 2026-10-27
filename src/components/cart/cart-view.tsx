@@ -12,6 +12,7 @@ export function CartView() {
   const { items, count, remove, setQuantity } = useCart();
   const { products, failed, loading, subtotal, retry } = useCartProducts();
   const blocked = items.some(item => !products[item.asin] || !canCheckout(products[item.asin]));
+  const readOnly = process.env.NEXT_PUBLIC_READ_ONLY === '1';
 
   return <section className="container shopping-page">
     <nav className="breadcrumb" aria-label="Đường dẫn"><Link href="/">Trang chủ</Link><span>/</span><span>Giỏ hàng</span></nav>
@@ -31,8 +32,8 @@ export function CartView() {
         </div>
         <aside className="order-summary"><h2>Tóm tắt giỏ hàng</h2><div className="summary-row"><span>Tiền hàng tham khảo ({count})</span><strong>{formatVnd(subtotal)}</strong></div><div className="summary-row"><span>Vận chuyển từ Nhật về Việt Nam</span><span>Thu sau</span></div><div className="summary-total"><span>Tiền hàng dự kiến</span><strong>{formatVnd(subtotal)}</strong></div><p>Giá sẽ được kiểm tra và tính lại trên máy chủ khi tạo đơn. Phí vận chuyển hiển thị riêng ở bước sau.</p>
           {blocked && <div className="inline-alert" role="status">Có sản phẩm chưa đủ điều kiện thanh toán hoặc giá đã quá 24 giờ. Hãy thử cập nhật lại sau.</div>}
-          {blocked ? <button className="button button-primary checkout-button" disabled>Chưa thể thanh toán <Icon name="arrow"/></button> : <Link className="button button-primary checkout-button" href="/thanh-toan">Tiếp tục thanh toán <Icon name="arrow"/></Link>}
-          <span className="simulation-caption">Thanh toán chỉ là mô phỏng, không thu tiền thật.</span>
+          {readOnly ? <p className="inline-alert" role="status">Website hiện chỉ để xem sản phẩm. Chưa nhận đơn hàng.</p> : blocked ? <button className="button button-primary checkout-button" disabled>Chưa thể thanh toán <Icon name="arrow"/></button> : <Link className="button button-primary checkout-button" href="/thanh-toan">Tiếp tục thanh toán <Icon name="arrow"/></Link>}
+          <span className="simulation-caption">{readOnly ? 'Chưa nhận thanh toán hoặc thông tin giao hàng.' : 'Thanh toán chỉ là mô phỏng, không thu tiền thật.'}</span>
         </aside>
       </div>}
   </section>;
