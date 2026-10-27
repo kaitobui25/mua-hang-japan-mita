@@ -58,7 +58,7 @@ test('image normalization deduplicates observed URLs without manufacturing high 
     'https://m.media-amazon.com/images/I/test._SL1500_.jpg',
     'https://m.media-amazon.com.evil.test/a.jpg',
     'https://user@m.media-amazon.com/a.jpg', 'http://m.media-amazon.com/a.jpg', 'data:image/png,x'
-  ]), ['https://m.media-amazon.com/images/I/test._SX300_.jpg']);
+  ]), ['https://m.media-amazon.com/images/I/test._SL1500_.jpg']);
 });
 
 test('script JSON extraction is bounded to actual data and never evaluates JavaScript', () => {

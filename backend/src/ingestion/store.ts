@@ -53,14 +53,20 @@ export async function ingestObservations(observations: VariantObservation[], run
         const previous = await connection.query<{ source_observed_at: Date }>('SELECT source_observed_at FROM product_details WHERE asin=$1', [o.asin]);
         if (!previous.rows[0] || previous.rows[0].source_observed_at <= detailAt) {
           const images = uniqueImages(o.imageUrls ?? []);
-          if (images.length) {
+          const d = o.detail;
+          // A landing/thumbnail fallback does not prove that the old gallery was removed.
+          const existingGallery = images.length && !d.provenance.sections.includes('gallery:complete')
+            ? await connection.query('SELECT 1 FROM product_images WHERE asin=$1 LIMIT 1', [o.asin]) : null;
+          const replaceGallery = images.length > 0 && !existingGallery?.rows.length;
+          if (replaceGallery) {
             await connection.query('DELETE FROM product_images WHERE asin=$1', [o.asin]);
             for (const [index, url] of images.entries()) {
               await connection.query('INSERT INTO product_images(asin,position,source_url,source_observed_at) VALUES($1,$2,$3,$4)', [o.asin, index + 1, url, detailAt]);
             }
             await connection.query('UPDATE products SET image_url=$2 WHERE asin=$1', [o.asin, images[0]]);
           }
-          const d = o.detail;
+          const fieldObservedAt = { ...d.provenance.fieldObservedAt };
+          if (!replaceGallery) delete fieldObservedAt.images;
           await connection.query(`INSERT INTO product_details
             (asin,features,ingredients,usage,specs,cautions,variant_attributes,child_asins,source_observed_at,provenance)
             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
@@ -76,7 +82,7 @@ export async function ingestObservations(observations: VariantObservation[], run
               provenance=product_details.provenance || EXCLUDED.provenance || jsonb_build_object(
                 'fieldObservedAt', COALESCE(product_details.provenance->'fieldObservedAt','{}'::jsonb) || COALESCE(EXCLUDED.provenance->'fieldObservedAt','{}'::jsonb))`,
           [o.asin, JSON.stringify(d.features), JSON.stringify(d.ingredients), JSON.stringify(d.usage), JSON.stringify(d.specs),
-            JSON.stringify(d.cautions), JSON.stringify(d.variantAttributes), JSON.stringify(d.childAsins), detailAt, JSON.stringify(d.provenance)]);
+            JSON.stringify(d.cautions), JSON.stringify(d.variantAttributes), JSON.stringify(d.childAsins), detailAt, JSON.stringify({ ...d.provenance, fieldObservedAt })]);
         }
       }
       if (observedAt && validPrice) {

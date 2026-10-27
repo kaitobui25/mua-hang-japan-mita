@@ -6,6 +6,10 @@ const clean = (value: string) => value.replace(/\s+/g, ' ').trim();
 
 // Parse source JSON values without executing scripts or repairing invented data.
 export function jsonProperty(script: string, key: string): unknown {
+  const value = jsonPropertySource(script, key);
+  try { return value === undefined ? undefined : JSON.parse(value); } catch { return undefined; }
+}
+function jsonPropertySource(script: string, key: string): string | undefined {
   const match = new RegExp(`["']${key}["']\\s*:\\s*`).exec(script);
   if (!match) return undefined;
   const start = match.index + match[0].length;
@@ -13,20 +17,20 @@ export function jsonProperty(script: string, key: string): unknown {
   if (first === '"') {
     for (let i = start + 1; i < script.length; i++) {
       if (script[i] === '\\') { i++; continue; }
-      if (script[i] === '"') { try { return JSON.parse(script.slice(start, i + 1)); } catch { return undefined; } }
+      if (script[i] === '"') return script.slice(start, i + 1);
     }
     return undefined;
   }
   if (first !== '[' && first !== '{') return undefined;
-  let depth = 0, quoted = false;
+  let depth = 0, quote: string | undefined;
   for (let i = start; i < script.length; i++) {
     const c = script[i];
-    if (quoted && c === '\\') { i++; continue; }
-    if (c === '"') { quoted = !quoted; continue; }
-    if (quoted) continue;
+    if (quote && c === '\\') { i++; continue; }
+    if (quote) { if (c === quote) quote = undefined; continue; }
+    if (c === '"' || c === "'") { quote = c; continue; }
     if (c === '[' || c === '{') depth++;
     if ((c === ']' || c === '}') && --depth === 0) {
-      try { return JSON.parse(script.slice(start, i + 1)); } catch { return undefined; }
+      return script.slice(start, i + 1);
     }
   }
   return undefined;
@@ -43,49 +47,71 @@ export function amazonImageUrl(value: unknown): value is string {
       /\.(?:jpe?g|png|webp)(?:$|\?)/i.test(url.pathname + url.search);
   } catch { return false; }
 }
-export function uniqueImages(urls: unknown[]): string[] {
-  const found = new Set<string>();
-  return urls.filter(amazonImageUrl).filter(url => {
-    // Compare the underlying image identity, retaining the actual observed URL.
-    const key = new URL(url).pathname.replace(/\._[^/]+_\./, '.');
-    if (found.has(key)) return false;
-    found.add(key); return true;
-  }).slice(0, 5);
+export function uniqueImages(urls: unknown[], dimensions: ReadonlyMap<string, number> = new Map()): string[] {
+  const found = new Map<string, { url: string; area: number }>();
+  for (const url of urls.filter(amazonImageUrl)) {
+    // Identity ignores Amazon resize modifiers, but the returned URL is always observed.
+    const pathname = new URL(url).pathname;
+    const key = pathname.replace(/\._[^/]+_\./, '.');
+    const size = Number(pathname.match(/(?:SL|SX|SY|AC_SL|AC_SX|AC_SY)(\d+)/)?.[1] ?? 0);
+    const area = dimensions.get(url) ?? size * size;
+    if (!found.has(key) || area > found.get(key)!.area) found.set(key, { url, area });
+  }
+  return [...found.values()].slice(0, 5).map(image => image.url);
 }
-function dynamicImage(value: string | undefined): string | undefined {
-  if (!value) return undefined;
+function dynamicImage(value: string | undefined, dimensions: Map<string, number>): string[] {
+  if (!value) return [];
   try {
     const images = record(JSON.parse(value));
-    return Object.keys(images).filter(amazonImageUrl).sort((a, b) => {
-      const area = (v: unknown) => Array.isArray(v) ? Number(v[0]) * Number(v[1]) || 0 : 0;
-      return area(images[b]) - area(images[a]);
-    })[0];
-  } catch { return undefined; }
+    for (const [url, size] of Object.entries(images)) {
+      if (Array.isArray(size) && size.length === 2 && size.every(n => typeof n === 'number' && Number.isFinite(n) && n > 0)) {
+        dimensions.set(url, Math.max(dimensions.get(url) ?? 0, size[0] * size[1]));
+      }
+    }
+    return Object.keys(images).filter(amazonImageUrl);
+  } catch { return []; }
 }
 
 export function extractEnrichment($: CheerioAPI, asin: string, observedAt: string, sourceUrl: string) {
   const scripts = $('script').map((_, el) => $(el).html() ?? '').get();
   const images: unknown[] = [];
+  const dimensions = new Map<string, number>();
+  const gallerySections: string[] = [];
+  let completeGallery = false;
   const landing = $('#landingImage, #imgBlkFront').first();
   images.push(landing.attr('data-old-hires'));
-  for (const script of scripts) {
+  for (const [index, script] of scripts.entries()) {
     // Only the selected product's initial gallery, never other color/child galleries.
-    if (!/["']colorImages["']\s*:/.test(script)) continue;
-    const initial = jsonProperty(script.slice(script.search(/["']colorImages["']\s*:/)), 'initial');
+    const node = $('script').eq(index);
+    const owner = node.closest('[data-asin]').attr('data-asin');
+    const currentAsin = jsonProperty(script, 'currentAsin');
+    if ((owner && owner !== asin) || (currentAsin && currentAsin !== asin) || node.closest('[id*="recommend"], [id*="sims-"]').length) continue;
+    const initial = jsonProperty(jsonPropertySource(script, 'colorImages') ?? '', 'initial');
     if (!Array.isArray(initial)) continue;
+    let valid = 0;
     for (const image of initial) {
       const item = record(image);
-      images.push([item.hiRes, dynamicImage(JSON.stringify(item.main)), item.large].find(amazonImageUrl));
+      const candidates = [item.hiRes, ...dynamicImage(JSON.stringify(item.main), dimensions), item.large];
+      if (candidates.some(amazonImageUrl)) valid++;
+      images.push(...candidates);
     }
+    if (valid) gallerySections.push('colorImages.initial');
+    if (valid > 0 && valid === initial.length) completeGallery = true;
   }
   $('#altImages img').each((_, el) => {
-    images.push($(el).attr('data-old-hires'), dynamicImage($(el).attr('data-a-dynamic-image')));
+    const node = $(el);
+    const candidates = [node.attr('data-old-hires'), ...dynamicImage(node.attr('data-a-dynamic-image'), dimensions), node.attr('src')];
+    images.push(...candidates);
+    if (candidates.some(amazonImageUrl)) gallerySections.push('altImages');
   });
-  images.push(dynamicImage(landing.attr('data-a-dynamic-image')), landing.attr('src'));
-  const imageUrls = uniqueImages(images);
+  const landingImages = [landing.attr('data-old-hires'), ...dynamicImage(landing.attr('data-a-dynamic-image'), dimensions), landing.attr('src')];
+  images.push(...landingImages);
+  if (landingImages.some(amazonImageUrl)) gallerySections.push('landingImage');
+  const imageUrls = uniqueImages(images, dimensions);
   const detail: DetailSnapshot = {
     features: [], ingredients: [], usage: [], specs: {}, cautions: [], variantAttributes: {}, childAsins: [],
-    sourceObservedAt: observedAt, provenance: { sourceUrl, adapter: 'http-detail', sections: [] }
+    sourceObservedAt: observedAt, provenance: { sourceUrl, adapter: 'http-detail',
+      sections: imageUrls.length ? [...new Set(gallerySections), completeGallery ? 'gallery:complete' : 'gallery:partial'] : [] }
   };
   const add = (field: 'features' | 'ingredients' | 'usage' | 'cautions', text: string, section: string) => {
     const value = clean(text);
@@ -167,6 +193,7 @@ export function extractEnrichment($: CheerioAPI, asin: string, observedAt: strin
   const fields = ['features', 'ingredients', 'usage', 'specs', 'cautions', 'variantAttributes', 'childAsins'] as const;
   detail.provenance.fieldObservedAt = Object.fromEntries(fields
     .filter(field => Object.keys(detail[field]).length > 0).map(field => [field, observedAt]));
+  if (imageUrls.length) detail.provenance.fieldObservedAt.images = observedAt;
   if (parentAsin) detail.provenance.variantGroup = { parentAsin, sourceUrl };
   return { imageUrls, detail, parentAsin };
 }
