@@ -2,7 +2,7 @@
 
 This folder contains the reproducible tooling for the **web** half of `/opt/mita/releases/<release-id>/web`. The release helper itself does not connect to Hermes, configure Caddy/DNS, install software there, or start services. The API is packaged separately under `api/` in the same release by the backend deployment workflow.
 
-**Production status (27 October 2026):** `mitajapanshop.duckdns.org` is live on Hermes; `/opt/mita/current` points at `releases/v0.3-a13cfbc35433` (previous: `releases/20261027-localtest-toggle`). This release was built as a Linux x64 artifact by GitHub Actions, then staged through the restricted SSH deploy receiver and health-checked. For automatic future releases, see `ci-deploy.md` (HEAD `[deploy]` commit marker); the GitHub private-key secret still requires owner activation. **Operational commands and precautions are in `docs/hermes-vps-runbook.md`.**
+**Production status (27 October 2026):** `mitajapanshop.duckdns.org` is live on Hermes; a Linux x64 release built by GitHub Actions was staged through the restricted SSH receiver and health-checked. GitHub Actions secrets for the dedicated deploy key, VPS host and pinned known-host entry are configured. See `ci-deploy.md` for the HEAD `[deploy]` commit marker. **Operational commands and precautions are in `docs/hermes-vps-runbook.md`.**
 
 ## Build on Linux
 

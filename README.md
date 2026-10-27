@@ -1,5 +1,11 @@
 # Mita Japan — local storefront
 
+## Version và phát hành lên VPS Hermes
+
+- Version công khai do chủ dự án tự đặt trong [`release.json`](release.json), hiện là **`0.3`**; website hiển thị nhỏ ở cuối footer. Không dùng `version` trong `package.json` để hiển thị phiên bản cửa hàng.
+- Để triển khai: commit với chuỗi **`[deploy]`** trong message của **commit cuối cùng được push lên `main`**, sau đó `git push origin main`. GitHub Actions tự test, build trên Ubuntu Linux x64 và chuyển release xuống Hermes. Commit không có `[deploy]` không triển khai.
+- Xem [quy trình deploy, phiên bản, SSH key và rollback](deploy/mita/ci-deploy.md), [workflow GitHub Actions](.github/workflows/mita-deploy.yml) và [runbook vận hành VPS](docs/hermes-vps-runbook.md). Không build Next.js trên VPS RAM 1 GiB. Migration database không tự chạy trong pipeline.
+
 Website mua hộ Nhật dành cho khách Việt. Garden UI (Next.js), catalog/checkout API (Fastify + TypeScript), PostgreSQL 18 chạy trực tiếp trên Windows. **Checkout chỉ là mô phỏng, không thu tiền thật.** Giá bán VND dùng chính sách tỷ giá/phụ phí lưu trong PostgreSQL, **không phải báo giá đang giao dịch**.
 
 Admin local tại `/admin`: một owner, Tổng quan / Sản phẩm / Đơn hàng / Cấu hình. Xem [hướng dẫn khởi tạo owner, chạy/dừng, backup/restore và sử dụng Admin](docs/admin-local.md). Không Docker, truy cập LAN/internet hoặc tự khởi động cùng Windows.
