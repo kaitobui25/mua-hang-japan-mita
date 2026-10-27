@@ -1,0 +1,29 @@
+# Optional GitHub Actions template. Copy to .github/workflows/mita-web-release.yml
+# only when a CI workflow is approved; no VPS or DNS access is used here.
+name: Mita web Linux release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Build release archive (Linux x64)
+        run: MITA_TARGET_ARCH=x64 npm run build:release:linux
+      - name: Upload web archive and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: mita-web-linux-x64
+          path: .verification/mita-artifacts/*
+          if-no-files-found: error
+          retention-days: 7

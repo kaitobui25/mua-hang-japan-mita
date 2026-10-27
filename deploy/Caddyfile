@@ -1,0 +1,21 @@
+mitajapanshop.duckdns.org {
+	encode zstd gzip
+
+	route {
+		@private path /admin /admin/* /api/admin /api/admin/* /thanh-toan /thanh-toan/*
+		respond @private 404
+
+		@catalog {
+			path /api/categories /api/catalog /api/catalog/products/*
+			method GET HEAD
+		}
+		handle @catalog {
+			reverse_proxy 127.0.0.1:3000
+		}
+
+		@otherApi path /api /api/*
+		respond @otherApi 404
+
+		reverse_proxy 127.0.0.1:3000
+	}
+}

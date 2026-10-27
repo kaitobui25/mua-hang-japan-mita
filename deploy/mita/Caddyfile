@@ -1,0 +1,36 @@
+mitajapanshop.duckdns.org {
+    encode zstd gzip
+
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        X-Frame-Options DENY
+    }
+
+    route {
+        # Local-only owner administration, including checkout/customer details.
+        @private path /admin /admin/* /api/admin /api/admin/* /thanh-toan /thanh-toan/*
+        respond @private 404
+
+        # Initial public release is a read-only catalog; never expose arbitrary API routes.
+        @catalog {
+            path /api/categories /api/catalog /api/catalog/products/*
+            method GET HEAD
+        }
+        handle @catalog {
+            reverse_proxy 127.0.0.1:3100
+        }
+
+        @otherApi path /api /api/*
+        respond @otherApi 404
+
+        reverse_proxy 127.0.0.1:3100
+    }
+}
+
+# An unmatched HTTP Host over a valid HTTPS SNI otherwise receives Caddy's
+# implicit empty 200 response. Explicitly reject these requests, including
+# forged localhost Host headers. Named Mita and E-KAIWA sites take priority.
+:443 {
+    respond 421
+}
