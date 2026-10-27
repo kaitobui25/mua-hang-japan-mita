@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import { db } from './db/pool.js';
 import { config } from './config.js';
-import { listCatalog, publicProduct, type DbProduct } from './catalog.js';
+import { getProductDetails, listCatalog } from './catalog.js';
 import { CheckoutError, createSimulationOrder } from './orders.js';
 
 const server = Fastify({ logger: true });
@@ -26,9 +26,9 @@ server.get('/api/catalog', async (request, reply) => {
 
 server.get('/api/catalog/products/:asin', async (request, reply) => {
   const { asin } = request.params as { asin: string };
-  const result = await db.query<DbProduct>('SELECT * FROM products WHERE asin = $1', [asin.toUpperCase()]);
-  if (!result.rows[0]) return reply.code(404).send({ error: 'Không tìm thấy sản phẩm' });
-  return publicProduct(result.rows[0]);
+  const result = await getProductDetails(asin);
+  if (!result) return reply.code(404).send({ error: 'Không tìm thấy sản phẩm' });
+  return result;
 });
 
 server.post('/api/checkout', async (request, reply) => {

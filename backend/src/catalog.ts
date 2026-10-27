@@ -1,9 +1,11 @@
 import { db } from './db/pool.js';
 import { isFresh, toVnd } from './pricing.js';
+import type { PoolClient } from 'pg';
 
 export type DbProduct = {
   asin: string; name: string; brand: string | null; category_slug: string;
   source_url: string; image_url: string | null; source_adapter: string; rights_status: string;
+  variant_group_basis: 'parent_asin' | 'source_product_id' | null; variant_group_id: string | null;
   price_jpy: number | null; price_observed_at: Date | null;
   availability: string; sale_status: string; last_seen_at: Date;
 };
@@ -18,11 +20,29 @@ export function publicProduct(p: DbProduct) {
     priceVnd: p.price_jpy !== null ? toVnd(p.price_jpy) : null,
     priceObservedAt: p.price_observed_at?.toISOString() ?? null,
     availability: p.availability, status: canCheckout ? 'ready' : 'pending_review',
+    variantGroup: p.variant_group_basis && p.variant_group_id
+      ? { basis: p.variant_group_basis, id: p.variant_group_id } : null,
     canCheckout, lastUpdatedAt: p.last_seen_at.toISOString()
   };
 }
 
-export async function listCatalog(options: { category?: string; q?: string; page: number; limit: number; sort?: string }) {
+export async function getProductDetails(asin: string, connection?: PoolClient) {
+  const client = connection ?? db;
+  const result = await client.query<DbProduct>('SELECT * FROM products WHERE asin = $1', [asin.toUpperCase()]);
+  const product = result.rows[0];
+  if (!product) return null;
+  if (!product.variant_group_basis || !product.variant_group_id) {
+    return { ...publicProduct(product), variants: [] };
+  }
+  // Only an exact, observed identifier within the same source category creates siblings.
+  const siblings = await client.query<DbProduct>(`SELECT * FROM products
+    WHERE category_slug = $1 AND variant_group_basis = $2 AND variant_group_id = $3
+    ORDER BY name ASC, asin ASC`, [product.category_slug, product.variant_group_basis, product.variant_group_id]);
+  return { ...publicProduct(product), variants: siblings.rows.length > 1 ? siblings.rows.map(publicProduct) : [] };
+}
+
+export async function listCatalog(options: { category?: string; q?: string; page: number; limit: number; sort?: string }, connection?: PoolClient) {
+  const client = connection ?? db;
   const { category, q, page, limit, sort } = options;
   const where: string[] = [];
   const params: unknown[] = [];
@@ -35,7 +55,18 @@ export async function listCatalog(options: { category?: string; q?: string; page
     'price-desc': 'price_jpy DESC NULLS LAST',
     newest: 'last_seen_at DESC'
   };
-  const total = await db.query<{ count: string }>(`SELECT count(*)::text AS count FROM products ${clause}`, params);
-  const rows = await db.query<DbProduct>(`SELECT * FROM products ${clause} ORDER BY ${sorting[sort ?? ''] ?? 'last_seen_at DESC'}, asin ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`, [...params, limit, (page - 1) * limit]);
+  // Only verified group identifiers collapse multiple ASINs to one catalog card.
+  // Every ASIN without an identifier is its own independent catalog product.
+  const groupKey = `CASE WHEN variant_group_basis IS NOT NULL AND variant_group_id IS NOT NULL
+    THEN 'group:' || category_slug || ':' || variant_group_basis || ':' || variant_group_id
+    ELSE 'asin:' || asin END`;
+  const ordering = sorting[sort ?? ''] ?? 'last_seen_at DESC';
+  const total = await client.query<{ count: string }>(`SELECT count(DISTINCT ${groupKey})::text AS count FROM products ${clause}`, params);
+  const rows = await client.query<DbProduct>(`WITH ranked AS (
+    SELECT *, row_number() OVER (PARTITION BY ${groupKey} ORDER BY ${ordering}, asin ASC) AS variant_rank
+    FROM products ${clause}
+  )
+  SELECT * FROM ranked WHERE variant_rank = 1
+  ORDER BY ${ordering}, asin ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`, [...params, limit, (page - 1) * limit]);
   return { items: rows.rows.map(publicProduct), total: Number(total.rows[0].count), page, limit, lastUpdatedAt: rows.rows[0]?.last_seen_at.toISOString() ?? null };
 }

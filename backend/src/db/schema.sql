@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS products (
   source_url text NOT NULL,
   source_adapter text NOT NULL,
   rights_status text NOT NULL DEFAULT 'unverified',
+  variant_group_basis text,
+  variant_group_id text,
   price_jpy integer CHECK (price_jpy IS NULL OR price_jpy >= 0),
   price_observed_at timestamptz,
   availability text NOT NULL DEFAULT 'unknown',
@@ -22,8 +24,32 @@ CREATE TABLE IF NOT EXISTS products (
   last_seen_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+-- Idempotent for installations whose products table predates variant grouping.
+-- Existing products stay ungrouped: we never derive a family from the name or ASIN.
+ALTER TABLE products ADD COLUMN IF NOT EXISTS variant_group_basis text;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS variant_group_id text;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'products'::regclass AND conname = 'products_variant_group_valid'
+  ) THEN
+    ALTER TABLE products ADD CONSTRAINT products_variant_group_valid CHECK (
+      (variant_group_basis IS NULL) = (variant_group_id IS NULL)
+      AND (
+        variant_group_basis IS NULL
+        OR (variant_group_basis = 'parent_asin' AND variant_group_id ~ '^[A-Z0-9]{10}$')
+        OR (variant_group_basis = 'source_product_id' AND length(variant_group_id) BETWEEN 3 AND 128
+          AND variant_group_id ~ '^[A-Za-z0-9_.:-]+$')
+      )
+    );
+  END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS products_category_idx ON products(category_slug, updated_at DESC);
 CREATE INDEX IF NOT EXISTS products_price_idx ON products(price_jpy) WHERE price_jpy IS NOT NULL;
+CREATE INDEX IF NOT EXISTS products_variant_group_idx
+  ON products(category_slug, variant_group_basis, variant_group_id)
+  WHERE variant_group_basis IS NOT NULL AND variant_group_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS sync_runs (
   id bigserial PRIMARY KEY,

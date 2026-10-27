@@ -14,6 +14,8 @@ export type CatalogProduct = {
   status?: string;
   sourceUrl?: string | null;
   description?: string | null;
+  /** Present only when an identifier was explicitly observed from the source. */
+  variantGroup?: { basis: "parent_asin" | "source_product_id"; id: string } | null;
   variants?: CatalogVariant[];
 };
 
