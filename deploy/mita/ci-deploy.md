@@ -35,6 +35,14 @@ GitHub repository Actions secrets (configured by repository owner):
 * `MITA_DEPLOY_HOST`: pinned VPS IP/address.
 * `MITA_DEPLOY_KNOWN_HOSTS`: independently verified SSH host key line, to prevent host impersonation.
 
+Owner-only final secret activation on the development PC (the key file stays gitignored):
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File scripts/enable-mita-github-deploy.ps1
+```
+
+The VPS has a dedicated public-key entry restricted to `/usr/local/sbin/mita-ci-gate`. This step sends the corresponding private key to the repo's encrypted Actions secret without revealing it in the shell command line. Existing Hermes personal SSH keys are not uploaded. Keep the deploy key private and delete it locally when no longer needed (after confirming it is present in GitHub Secrets).
+
 **Do not** store the deploy private key in Git or application logs. If the key is exposed, revoke its `authorized_keys` entry and replace the GitHub secret.
 
 ## Troubleshooting

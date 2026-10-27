@@ -37,7 +37,6 @@ curl -fsS --max-time 8 http://127.0.0.1:7860/health >/dev/null
 
 stage="$(mktemp -d "$releases/.ci.XXXXXXXX")"
 next_link="/opt/mita/.next-$release_id"
-activated=0
 cleanup() {
   rm -rf -- "$stage"
   if [[ -L "$next_link" ]]; then rm -f -- "$next_link"; fi
@@ -110,8 +109,11 @@ ready() {
   curl -fsS --max-time 4 http://127.0.0.1:7860/health >/dev/null || return 1
 }
 
-activate_release "$target"
-activated=1
+if ! activate_release "$target"; then
+  echo 'Failed to start new Mita services: reverting to previous release' >&2
+  activate_release "$old_release" || true
+  exit 1
+fi
 ok=0
 for attempt in {1..12}; do
   if ready; then ok=1; break; fi

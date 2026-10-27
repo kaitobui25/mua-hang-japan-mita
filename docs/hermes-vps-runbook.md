@@ -97,6 +97,13 @@ Caddy **site Mita** là `/etc/caddy/mita.caddy`, được import vào `/etc/cadd
 
 ## Không backup, giới hạn hiện tại
 
+### CI/CD bằng commit `[deploy]` (thiết lập từ 27/10/2026)
+
+Mô tả sử dụng và giao thức SSH giới hạn quyền xem `deploy/mita/ci-deploy.md`. `release.json` là nguồn version hiển thị cuối footer; hiện là `0.3`. Chỉ khi push lên `main` với **HEAD commit message chứa `[deploy]`** thì GitHub Actions mới test/build artifact Linux x64 và đẩy xuống VPS. Commit khác không thay đổi VPS; không có commit tự động đưa cờ về 0. `workflow_dispatch` chỉ build để thử nghiệm. Hệ thống CI **không chạy migration DB tự động**, không đụng E-KAIWA hoặc Caddy. Trước khi dùng production, phải xác minh chạy build-only thành công, đăng ký key CI giới hạn bằng forced SSH command và thêm đúng ba repo secrets; nếu không có secrets thì job deploy sẽ thất bại an toàn.
+
+Ngày 27/10/2026: thử GitHub Actions build-only thành công trên Ubuntu và chuyển thủ công **chính artifact đó** qua forced SSH gate để nghiệm thu receiver; `/opt/mita/current` trỏ đến `releases/v0.3-a13cfbc35433`, public footer hiện `v0.3`. Hai secrets host + known_hosts đã cấu hình. **Private-key secret còn yêu cầu owner tự kích hoạt** qua `scripts/enable-mita-github-deploy.ps1` trên PC; chưa xác nhận thành công deploy tự động từ GitHub.
+
+
 Theo quyết định owner: **không lập lịch hoặc tạo backup**; không có khả năng khôi phục dữ liệu mới nếu VPS/đĩa/DB hỏng. Thư mục dữ liệu local cũ vẫn còn sau migration nhưng **không đồng bộ** và **không phải backup** của production. Không chạy `migrate-vps.ps1 -Apply` lần thứ hai: đây chỉ là tiện ích chuyển ban đầu và từ chối bảng target đã có dữ liệu.
 
 Checkout vẫn đóng. Catalog hiện có 122 sản phẩm công khai do owner chủ động chọn OFF; trạng thái quyền vẫn `local_test_only`. Lịch scrape chỉ chạy khi worker PC và SSH tunnel đang được bật thủ công; lần quét lúc 04:00 JST tiếp theo **chưa được chứng minh thành công**, phải kiểm tra `sync_runs` sau thời điểm đó. Việc chạy tải 19 người trong vài vòng không chứng minh chắc chắn độ ổn định 24/7; cần theo dõi lâu dài RAM/swap/OOM, PostgreSQL connection và E-KAIWA.
