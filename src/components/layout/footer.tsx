@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Icon } from "@/components/ui/icons";
+import release from "../../../release.json";
 
 export function Footer() {
   return <footer className="site-footer">
@@ -9,6 +10,6 @@ export function Footer() {
       <div><h3>Hướng dẫn</h3><Link href="/cach-mua-hang">Cách mua hàng</Link><Link href="/gio-hang">Giỏ hàng</Link>{process.env.NEXT_PUBLIC_READ_ONLY !== '1' && <Link href="/thanh-toan">Thanh toán mô phỏng</Link>}</div>
       <div className="footer-statement"><Icon name="leaf" size={28}/><p>Từ những lựa chọn nhỏ, chăm chút điều quan trọng.</p></div>
     </div>
-    <div className="container footer-bottom"><span>© {new Date().getFullYear()} mita japan</span><span>Thiết kế cho những điều gần gũi.</span></div>
+    <div className="container footer-bottom"><span>© {new Date().getFullYear()} mita japan</span><span>Thiết kế cho những điều gần gũi.</span><small className="footer-version">v{release.version}</small></div>
   </footer>;
 }
