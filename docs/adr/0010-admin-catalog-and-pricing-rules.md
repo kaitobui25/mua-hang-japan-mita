@@ -28,4 +28,4 @@ Sản phẩm Mita hiện được tự động upsert từ Amazon theo ASIN; n�
 
 **Q1 — ACCEPTED:** Phương án A (Amazon link/ASIN). Không xây phương án B trong MVP.
 
-**Q2 — PENDING (thuộc luồng đơn hàng, xem ADR 0009):** Chỉ xem đơn mô phỏng hay cho phép bổ sung ghi chú/trạng thái xử lý nội bộ không liên quan trạng thái thanh toán?
+**Q2 — ACCEPTED (xem ADR 0009):** Chỉ xem danh sách và chi tiết đơn mô phỏng, không có ghi chú hoặc API cập nhật trạng thái đơn ở Admin MVP. **Q3 đang mở:** số tài khoản quản trị.

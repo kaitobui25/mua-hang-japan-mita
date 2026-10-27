@@ -1,7 +1,7 @@
 # ADR 0009 — Admin tối giản cho một chủ cửa hàng
 
 **Ngày:** 27/10/2026 (JST)
-**Trạng thái:** `proposed` — Q1 về thêm sản phẩm đã chốt trong ADR 0010; phạm vi thao tác với đơn hàng đang chờ Q2.
+**Trạng thái:** `proposed / Q2 accepted` — Q1 về thêm sản phẩm đã chốt trong ADR 0010; Q2 chỉ xem đơn mô phỏng đã chốt ngày 27/10/2026. Số lượng tài khoản quản trị chờ Q3.
 **Liên quan:** `.agents/plan/04_mita_minimal_admin_grill_with_docs_plan.md`, ADR 0001–0008.
 
 ## Bối cảnh
@@ -11,10 +11,10 @@ Mita đã có website bán hàng thử nghiệm, catalog và đơn hàng mô ph�
 ## Quyết định đề xuất
 
 - Một giao diện `/admin` **chung Next.js với website hiện tại** và `/api/admin/*` trên backend Fastify đang có; PostgreSQL hiện tại lưu dữ liệu và lịch sử. Không lập dự án hay dịch vụ thứ hai, không Docker.
-- **Một tài khoản owner** ở phiên bản đầu. Đăng nhập bằng mật khẩu hash và session cookie; mọi route/API quản trị đều xác thực tại server. Có logout, rate limit, bảo vệ CSRF và nhật ký thay đổi quan trọng.
+- **Một tài khoản owner là phương án đề xuất chờ Q3**, chưa coi là đã được owner duyệt. Dù có bao nhiêu tài khoản, đăng nhập bằng mật khẩu hash và session cookie; mọi route/API quản trị đều xác thực tại server. Có logout, rate limit, bảo vệ CSRF và nhật ký thay đổi quan trọng.
 - Chỉ **4 trang**: `Tổng quan`, `Sản phẩm`, `Đơn hàng`, `Cấu hình`.
 - Tổng quan chỉ có hai số chính (số đơn mô phỏng 7 ngày, số sản phẩm đang hiển thị), tình trạng đồng bộ Amazon và 5 đơn mới nhất. Không biểu đồ, không tài chính giả.
-- Trang Đơn hàng **chỉ xem** ở giai đoạn checkout mô phỏng. Không bấm được “Đã thu tiền”, “Giao hàng”, “Hoàn tiền” khi chưa có nghiệp vụ/cổng thanh toán thật.
+- **Q2 đã chốt (A): Trang Đơn hàng chỉ xem** danh sách/chi tiết đơn mô phỏng, **không cập nhật ghi chú hoặc trạng thái nội bộ**. Không có thao tác “Đã thu tiền”, “Giao hàng”, “Hoàn tiền”, “Xóa đơn” khi chưa có nghiệp vụ/cổng thanh toán thật.
 - Admin không sở hữu hay điều khiển trực tiếp tiến trình scraping; chỉ gửi yêu cầu nhập/sửa trạng thái dữ liệu qua backend, không tạo trình duyệt khi mở trang.
 
 ## Lý do và đánh đổi
@@ -32,4 +32,4 @@ Mita đã có website bán hàng thử nghiệm, catalog và đơn hàng mô ph�
 
 ## Chưa chốt
 
-Owner đã chốt **thêm sản phẩm bằng link/ASIN Amazon** trong ADR 0010. **Q2 còn mở:** màn Đơn hàng chỉ xem danh sách/chi tiết đơn mô phỏng, hay được ghi chú và cập nhật trạng thái xử lý nội bộ (không bao giờ tự đánh dấu đã thanh toán)?
+Owner đã chốt **thêm sản phẩm bằng link/ASIN Amazon** trong ADR 0010 và **Q2 = A, đơn mô phỏng chỉ xem** trong ADR này. **Q3 còn mở:** chỉ một tài khoản chủ cửa hàng hay nhiều tài khoản quản trị riêng? Đề xuất giữ một tài khoản để giảm phạm vi MVP.

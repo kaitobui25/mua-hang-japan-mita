@@ -1,7 +1,7 @@
 # Mita Japan — Grill with Docs: Admin tối giản
 
 **Ngày:** 27/10/2026 (JST)
-**Trạng thái:** `draft / Q1 accepted / awaiting Q2` — Q1 đã được owner chốt; các phần còn lại vẫn là đề xuất, chưa triển khai code.
+**Trạng thái:** `draft / Q1 + Q2 accepted / awaiting Q3` — cách thêm sản phẩm và phạm vi xem đơn hàng đã được owner chốt; các phần còn lại vẫn là đề xuất, chưa triển khai code.
 **Ưu tiên:** chủ cửa hàng chưa quen quản trị website, cần giao diện dễ hiểu, ít thao tác, không thêm tính năng chỉ vì các website khác có.
 **Căn cứ:** `GLOSSARY.md`, ADR 0001–0008, `docs/adr/0009-minimal-owner-admin.md`, `docs/adr/0010-admin-catalog-and-pricing-rules.md`, code backend/frontend hiện tại. Không dùng Docker.
 
@@ -16,7 +16,7 @@
 
 ## 2. Nguyên tắc thiết kế (đề xuất)
 
-1. **Một người quản trị (owner) ở MVP**; không tạo vai trò kế toán/kho/nhân viên hoặc màn phân quyền.
+1. **Một người quản trị (owner) ở MVP là phương án đề xuất, chưa chốt Q3**; không tạo màn phân quyền nếu chỉ có một owner.
 2. **Bốn mục menu cố định:** `Tổng quan`, `Sản phẩm`, `Đơn hàng`, `Cấu hình`.
 3. **Một việc chính trên mỗi màn**; nút `Lưu`, `Thêm`, `Ẩn/Hiện` chỉ xuất hiện ở vị trí cần thiết. Tránh bảng nhiều cột, popup liên tiếp, biểu đồ không phục vụ quyết định.
 4. **Không xóa vật lý sản phẩm** vì sẽ bị scraper nhập lại, và còn liên quan lịch sử đơn. “Xóa khỏi cửa hàng” = **Ẩn** (có thể khôi phục); ingestion không được tự bật lại.
@@ -73,9 +73,10 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 
 ### Màn C — Đơn hàng (`/admin/don-hang`)
 
+- **Q2 — ĐÃ CHỐT (A): chỉ xem đơn hàng mô phỏng.** Không có chức năng cập nhật trạng thái xử lý hoặc ghi chú nội bộ ở MVP.
 - Bảng đơn mô phỏng, mặc định mới nhất: mã, ngày, người nhận, số mặt hàng, **tiền hàng mô phỏng** (VND), trạng thái `simulation_created`.
 - Tìm mã đơn hoặc số điện thoại; xem chi tiết gồm tên, điện thoại, email (nếu có), địa chỉ, các ASIN/số lượng, snapshot giá VND/JPY, phí vận chuyển **ước tính thu sau**, thời điểm tạo.
-- **Giai đoạn đầu chỉ xem**: không nút “Đã thanh toán”, “Giao hàng”, “Hoàn tiền”, “Xóa đơn”. Khi xây thanh toán thật sẽ thiết kế quy trình riêng dựa trên ADR 0003, 0007, 0008 và bằng chứng giao dịch.
+- **Chỉ xem theo Q2:** không nút sửa trạng thái, thêm ghi chú, “Đã thanh toán”, “Giao hàng”, “Hoàn tiền” hoặc “Xóa đơn”. Khi xây thanh toán thật sẽ thiết kế quy trình riêng dựa trên ADR 0003, 0007, 0008 và bằng chứng giao dịch.
 - Không gửi SMS/email tự động, không xuất Excel, không tích hợp vận chuyển trong MVP.
 
 ### Màn D — Cấu hình (`/admin/cau-hinh`)
@@ -102,7 +103,7 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 
 | Domain object | Tối thiểu cần có | Bất biến quan trọng |
 | --- | --- | --- |
-| `AdminAccount` / `AdminSession` | Một owner + hash mật khẩu, phiên đăng nhập có hạn | Không lưu mật khẩu dạng rõ; mọi admin mutation xác thực phía backend |
+| `AdminAccount` / `AdminSession` | Tài khoản admin + hash mật khẩu, phiên đăng nhập có hạn; số tài khoản chờ Q3 | Không lưu mật khẩu dạng rõ; mọi admin mutation xác thực phía backend |
 | `ProductVisibility` | `products.admin_hidden_at` nullable (+ lý do nếu cần) | Worker không bỏ ẩn; checkout không chấp nhận sản phẩm đang ẩn |
 | `CatalogImportRequest` | ID, category, ASIN, state, created_at, error | Q1 đã chốt: chỉ nhập từ Amazon URL/ASIN; một ASIN hợp lệ, trạng thái pending/running/succeeded/failed/needs_human; không xác nhận thành công trước khi nguồn đủ dữ liệu |
 | `PricingPolicy` | Bản ghi cấu hình đang hoạt động, version, tỷ giá, phụ phí, updated_at | Giới hạn hợp lệ, thay đổi giá chỉ cho đơn mới; snapshot đơn giữ nguyên |
@@ -113,7 +114,7 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 - Sản phẩm về hiển thị: `visible ↔ hidden_by_admin` độc lập với `sale_status=ready/pending_review` và `price_fresh/stale`. `visible` **không** có nghĩa `allowed_to_checkout`.
 - Yêu cầu thêm ASIN: `pending → running → succeeded | failed | needs_human`; trùng ASIN thì thông báo đã tồn tại/đang xử lý, không tạo bản nhân đôi.
 - Đồng bộ: chỉ đọc trạng thái thật từ `sync_runs`; chưa thêm nút điều khiển lịch/chạy thủ công trong MVP để tránh thao tác rủi ro.
-- Đơn: giai đoạn này `simulation_created` chỉ đọc; không dựng trạng thái đã trả tiền.
+- Đơn (Q2 đã chốt): `simulation_created` **chỉ đọc toàn bộ**; không tạo API cập nhật ghi chú/trạng thái và không dựng trạng thái đã trả tiền.
 - Chính sách giá: `v1 → v2` khi owner lưu; `Order` giữ snapshot giá/tỷ giá/phụ phí của thời điểm tạo.
 
 ## 5. Bảo mật tối thiểu nhưng bắt buộc
@@ -130,7 +131,7 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 | Mốc | Việc xây | Kiểm tra nghiệm thu |
 | --- | --- | --- |
 | **A. Đăng nhập + khung Admin** | Login owner, session, middleware API, sidebar 4 mục, logout | Không đăng nhập mở `/admin`/`/api/admin` bị từ chối; thử sai password rate-limited |
-| **B. Xem dữ liệu thật** | Dashboard + danh sách/chi tiết đơn mô phỏng và danh sách sản phẩm chỉ đọc | Số liệu khớp SQL; không hiển thị doanh thu thật; thông tin đơn chỉ admin xem |
+| **B. Xem dữ liệu thật** | Dashboard + danh sách/chi tiết đơn mô phỏng **chỉ đọc theo Q2** và danh sách sản phẩm chỉ đọc | Số liệu khớp SQL; API đơn hàng không có mutation; không hiển thị doanh thu thật; thông tin đơn chỉ admin xem |
 | **C. Quản lý catalog** | Ẩn/hiện bền qua sync, thêm ASIN Amazon bằng job riêng (Q1 đã chốt), nhật ký lỗi | Hidden không lọt catalog/checkout; cập nhật tự động không bật lại; trùng ASIN không tạo job trùng; lỗi import không tạo hàng giả |
 | **D. Chính sách giá** | Tỷ giá/phụ phí PostgreSQL, preview, audit, checkout snapshot nhất quán | Đổi tỷ giá đổi giá mới, không đổi đơn cũ; input sai bị chặn; checkout vẫn khóa giá stale |
 | **E. Hoàn thiện** | Tests tích hợp, accessibility cơ bản, backup/restore dev, hướng dẫn sử dụng một trang | Build/lint/test pass; thao tác nghiệp vụ tối thiểu; kiểm tra localhost sau restart |
@@ -144,9 +145,10 @@ Không dashboard nhiều biểu đồ, CRM, tồn kho Nhật, thanh toán/refund
 ## 8. Điều kiện quyết định / câu hỏi Grill
 
 - **Q1 — ĐÃ CHỐT ngày 27/10/2026:** **A — Dán link/ASIN Amazon để hệ thống nhập tự động**. Không triển khai form tự nhập tên/ảnh/giá trong Admin MVP. Lưu ý: đây là quyết định thiết kế, không phải xác nhận tính năng đã chạy.
-- **Q2 — Đang hỏi owner:** Khi xem đơn hàng, muốn **A. chỉ xem đơn mô phỏng** (ít nút, khuyến nghị khi chưa có thanh toán thật) hay **B. thêm ghi chú/trạng thái xử lý nội bộ thủ công** (ví dụ `Chưa xem`/`Đã liên hệ`, tuyệt đối không `Đã thanh toán`)? Nếu chọn B, cần bảng trạng thái nội bộ và audit tối giản, không tự thay đổi bằng chứng thanh toán.
-- **Giả định có thể thay đổi:** một owner duy nhất, không nhân viên; tỷ giá tự điền thủ công, không lấy live; đơn hàng chỉ xem ở giai đoạn mô phỏng.
-- **Để vòng Grill tiếp theo:** chốt Q2 trước; nếu cần mới hỏi nhu cầu nhiều người quản trị. Không cần 15–20 câu hỏi một lần.
+- **Q2 — ĐÃ CHỐT ngày 27/10/2026:** **A — chỉ xem danh sách và chi tiết đơn mô phỏng**, không cập nhật trạng thái/ghi chú. Đơn không thể được đánh dấu đã thanh toán trong Admin MVP.
+- **Q3 — Đang hỏi owner:** **A. Một tài khoản quản trị của chủ cửa hàng** (ít phức tạp nhất) hay **B. Nhiều tài khoản riêng**, ví dụ chủ cửa hàng và nhân viên? Nếu B, cần định danh từng người và cách quản lý tài khoản; chưa mặc định xây phân quyền nhiều cấp.
+- **Giả định có thể thay đổi:** một owner duy nhất (chờ Q3); tỷ giá tự điền thủ công, không lấy live.
+- **Để vòng Grill tiếp theo:** chốt Q3 trước rồi tiếp tục kiểm tra các lựa chọn còn ảnh hưởng độ đơn giản, không hỏi dồn nhiều câu một lúc.
 
 ## 9. Tiêu chí “đủ tốt để sử dụng”
 

@@ -83,6 +83,10 @@ _Tránh_: Bất kỳ ai truy cập được URL `/admin` đều có quyền ch�
 Đơn có trạng thái `simulation_created`, dùng để thử luồng đặt hàng; không có bằng chứng giao dịch thanh toán hoặc mua hàng thật.
 _Tránh_: Đơn đã thanh toán, doanh thu đã thu
 
+**Đơn mô phỏng chỉ xem trong Admin (Q2 đã chốt)**:
+Admin MVP chỉ đọc danh sách và chi tiết đơn mô phỏng. Không bổ sung trạng thái xử lý nội bộ, ghi chú hay thao tác thay đổi đơn; không được suy diễn đã thanh toán hoặc giao hàng thật.
+_Tránh_: Bấm xác nhận đã thu tiền trên đơn mô phỏng
+
 **Giá trị đơn mô phỏng**:
 Tổng tiền hàng VND được ghi trong đơn thử nghiệm; chỉ dùng để kiểm tra luồng và số liệu demo.
 _Tránh_: Doanh thu, lãi hoặc dòng tiền thực tế
