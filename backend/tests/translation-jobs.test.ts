@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sourceHash, sourceText } from '../src/translation/jobs.js';
+import { sourceHash, sourceText, translationFailureStopsBatch } from '../src/translation/jobs.js';
+import { TranslationUnavailable } from '../src/translation/openrouter.js';
 
 test('source content hash is stable for unchanged text and changes with Japanese source', () => {
   const row = {
@@ -21,4 +22,11 @@ test('empty optional detail is normalized for translation', () => {
   });
   assert.deepEqual(text.features, []);
   assert.deepEqual(text.specs, {});
+});
+
+test('one bad product does not stop the batch; exhausted shared quota does', () => {
+  assert.equal(translationFailureStopsBatch(new TranslationUnavailable(['source_too_large'])), false);
+  assert.equal(translationFailureStopsBatch(new TranslationUnavailable(['model-a:invalid_or_unavailable'])), false);
+  assert.equal(translationFailureStopsBatch(new TranslationUnavailable(['model-a:http_429', 'model-b:timeout'])), true);
+  assert.equal(translationFailureStopsBatch(new TranslationUnavailable(['unauthorized_api_key'])), true);
 });

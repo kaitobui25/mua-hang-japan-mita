@@ -21,6 +21,14 @@ export function sourceHash(text: ProductText): string {
   return createHash('sha256').update(JSON.stringify(text)).digest('hex');
 }
 
+export function translationFailureStopsBatch(error: unknown): boolean {
+  if (!(error instanceof TranslationUnavailable)) return true;
+  if (error.causes.some(reason => ['missing_api_key', 'unauthorized_api_key'].includes(reason))) return true;
+  // An oversized or unusually formatted product cannot prevent unrelated text being translated.
+  if (error.causes.includes('source_too_large')) return false;
+  return error.causes.every(reason => /:(?:http_(?:403|429|5\d\d)|timeout)$/.test(reason));
+}
+
 /** PC worker only. At most 30 translations per run to avoid exhausting free daily quota. */
 export async function translatePendingProducts(limit = 30): Promise<{ translated: number; failed: number; skipped: number }> {
   if (!process.env.OPENROUTER_API_KEY) {
@@ -54,8 +62,8 @@ export async function translatePendingProducts(limit = 30): Promise<{ translated
         ON CONFLICT(asin,locale) DO UPDATE SET status='failed',updated_at=now()`, [row.asin, hash]);
       // Never overwrite a previous valid translation or output raw remote errors.
       console.error(`Translation failed for ASIN ${row.asin}: ${error instanceof TranslationUnavailable ? error.causes.join(', ') : 'unavailable'}`);
-      // When all five failed, likely a shared free quota or network outage.
-      break;
+      // Shared quota/network outage: defer the remaining batch. Product-specific errors: continue.
+      if (translationFailureStopsBatch(error)) break;
     }
   }
   console.log(`Translation: ${translated} updated, ${failed} failed, ${skipped} up-to-date`);

@@ -27,9 +27,21 @@ function assertTranslation(source: ProductText, value: unknown): ProductText {
   const data = value as Record<string, unknown>;
   if (typeof data.name !== 'string' || !data.name.trim() || data.name.length > 600) throw new Error('invalid_name');
   const numbers = (text: string) => (text.match(/\d+(?:[.,]\d+)*/g) ?? []).map(n => n.replaceAll(',', '.')).sort();
+  const measurements = (text: string) => {
+    const normalized = text.normalize('NFKC').toLowerCase().replaceAll('μ', 'µ');
+    // Reject changed dosage, weight, volume and other physical measurements.
+    // NFKC accepts full-width Japanese units without allowing mg -> g.
+    return [...normalized.matchAll(/(\d+(?:[.,]\d+)?)\s*(mcg|µg|mg|kg|ml|mm|cm|kcal|kj|iu|g|l|m|%)(?!\p{L})/gu)]
+      .map(match => `${match[1].replaceAll(',', '.')}:${match[2] === 'µg' ? 'mcg' : match[2]}`)
+      .sort();
+  };
+  const productCodes = (text: string) => [...text.normalize('NFKC').matchAll(/\b(?=[a-z0-9-]*[a-z])(?=[a-z0-9-]*\d)[a-z0-9-]{4,}\b/gi)]
+    .map(match => match[0].toUpperCase()).sort();
   const validateText = (original: string, translated: string) => {
     if (!translated.trim() || translated.length > 3000) throw new Error('invalid_text');
     if (JSON.stringify(numbers(original)) !== JSON.stringify(numbers(translated))) throw new Error('numbers_changed');
+    if (JSON.stringify(measurements(original)) !== JSON.stringify(measurements(translated))) throw new Error('units_changed');
+    if (JSON.stringify(productCodes(original)) !== JSON.stringify(productCodes(translated))) throw new Error('product_codes_changed');
   };
   validateText(source.name, data.name);
   if (source.brand && /[a-z]/i.test(source.brand) && !data.name.toLowerCase().includes(source.brand.toLowerCase()) && source.name.toLowerCase().includes(source.brand.toLowerCase())) {

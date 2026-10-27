@@ -35,6 +35,8 @@ export function ProductDetail({ asin }: { asin: string }) {
   const pictures = [...new Set((item.imageUrls?.length ? item.imageUrls : item.imageUrl ? [item.imageUrl] : []).filter(Boolean))].slice(0, 5);
   const activeImage = pictures.includes(selectedImage) ? selectedImage : pictures[0] || item.imageUrl;
   const attributes = [...new Set(variants.flatMap(variant => Object.keys(variant.variantAttributes ?? {})))];
+  const keys = variants.map(variant => attributes.map(attribute => variant.variantAttributes?.[attribute] ?? ""));
+  const reliableAttributes = attributes.length > 0 && keys.every(values => values.every(Boolean)) && new Set(keys.map(values => JSON.stringify(values))).size === variants.length;
   const changeVariant = (asin: string) => { setSelected(asin); setSelectedImage(""); setAdded(false); };
   const selectAttribute = (key: string, value: string) => {
     const candidates = variants.filter(variant => variant.variantAttributes?.[key] === value);
@@ -51,7 +53,7 @@ export function ProductDetail({ asin }: { asin: string }) {
       <div className="detail-content"><p className="product-brand">{item.brand || "Sản phẩm Nhật"}</p><h1>{item.name}</h1><p className="detail-category">{categoryName(item.categorySlug)}</p>
         <div className="detail-price-block"><div className="detail-price">{item.priceVnd && item.priceVnd > 0 ? formatVnd(item.priceVnd) : "Giá đang cập nhật"}</div><p className={canCheckout(item) ? "status-good" : "status-warning"}><Icon name="clock" size={17}/>{productStatus(item)}</p>{observedAt && <small>Giá ghi nhận: {observedAt} (giờ Việt Nam)</small>}</div>
         {variants.length > 1 && <fieldset className="variant-field"><legend>Chọn phiên bản theo sản phẩm nguồn</legend>
-          {attributes.length > 0 ? <div className="variant-selectors">{attributes.map(attribute => <label key={attribute}><span>{attribute}</span><select value={item.variantAttributes?.[attribute] ?? ""} onChange={event => selectAttribute(attribute, event.target.value)}><option value="" disabled>Chọn {attribute}</option>{[...new Set(variants.map(variant => variant.variantAttributes?.[attribute]).filter((value): value is string => !!value))].map(value => <option key={value} value={value}>{value}</option>)}</select></label>)}</div>
+          {reliableAttributes ? <div className="variant-selectors">{attributes.map(attribute => <label key={attribute}><span>{attribute}</span><select value={item.variantAttributes?.[attribute] ?? ""} onChange={event => selectAttribute(attribute, event.target.value)}><option value="" disabled>Chọn {attribute}</option>{[...new Set(variants.map(variant => variant.variantAttributes?.[attribute]).filter((value): value is string => !!value))].map(value => <option key={value} value={value}>{value}</option>)}</select></label>)}</div>
             : <div className="variant-list">{variants.map(variant => <label key={variant.asin} className={selected === variant.asin ? "variant selected" : "variant"}><input type="radio" name="variant" value={variant.asin} checked={selected === variant.asin} onChange={() => changeVariant(variant.asin)}/><span>{variant.name} ({variant.asin}) · {variant.priceVnd ? formatVnd(variant.priceVnd) : "Chưa có giá"}</span></label>)}</div>}
           <p className="variant-asin">ASIN đã chọn: {item.asin}</p>
         </fieldset>}

@@ -43,6 +43,20 @@ test('rejects changed measurements and preserves original input', async () => {
   assert.equal(original.name, 'SAVAS ホエイプロテイン ココア味 980g');
 });
 
+test('rejects silent dosage unit changes even if all numbers stay unchanged', async () => {
+  const source: ProductText = { ...original, name: 'SAVAS Vitamin 500mg', features: [], ingredients: [], usage: [], specs: {}, cautions: [] };
+  const mock = (async () => Response.json({ choices: [{ message: { content: JSON.stringify({ ...source, name: 'SAVAS Vitamin 500g' }) } }] })) as typeof fetch;
+  await assert.rejects(translateProduct(source, { apiKey: 'test-secret', fetcher: mock }),
+    (error: unknown) => error instanceof TranslationUnavailable && error.causes.length === 5);
+});
+
+test('rejects altered product codes with the same digits', async () => {
+  const source: ProductText = { ...original, name: 'SAVAS B09ABC123D 980g', features: [], ingredients: [], usage: [], specs: {}, cautions: [] };
+  const mock = (async () => Response.json({ choices: [{ message: { content: JSON.stringify({ ...source, name: 'SAVAS X09ABC123D 980g' }) } }] })) as typeof fetch;
+  await assert.rejects(translateProduct(source, { apiKey: 'test-secret', fetcher: mock }),
+    (error: unknown) => error instanceof TranslationUnavailable && error.causes.length === 5);
+});
+
 test('missing key and unauthorized key stop without leaking credential', async () => {
   await assert.rejects(translateProduct(original, { apiKey: '' , fetcher: (async () => { throw Error('unexpected'); }) as typeof fetch }),
     (error: unknown) => error instanceof TranslationUnavailable && error.causes[0] === 'missing_api_key');
