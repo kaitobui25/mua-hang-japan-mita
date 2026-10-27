@@ -27,6 +27,8 @@ test('empty optional detail is normalized for translation', () => {
 test('one bad product does not stop the batch; exhausted shared quota does', () => {
   assert.equal(translationFailureStopsBatch(new TranslationUnavailable(['source_too_large'])), false);
   assert.equal(translationFailureStopsBatch(new TranslationUnavailable(['model-a:invalid_or_unavailable'])), false);
-  assert.equal(translationFailureStopsBatch(new TranslationUnavailable(['model-a:http_429', 'model-b:timeout'])), true);
+  assert.equal(translationFailureStopsBatch(new TranslationUnavailable(['model-a:http_429', 'model-b:timeout'])), false);
+  assert.equal(translationFailureStopsBatch(new TranslationUnavailable(['providers_temporarily_unavailable'])), true);
   assert.equal(translationFailureStopsBatch(new TranslationUnavailable(['unauthorized_api_key'])), true);
+  assert.equal(translationFailureStopsBatch(new TranslationUnavailable(['free_quota_exhausted'])), true);
 });

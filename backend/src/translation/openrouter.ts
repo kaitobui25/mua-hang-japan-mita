@@ -22,6 +22,29 @@ export type TranslationResult = { text: ProductText; model: string };
 const url = 'https://openrouter.ai/api/v1/chat/completions';
 const maxInput = 10000;
 
+type FreeQuota = { remaining: number; limit: number; used: number };
+
+/** Read provider-account free quota without consuming an inference request. */
+export async function readFreeQuota(apiKey = process.env.OPENROUTER_API_KEY, fetcher: typeof fetch = fetch): Promise<FreeQuota> {
+  if (!apiKey) throw new TranslationUnavailable(['missing_api_key']);
+  try {
+    const response = await fetcher('https://openrouter.ai/api/v1/key', {
+      headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(10000)
+    });
+    if (response.status === 401) throw new TranslationUnavailable(['unauthorized_api_key']);
+    if (!response.ok) throw new TranslationUnavailable(['quota_check_unavailable']);
+    const payload = await response.json() as { data?: { free_model_daily_requests?: Partial<FreeQuota> } };
+    const quota = payload.data?.free_model_daily_requests;
+    if (!quota || !Number.isSafeInteger(quota.remaining) || !Number.isSafeInteger(quota.limit) || !Number.isSafeInteger(quota.used)) {
+      throw new TranslationUnavailable(['quota_check_unavailable']);
+    }
+    return quota as FreeQuota;
+  } catch (error) {
+    if (error instanceof TranslationUnavailable) throw error;
+    throw new TranslationUnavailable(['quota_check_unavailable']);
+  }
+}
+
 function assertTranslation(source: ProductText, value: unknown): ProductText {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid_translation');
   const data = value as Record<string, unknown>;
@@ -81,31 +104,57 @@ export class TranslationUnavailable extends Error {
 
 export async function translateProduct(
   source: ProductText,
-  options: { apiKey?: string; fetcher?: typeof fetch; timeoutMs?: number } = {}
+  options: { apiKey?: string; fetcher?: typeof fetch; timeoutMs?: number; beforeRequest?: (model: string) => Promise<void>;
+    unavailableModels?: Set<string> } = {}
 ): Promise<TranslationResult> {
   const apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new TranslationUnavailable(['missing_api_key']);
   if (JSON.stringify(source).length > maxInput) throw new TranslationUnavailable(['source_too_large']);
   const fetcher = options.fetcher ?? fetch;
   const errors: string[] = [];
+  const sourceJson = JSON.stringify(source);
+  // A short title does not need a 3,000-token generation budget; a smaller
+  // bounded completion makes free inference faster without truncating detail jobs.
+  const maxTokens = Math.min(3000, Math.max(500, Math.ceil(sourceJson.length * 1.25)));
   for (const model of FREE_TRANSLATION_MODELS) {
+    // The free Inkling endpoint is licensed for agentic harness use only, not this background translator.
+    if (model === 'thinkingmachines/inkling-small:free') continue;
+    if (options.unavailableModels?.has(model)) continue;
     try {
+      await options.beforeRequest?.(model);
       const response = await fetcher(url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         signal: AbortSignal.timeout(options.timeoutMs ?? 45000),
         body: JSON.stringify({
           model,
-          max_tokens: 3000,
+          max_tokens: maxTokens,
+          temperature: 0,
           messages: [
             { role: 'system', content: 'Translate Amazon Japan product text to Vietnamese. Produce ONLY a JSON object with the SAME keys and array sizes as the user JSON. Preserve brand names, product codes, numbers, units and exact factual meaning. Prefer Vietnamese vocabulary; if unavailable use English, then Japanese. Never invent product claims, dosages, ingredients or warnings. Keep specs keys unchanged. Return only JSON.' },
-            { role: 'user', content: JSON.stringify(source) }
+            { role: 'user', content: sourceJson }
           ]
         })
       });
       // Wrong shared credential cannot be repaired by selecting another model.
       if (response.status === 401) throw new TranslationUnavailable(['unauthorized_api_key']);
       if (!response.ok) {
+        // OpenRouter-origin 429 has platform rate-limit headers. A different model cannot
+        // bypass an exhausted shared quota, so defer the rest of this translation batch.
+        if (response.status === 429 && response.headers.has('x-ratelimit-limit')) {
+          throw new TranslationUnavailable(['rate_limit_platform']);
+        }
+        if (response.status === 402) throw new TranslationUnavailable(['account_budget_exhausted']);
+        if (response.status === 403) {
+          // Budget guardrails are shared; model-specific permissions are not.
+          const body = await response.json().catch(() => null) as { error?: { metadata?: { limit_source?: unknown } } } | null;
+          if (typeof body?.error?.metadata?.limit_source === 'string') {
+            throw new TranslationUnavailable(['account_budget_exhausted']);
+          }
+        }
+        // Don't burn the shared daily quota by retrying a provider that already
+        // denied this session. Try it again on the next scheduled batch.
+        if ([403, 429, 500, 502, 503, 504].includes(response.status)) options.unavailableModels?.add(model);
         errors.push(`${model}:http_${response.status}`);
         continue;
       }
@@ -115,8 +164,13 @@ export async function translateProduct(
     } catch (error) {
       if (error instanceof TranslationUnavailable) throw error;
       // No response body or headers are logged: providers may echo sensitive input.
-      errors.push(`${model}:${error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'invalid_or_unavailable'}`);
+      const isTimeout = error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name);
+      if (isTimeout) options.unavailableModels?.add(model);
+      errors.push(`${model}:${isTimeout ? 'timeout' : 'invalid_or_unavailable'}`);
     }
+  }
+  if (options.unavailableModels && FREE_TRANSLATION_MODELS.filter(model => model !== 'thinkingmachines/inkling-small:free').every(model => options.unavailableModels!.has(model))) {
+    errors.push('providers_temporarily_unavailable');
   }
   throw new TranslationUnavailable(errors);
 }

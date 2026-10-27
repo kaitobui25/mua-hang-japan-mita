@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { db } from '../db/pool.js';
-import { translateProduct, TranslationUnavailable, type ProductText } from './openrouter.js';
+import { translateProduct, readFreeQuota, TranslationUnavailable, type ProductText } from './openrouter.js';
 
 type SourceRow = {
   asin: string; name: string; brand: string | null;
@@ -23,10 +23,10 @@ export function sourceHash(text: ProductText): string {
 
 export function translationFailureStopsBatch(error: unknown): boolean {
   if (!(error instanceof TranslationUnavailable)) return true;
-  if (error.causes.some(reason => ['missing_api_key', 'unauthorized_api_key'].includes(reason))) return true;
+  if (error.causes.some(reason => ['missing_api_key', 'unauthorized_api_key', 'free_quota_exhausted', 'rate_limit_platform', 'quota_check_unavailable', 'account_budget_exhausted', 'providers_temporarily_unavailable'].includes(reason))) return true;
   // An oversized or unusually formatted product cannot prevent unrelated text being translated.
   if (error.causes.includes('source_too_large')) return false;
-  return error.causes.every(reason => /:(?:http_(?:403|429|5\d\d)|timeout)$/.test(reason));
+  return false;
 }
 
 /** PC worker only. At most 30 translations per run to avoid exhausting free daily quota. */
@@ -35,11 +35,37 @@ export async function translatePendingProducts(limit = 30): Promise<{ translated
     console.log('Translation deferred: OPENROUTER_API_KEY not configured on PC worker.');
     return { translated: 0, failed: 0, skipped: 0 };
   }
+  let quota;
+  try { quota = await readFreeQuota(); }
+  catch (error) {
+    console.error('Translation deferred: OpenRouter quota status unavailable.');
+    return { translated: 0, failed: 0, skipped: 0 };
+  }
+  // Reserve a few calls for the owner; free models have a shared UTC daily limit.
+  let remaining = Math.max(0, quota.remaining - 2);
+  if (remaining === 0) {
+    console.log('Translation deferred: free daily quota exhausted.');
+    return { translated: 0, failed: 0, skipped: 0 };
+  }
+  let previousRequestAt = 0;
+  const unavailableModels = new Set<string>();
+  const beforeRequest = async () => {
+    if (remaining <= 0) throw new TranslationUnavailable(['free_quota_exhausted']);
+    const delay = Math.max(0, 3200 - (Date.now() - previousRequestAt));
+    if (delay) await new Promise<void>(resolve => setTimeout(resolve, delay));
+    // Consume budget even on HTTP errors. 20 requests/minute max, shared across all :free models.
+    remaining--;
+    previousRequestAt = Date.now();
+  };
   const { rows } = await db.query<SourceRow>(`SELECT p.asin,p.name,p.brand,d.features,d.ingredients,d.usage,d.specs,d.cautions,
       t.source_hash,t.status FROM products p
       LEFT JOIN product_details d ON d.asin=p.asin
       LEFT JOIN product_translations t ON t.asin=p.asin AND t.locale='vi'
-      ORDER BY COALESCE(t.updated_at, '1970-01-01'::timestamptz) ASC, p.asin ASC`);
+      LEFT JOIN product_detail_queue q ON q.asin=p.asin AND q.category_slug=p.category_slug
+      -- Avoid spending scarce free quota on text about to change in an active backfill.
+      WHERE q.asin IS NULL OR q.state <> 'pending' OR q.enqueued_at < now() - interval '6 hours'
+      ORDER BY CASE WHEN t.status='failed' THEN 1 ELSE 0 END,
+        length(p.name) ASC, COALESCE(t.updated_at, '1970-01-01'::timestamptz) ASC, p.asin ASC`);
   let translated = 0, failed = 0, skipped = 0;
   for (const row of rows) {
     const source = sourceText(row);
@@ -47,7 +73,7 @@ export async function translatePendingProducts(limit = 30): Promise<{ translated
     if (row.status === 'success' && row.source_hash === hash) { skipped++; continue; }
     if (translated + failed >= limit) break;
     try {
-      const result = await translateProduct(source);
+      const result = await translateProduct(source, { beforeRequest, unavailableModels });
       await db.query(`INSERT INTO product_translations(asin,locale,name,detail,source_hash,model,status,translated_at)
         VALUES($1,'vi',$2,$3,$4,$5,'success',now())
         ON CONFLICT(asin,locale) DO UPDATE SET
@@ -57,6 +83,7 @@ export async function translatePendingProducts(limit = 30): Promise<{ translated
       translated++;
     } catch (error) {
       failed++;
+      if (error instanceof TranslationUnavailable && error.causes.includes('free_quota_exhausted')) break;
       await db.query(`INSERT INTO product_translations(asin,locale,source_hash,status)
         VALUES($1,'vi',$2,'failed')
         ON CONFLICT(asin,locale) DO UPDATE SET status='failed',updated_at=now()`, [row.asin, hash]);

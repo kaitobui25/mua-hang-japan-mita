@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FREE_TRANSLATION_MODELS, TranslationUnavailable, translateProduct, type ProductText } from '../src/translation/openrouter.js';
+import { FREE_TRANSLATION_MODELS, TranslationUnavailable, translateProduct, readFreeQuota, type ProductText } from '../src/translation/openrouter.js';
 
 const original: ProductText = {
   name: 'SAVAS ホエイプロテイン ココア味 980g', brand: 'SAVAS', features: ['たんぱく質 20g'],
@@ -31,15 +31,15 @@ test('falls back sequentially on 429, provider failure and invalid JSON', async 
     return Response.json({ choices: [{ message: { content: '```json\n' + JSON.stringify(translated) + '\n```' } }] });
   }) as typeof fetch;
   const output = await translateProduct(original, { apiKey: 'test-secret', fetcher: mock });
-  assert.equal(output.model, FREE_TRANSLATION_MODELS[3]);
+  assert.equal(output.model, FREE_TRANSLATION_MODELS[4]);
   assert.equal(output.text.name, translated.name);
-  assert.deepEqual(seen, FREE_TRANSLATION_MODELS.slice(0, 4));
+  assert.deepEqual(seen, FREE_TRANSLATION_MODELS.filter(model => !model.startsWith('thinkingmachines/')));
 });
 
 test('rejects changed measurements and preserves original input', async () => {
   const mock = (async () => Response.json({ choices: [{ message: { content: JSON.stringify({ ...translated, name: 'SAVAS 1080g' }) } }] })) as typeof fetch;
   await assert.rejects(translateProduct(original, { apiKey: 'test-secret', fetcher: mock }), (error: unknown) =>
-    error instanceof TranslationUnavailable && error.causes.length === 5);
+    error instanceof TranslationUnavailable && error.causes.length === 4);
   assert.equal(original.name, 'SAVAS ホエイプロテイン ココア味 980g');
 });
 
@@ -47,14 +47,14 @@ test('rejects silent dosage unit changes even if all numbers stay unchanged', as
   const source: ProductText = { ...original, name: 'SAVAS Vitamin 500mg', features: [], ingredients: [], usage: [], specs: {}, cautions: [] };
   const mock = (async () => Response.json({ choices: [{ message: { content: JSON.stringify({ ...source, name: 'SAVAS Vitamin 500g' }) } }] })) as typeof fetch;
   await assert.rejects(translateProduct(source, { apiKey: 'test-secret', fetcher: mock }),
-    (error: unknown) => error instanceof TranslationUnavailable && error.causes.length === 5);
+    (error: unknown) => error instanceof TranslationUnavailable && error.causes.length === 4);
 });
 
 test('rejects altered product codes with the same digits', async () => {
   const source: ProductText = { ...original, name: 'SAVAS B09ABC123D 980g', features: [], ingredients: [], usage: [], specs: {}, cautions: [] };
   const mock = (async () => Response.json({ choices: [{ message: { content: JSON.stringify({ ...source, name: 'SAVAS X09ABC123D 980g' }) } }] })) as typeof fetch;
   await assert.rejects(translateProduct(source, { apiKey: 'test-secret', fetcher: mock }),
-    (error: unknown) => error instanceof TranslationUnavailable && error.causes.length === 5);
+    (error: unknown) => error instanceof TranslationUnavailable && error.causes.length === 4);
 });
 
 test('missing key and unauthorized key stop without leaking credential', async () => {
@@ -63,4 +63,49 @@ test('missing key and unauthorized key stop without leaking credential', async (
   const mock = (async () => new Response('invalid credential', { status: 401 })) as typeof fetch;
   await assert.rejects(translateProduct(original, { apiKey: 'test-secret', fetcher: mock }),
     (error: unknown) => error instanceof TranslationUnavailable && error.causes[0] === 'unauthorized_api_key' && !String(error).includes('test-secret'));
+});
+
+test('shared platform 429 stops immediately without burning another model quota', async () => {
+  let calls = 0;
+  const mock = (async () => { calls++; return new Response('{}', {
+    status: 429, headers: { 'x-ratelimit-limit': '50', 'x-ratelimit-remaining': '0' }
+  }); }) as typeof fetch;
+  await assert.rejects(translateProduct(original, { apiKey: 'test-secret', fetcher: mock }),
+    (error: unknown) => error instanceof TranslationUnavailable && error.causes[0] === 'rate_limit_platform');
+  assert.equal(calls, 1);
+});
+
+test('GET quota status avoids inference and fails closed on malformed data', async () => {
+  const mock = (async (_url: unknown, init: RequestInit = {}) => {
+    assert.equal((init.headers as Record<string, string>).Authorization, 'Bearer test-secret');
+    return Response.json({ data: { free_model_daily_requests: { remaining: 10, limit: 50, used: 40 } } });
+  }) as typeof fetch;
+  assert.equal((await readFreeQuota('test-secret', mock)).remaining, 10);
+  const invalid = (async () => Response.json({ data: {} })) as typeof fetch;
+  await assert.rejects(readFreeQuota('test-secret', invalid),
+    (error: unknown) => error instanceof TranslationUnavailable && error.causes[0] === 'quota_check_unavailable');
+});
+
+test('request budget gate aborts before calling a model', async () => {
+  let requests = 0;
+  const mock = (async () => { requests++; throw new Error('not expected'); }) as typeof fetch;
+  await assert.rejects(translateProduct(original, {
+    apiKey: 'test-secret', fetcher: mock,
+    beforeRequest: async () => { throw new TranslationUnavailable(['free_quota_exhausted']); }
+  }), (error: unknown) => error instanceof TranslationUnavailable && error.causes[0] === 'free_quota_exhausted');
+  assert.equal(requests, 0);
+});
+
+test('batch suppresses a provider after its 429 instead of burning quota on every product', async () => {
+  const blockedModels = new Set<string>();
+  const seen: string[] = [];
+  const mock = (async (_url: unknown, init: RequestInit = {}) => {
+    const model: string = JSON.parse(String(init.body)).model;
+    seen.push(model);
+    if (model === FREE_TRANSLATION_MODELS[0]) return new Response('{}', { status: 429 });
+    return Response.json({ choices: [{ message: { content: JSON.stringify(translated) } }] });
+  }) as typeof fetch;
+  await translateProduct(original, { apiKey: 'test-secret', fetcher: mock, unavailableModels: blockedModels });
+  await translateProduct(original, { apiKey: 'test-secret', fetcher: mock, unavailableModels: blockedModels });
+  assert.deepEqual(seen, [FREE_TRANSLATION_MODELS[0], FREE_TRANSLATION_MODELS[1], FREE_TRANSLATION_MODELS[1]]);
 });
