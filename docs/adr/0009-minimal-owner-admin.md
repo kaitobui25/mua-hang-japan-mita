@@ -33,4 +33,4 @@ Mita đã có website bán hàng thử nghiệm, catalog và đơn hàng mô ph�
 
 ## Chưa chốt
 
-Owner đã chốt **Q1 = A, thêm sản phẩm bằng link/ASIN Amazon** (ADR 0010), **Q2 = A, chỉ xem đơn mô phỏng** và **Q3 = A, một tài khoản owner duy nhất** (ADR này). **Q4 còn mở:** cấu hình tỷ giá VND/JPY thủ công hay tự đồng bộ từ nguồn bên ngoài (xem ADR 0010).
+Owner đã chốt **Q1 = A, thêm sản phẩm bằng link/ASIN Amazon** và **Q4 = A, tự nhập tỷ giá VND/JPY rồi Lưu** (ADR 0010), cùng **Q2 = A, chỉ xem đơn mô phỏng** và **Q3 = A, một tài khoản owner duy nhất** (ADR này). **Q5 còn mở:** phụ phí dịch vụ mặc định 12% có thể chỉnh trong Admin hay chỉ hiển thị (ADR 0010).

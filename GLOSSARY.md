@@ -108,7 +108,7 @@ _Tránh_: Được hiển thị nghĩa là còn hàng và đặt mua được
 _Tránh_: Dán link đồng nghĩa sản phẩm được nhập và bán ngay
 
 **Tỷ giá tính giá bán (VND/JPY)**:
-Hệ số nội bộ quy đổi JPY sang VND để tạo giá tham khảo tại Mita; owner có thể đặt thủ công. Không mặc nhiên là tỷ giá ngân hàng/live hoặc tỷ giá thanh toán Amazon.
+Hệ số nội bộ quy đổi JPY sang VND để tạo giá tham khảo tại Mita; **Q4 đã chốt: chủ cửa hàng nhập thủ công rồi nhấn Lưu trong Admin**, không đồng bộ tỷ giá tự động. Thay đổi chỉ tác động báo giá và đơn mới, không sửa snapshot của đơn đã tạo. Không mặc nhiên là tỷ giá ngân hàng/live hoặc tỷ giá thanh toán Amazon.
 _Tránh_: Tỷ giá thời gian thực
 
 **Phụ phí dịch vụ (%)**:
