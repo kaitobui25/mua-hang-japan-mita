@@ -6,7 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { db } from '../src/db/pool.js';
 import { ingestObservations } from '../src/ingestion/store.js';
-import { syncCatalog } from '../src/ingestion/sync.js';
+import { syncCatalog, seedExistingDetails, processCategoryDetails } from '../src/ingestion/sync.js';
 import { SourceError, type Observation } from '../src/ingestion/source.js';
 
 const category = 'thuc-pham-bo-sung';
@@ -33,6 +33,9 @@ test('daily sync refreshes existing ASINs on discovery errors, records backlog a
     await isolated.query(`SET search_path TO ${namespace}`);
     await isolated.query(await readFile(new URL('../src/db/schema.sql', import.meta.url), 'utf8'));
     await ingestObservations([item(existing)], undefined, isolated);
+    assert.equal(await seedExistingDetails(isolated), 1, 'existing legacy ASIN seeded without Amazon requests');
+    assert.equal(await seedExistingDetails(isolated), 0, 'seeding is idempotent');
+    assert.equal((await isolated.query('SELECT count(*)::int AS n FROM product_detail_queue')).rows[0].n, 1);
     const calls: string[] = [];
     const result = await syncCatalog({
       connection: isolated,

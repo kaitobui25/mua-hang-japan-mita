@@ -82,6 +82,14 @@ export async function enqueueDetails(category: string, observations: Pick<Observ
   }
 }
 
+/** Queue existing local catalog ASINs without touching Amazon or their existing snapshots. */
+export async function seedExistingDetails(connection: Connection = db): Promise<number> {
+  const result = await connection.query(`INSERT INTO product_detail_queue(category_slug,asin)
+    SELECT category_slug,asin FROM products WHERE category_slug IN ('thuc-pham-bo-sung','thuc-pham-cho-be')
+    ON CONFLICT(category_slug,asin) DO NOTHING`);
+  return result.rowCount ?? 0;
+}
+
 export async function processCategoryDetails(category: string, options: {
   connection?: Connection; collect?: DetailCollector; save?: (items: Observation[]) => Promise<number>;
   delay?: (milliseconds: number) => Promise<void>;
@@ -97,7 +105,7 @@ export async function processCategoryDetails(category: string, options: {
   let saved = 0, blocked = false;
   while (attempted.length < limit) {
     const next = await connection.query<{ asin: string; parent_asin: string | null; provenance: { sourceUrl?: string } }>(`SELECT asin,parent_asin,provenance FROM product_detail_queue
-      WHERE category_slug=$1 AND NOT (asin=ANY($2::varchar(10)[]))
+      WHERE category_slug=$1 AND state <> 'needs_human' AND NOT (asin=ANY($2::varchar(10)[]))
       ORDER BY last_attempt_at ASC NULLS FIRST,enqueued_at ASC,asin ASC LIMIT 1`, [category, attempted]);
     const candidate = next.rows[0];
     if (!candidate) break;
@@ -156,9 +164,7 @@ export async function syncCatalog(options: {
       };
       try {
         // Every existing ASIN is eligible daily, including ones no longer on listings.
-        await lock.query(`INSERT INTO product_detail_queue(category_slug,asin)
-          SELECT category_slug,asin FROM products WHERE category_slug=$1 ORDER BY first_seen_at,asin
-          ON CONFLICT DO NOTHING`, [seed.categorySlug]);
+        await seedExistingDetails(lock);
         try {
           const result = await (options.discover ?? collectCategory)(seed);
           discovered += new Set(result.observations.map(o => o.asin)).size;

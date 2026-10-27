@@ -15,6 +15,9 @@
     "admin:reset": "tsx src/admin/owner.ts reset",
     "worker:once": "tsx src/worker.ts once",
     "worker:translate": "tsx src/worker.ts translate",
+    "worker:backfill:seed": "tsx src/worker.ts backfill:seed",
+    "worker:backfill:status": "tsx src/worker.ts backfill:status",
+    "worker:backfill": "tsx src/worker.ts backfill",
     "worker:daily": "tsx src/worker.ts daily"
   },
   "dependencies": {
