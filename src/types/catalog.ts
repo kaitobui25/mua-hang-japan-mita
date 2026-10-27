@@ -7,6 +7,7 @@ export type CatalogProduct = {
   brand?: string | null;
   categorySlug: string;
   imageUrl?: string | null;
+  imageUrls?: string[];
   priceJpy?: number | null;
   priceVnd?: number | null;
   priceObservedAt?: string | null;
@@ -14,6 +15,16 @@ export type CatalogProduct = {
   status?: string;
   sourceUrl?: string | null;
   description?: string | null;
+  detail?: {
+    features: string[];
+    ingredients: string[];
+    usage: string[];
+    specs: Record<string, string>;
+    cautions: string[];
+    variantAttributes: Record<string, string>;
+    sourceObservedAt?: string;
+  } | null;
+  variantAttributes?: Record<string, string>;
   /** Present only when an identifier was explicitly observed from the source. */
   variantGroup?: { basis: "parent_asin" | "source_product_id"; id: string } | null;
   variants?: CatalogVariant[];
