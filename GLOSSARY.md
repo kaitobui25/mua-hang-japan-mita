@@ -70,3 +70,47 @@ _Tránh_: Hủy và hoàn toàn bộ đơn
 
 **Gom kiện tại Nhật**:
 Ưu tiên tập hợp các sản phẩm trong một đơn để vận chuyển về Việt Nam chung một kiện; nhân viên có thể tách kiện khi hàng chậm hoặc thiếu.
+
+## Thuật ngữ đề xuất cho Admin (chưa chốt)
+
+Các thuật ngữ dưới đây dùng cho bản kế hoạch Admin dự thảo tại `.agents/plan/04_mita_minimal_admin_grill_with_docs_plan.md`; **chưa** thay thế các quyết định nghiệp vụ đã chốt ở trên.
+
+**Admin / chủ cửa hàng**:
+Người được phép đăng nhập giao diện nội bộ để xem tình hình, quản lý việc hiển thị sản phẩm và thay đổi chính sách giá; không phải tài khoản mua hàng của khách.
+_Tránh_: Bất kỳ ai truy cập được URL `/admin` đều có quyền chỉnh sửa
+
+**Đơn mô phỏng**:
+Đơn có trạng thái `simulation_created`, dùng để thử luồng đặt hàng; không có bằng chứng giao dịch thanh toán hoặc mua hàng thật.
+_Tránh_: Đơn đã thanh toán, doanh thu đã thu
+
+**Giá trị đơn mô phỏng**:
+Tổng tiền hàng VND được ghi trong đơn thử nghiệm; chỉ dùng để kiểm tra luồng và số liệu demo.
+_Tránh_: Doanh thu, lãi hoặc dòng tiền thực tế
+
+**Ẩn sản phẩm**:
+Quyết định của chủ cửa hàng không hiển thị một ASIN trên catalog công khai và không cho checkout; scraper vẫn có thể ghi nhận giá nhưng không tự bật lại sản phẩm. Có thể `Hiện lại`.
+_Tránh_: Xóa vĩnh viễn bản ghi, xóa lịch sử đơn
+
+**Sản phẩm đủ điều kiện hiển thị**:
+Sản phẩm có thể xuất hiện trong catalog khách xem khi không bị ẩn bởi Admin và đáp ứng quyền công bố nội dung; độc lập với giá còn hiệu lực hoặc khả năng checkout.
+_Tránh_: Được hiển thị nghĩa là còn hàng và đặt mua được
+
+**Yêu cầu thêm ASIN**:
+Đề nghị nhập một sản phẩm từ URL/ASIN Amazon vào quy trình thu thập; chỉ thành công khi worker đã kiểm tra và lưu dữ liệu nguồn. Đây là phương án đang đề xuất, chờ owner chọn.
+_Tránh_: Dán link đồng nghĩa sản phẩm được nhập và bán ngay
+
+**Tỷ giá tính giá bán (VND/JPY)**:
+Hệ số nội bộ quy đổi JPY sang VND để tạo giá tham khảo tại Mita; owner có thể đặt thủ công. Không mặc nhiên là tỷ giá ngân hàng/live hoặc tỷ giá thanh toán Amazon.
+_Tránh_: Tỷ giá thời gian thực
+
+**Phụ phí dịch vụ (%)**:
+Tỷ lệ cộng thêm vào tiền hàng đã quy đổi, được tính trong cùng chính sách giá và có snapshot theo đơn.
+_Tránh_: Phí vận chuyển quốc tế đã chốt
+
+**Chính sách giá (PricingPolicy)**:
+Một phiên bản tỷ giá và phụ phí dùng để tính giá catalog/checkout mới. Đơn đã tạo lưu tiền hàng, tỷ giá và phụ phí tại thời điểm đó, không bị thay đổi ngược.
+_Tránh_: Sửa cấu hình là sửa luôn giá của mọi đơn cũ
+
+**Lần đồng bộ được xác nhận**:
+Một `sync_run` thực tế có thời gian, số lượng và trạng thái kết quả; cấu hình lịch tự động không được xem là bằng chứng job đã chạy.
+_Tránh_: Cứ đến 04:00 là đồng bộ chắc chắn thành công
