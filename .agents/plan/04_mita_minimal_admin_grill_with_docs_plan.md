@@ -1,7 +1,7 @@
 # Mita Japan — Grill with Docs: Admin tối giản
 
 **Ngày:** 27/10/2026 (JST)
-**Trạng thái:** `draft / Q1–Q8 accepted / awaiting Q9` — tám câu hỏi đầu đã được owner chốt; phạm vi truy cập Admin từ xa đang chờ Q9, chưa triển khai code.
+**Trạng thái:** `Grill hoàn tất / Q1–Q11 accepted / sẵn sàng lập trình theo mốc` — toàn bộ 11 câu đã được owner chốt; đây là tài liệu thiết kế, **chưa triển khai code Admin**. Không mở thêm vòng Grill khi chưa có yêu cầu mới.
 **Ưu tiên:** chủ cửa hàng chưa quen quản trị website, cần giao diện dễ hiểu, ít thao tác, không thêm tính năng chỉ vì các website khác có.
 **Căn cứ:** `GLOSSARY.md`, ADR 0001–0008, `docs/adr/0009-minimal-owner-admin.md`, `docs/adr/0010-admin-catalog-and-pricing-rules.md`, code backend/frontend hiện tại. Không dùng Docker.
 
@@ -12,9 +12,9 @@
 - Giá JPY→VND hiện lấy từ biến môi trường (`FX_JPY_TO_VND` mặc định 190; `SERVICE_FEE_PERCENT` mặc định 12), cần chuyển cấu hình vận hành vào DB khi xây Admin; không thay đổi đơn cũ.
 - Đơn hiện chỉ có `simulation_created`: **chưa thu tiền, chưa mua trên Amazon, chưa có doanh thu hoặc lợi nhuận thật**.
 - **Chưa có đăng nhập, Admin UI, API quản trị, trạng thái ẩn sản phẩm và thao tác nhập thêm ASIN theo yêu cầu**.
-- Có cấu hình worker 04:00 `Asia/Tokyo`; **chưa xác minh được lịch tự chạy đủ độ tin cậy**. Admin chỉ hiển thị trạng thái ghi nhận thực tế, không ghi “đồng bộ thành công” theo lịch đặt trước.
+- Có cấu hình worker 04:00 `Asia/Tokyo`; **chưa xác minh việc chạy đúng lịch**. **Q10 = A:** chỉ chạy thủ công, nên 04:00 chỉ có thể quét khi máy và worker đã bật. Admin chỉ hiển thị `sync_runs` thực tế, không ghi “đồng bộ thành công” theo lịch đặt trước.
 
-## 2. Nguyên tắc thiết kế (đề xuất)
+## 2. Nguyên tắc thiết kế Admin MVP đã chốt
 
 1. **Q3 — ĐÃ CHỐT: một tài khoản chủ cửa hàng duy nhất trong Admin MVP**; không tạo tính năng thêm nhân viên, quản lý nhiều tài khoản hoặc màn phân quyền.
 2. **Bốn mục menu cố định:** `Tổng quan`, `Sản phẩm`, `Đơn hàng`, `Cấu hình`.
@@ -22,7 +22,9 @@
 4. **Q6 — ĐÃ CHỐT (A):** thao tác “Xóa khỏi cửa hàng” **chỉ ẩn sản phẩm**, không xóa vật lý ASIN hoặc lịch sử giá/đơn. Có thể `Hiện lại`; mọi lần đồng bộ hoặc nhập ASIN không được tự bỏ ẩn.
 5. **Không sửa giá Amazon bằng tay** như thể giá nguồn đã được xác minh. Chỉ quản lý tỷ giá/phụ phí, còn giá JPY/timestamp đến từ observation hợp lệ.
 6. **Không gọi thống kê đơn mô phỏng là doanh thu thực thu**; không hiển thị trạng thái “đã thanh toán” nếu chưa có cổng thanh toán và xác nhận giao dịch.
-7. Trong môi trường phát triển hiện tại, **không đưa Admin ra internet**; Q9 sẽ quyết định có cần truy cập từ xa khi triển khai MVP hay không. Dù ở đâu cũng không công khai quyền hình ảnh/nội dung Amazon trước khi xác minh quyền sử dụng và điều kiện bán/nhập khẩu.
+7. **Q9 — ĐÃ CHỐT (A): Admin MVP chỉ được truy cập qua localhost trên chính máy chạy dự án**, không triển khai ra internet, không cho phép truy cập từ điện thoại/máy khác qua LAN và không mở port backend/DB. Giới hạn truy cập không thay thế đăng nhập owner. Không công khai quyền hình ảnh/nội dung Amazon trước khi xác minh quyền sử dụng và điều kiện bán/nhập khẩu.
+8. **Q10 — ĐÃ CHỐT (A):** owner chủ động chạy/dừng website, backend và worker tại máy Windows khi cần; không thêm Windows service, Task Scheduler hay cơ chế khởi chạy cùng hệ điều hành trong MVP.
+9. **Q11 — ĐÃ CHỐT (A):** khởi tạo **một** tài khoản owner bằng **lệnh thiết lập tại máy local**; không xây trang đăng ký/thiết lập lần đầu.
 
 ## 3. Sitemap và màn hình đề xuất
 
@@ -61,6 +63,7 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 - **Q7 — ĐÃ CHỐT (A):** Tổng quan **chỉ đọc và hiển thị kết quả đồng bộ Amazon tự động hằng ngày**, không có nút `Đồng bộ Amazon ngay`, không API admin kích hoạt quét toàn bộ danh mục. Cần cho biết lần chạy gần nhất, thời điểm thực tế, trạng thái, số sản phẩm và số lỗi; có thể xem lỗi ở ngay khu vực Tổng quan, không tạo trang điều khiển scraper riêng.
 - **Q8 — ĐÃ CHỐT (A):** chỉ cảnh báo lỗi đồng bộ **trong màn Tổng quan**, không gửi email, SMS, push notification hay cấu hình dịch vụ gửi thông báo. Khi `failed`, `partial`, `needs_human` hoặc bỏ lỡ lần chạy theo lịch, hiển thị thông báo nổi bật với trạng thái, thời điểm thực tế, số lỗi và nguyên nhân ghi nhận được; có thể xem chi tiết lỗi tại Admin. Không coi `partial` là thành công hoàn toàn.
 - Nếu không có lần chạy trong thời gian dự kiến, hiển thị `Chưa có kết quả đồng bộ theo lịch` hoặc `Chưa xác minh lịch chạy`; không giả trạng thái thành công và không gọi nguồn Amazon lúc tải Admin. **Cảnh báo chỉ xuất hiện khi chủ cửa hàng mở Admin** — không chủ động báo từ xa.
+- **Ảnh hưởng Q10:** khi máy tắt hoặc worker chưa chạy lúc 04:00 JST, không có lượt đồng bộ được xác nhận; Tổng quan thể hiện thiếu lượt chạy thay vì coi cron đã thành công. Không tự khởi động worker hoặc chạy quét bù chỉ vì owner mở Admin.
 - Bảng ngắn tối đa 5 **đơn mô phỏng mới nhất**: thời gian, mã đơn, tên, giá trị hàng (VND), xem chi tiết.
 - Không cần biểu đồ doanh thu, tỷ lệ chuyển đổi, khách mới, biểu đồ nguồn traffic trong MVP.
 
@@ -73,6 +76,7 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 - **Thêm sản phẩm (Q1 đã chốt: A)**: owner dán **URL sản phẩm Amazon.co.jp hoặc ASIN**, chọn một trong hai danh mục hiện có, rồi bấm `Thêm`. Backend chuẩn hóa URL và ASIN, đưa yêu cầu vào hàng đợi nhập; giao diện chỉ báo `Đã tiếp nhận yêu cầu` thay vì `Đã thêm thành công` khi chưa có kết quả. Worker đọc dữ liệu nguồn và upsert theo ASIN sau khi kiểm tra đủ trường bắt buộc; trạng thái hiển thị là `pending`, `running`, `succeeded`, `failed` hoặc `needs_human`. **Chưa có collector chi tiết ASIN riêng trong code**, cần triển khai adapter chuyên biệt và kiểm thử, không tạo sản phẩm giả khi nguồn lỗi.
 - ASIN đã tồn tại: mở sản phẩm tương ứng; yêu cầu trùng đang chạy: hiện trạng thái cũ thay vì tạo công việc thứ hai. Không cho nhập tay tên, ảnh hay giá để tránh mâu thuẫn với nguồn Amazon.
 - Sản phẩm từ sync hằng ngày và từ thao tác “Thêm” sử dụng cùng kho products, không tạo kho dữ liệu khác.
+- **Ảnh hưởng Q10:** yêu cầu nhập ASIN đã lưu có thể ở `pending` khi worker không chạy; giao diện không báo thành công trước khi worker thực sự xác minh/lưu. Không kích hoạt quét toàn danh mục bằng nút Admin.
 - Không cần chỉnh từng mô tả, ảnh, SEO, tồn kho thủ công, sản phẩm khuyến mại hoặc nhập CSV trong MVP.
 
 ### Màn C — Đơn hàng (`/admin/don-hang`)
@@ -109,7 +113,7 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 
 | Domain object | Tối thiểu cần có | Bất biến quan trọng |
 | --- | --- | --- |
-| `AdminAccount` / `AdminSession` | **Q3 đã chốt: một tài khoản owner duy nhất**, mật khẩu hash và phiên đăng nhập có hạn | Không tạo thêm tài khoản qua Admin MVP, không lưu mật khẩu dạng rõ; mọi admin mutation xác thực phía backend |
+| `AdminAccount` / `AdminSession` | **Q3 + Q11:** một tài khoản owner duy nhất được khởi tạo qua lệnh local, mật khẩu hash và phiên đăng nhập có hạn | Không có form đăng ký/thiết lập owner trên web; không lưu mật khẩu dạng rõ; mọi admin mutation xác thực phía backend |
 | `ProductVisibility` | `products.admin_hidden_at` nullable (+ lý do nếu cần) | Q6 đã chốt: worker và job nhập ASIN không được bỏ ẩn; sản phẩm ẩn không xuất hiện trong catalog/detail công khai và checkout không chấp nhận ASIN ẩn |
 | `CatalogImportRequest` | ID, category, ASIN, state, created_at, error | Q1 đã chốt: chỉ nhập từ Amazon URL/ASIN; một ASIN hợp lệ, trạng thái pending/running/succeeded/failed/needs_human; không xác nhận thành công trước khi nguồn đủ dữ liệu |
 | `PricingPolicy` | Bản ghi cấu hình đang hoạt động, version, **tỷ giá VND/JPY theo Q4 và phụ phí dịch vụ theo Q5, cả hai sửa được**, updated_at | Một lần bấm `Lưu` tạo một version nguyên tử cho cả hai thông số; thay đổi giá chỉ cho đơn mới, snapshot đơn giữ nguyên; không tự lấy tỷ giá |
@@ -119,31 +123,33 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 
 - Sản phẩm về hiển thị (Q6 đã chốt): `visible ↔ hidden_by_admin` **chỉ do thao tác owner thay đổi**, độc lập với `sale_status=ready/pending_review` và `price_fresh/stale`. `visible` **không** có nghĩa `allowed_to_checkout`. Tái đồng bộ có thể làm mới giá khi ẩn nhưng không thay đổi cờ ẩn; không DELETE bản ghi.
 - Yêu cầu thêm ASIN: `pending → running → succeeded | failed | needs_human`; trùng ASIN thì thông báo đã tồn tại/đang xử lý, không tạo bản nhân đôi.
-- Đồng bộ (Q7 + Q8 đã chốt): Admin **chỉ đọc** `sync_runs` và `sync_errors` để hiển thị trạng thái/cảnh báo tại Tổng quan; không gửi email hoặc gọi scraper hay tạo job chạy toàn bộ danh mục theo yêu cầu. Worker giữ lịch tự động 04:00 JST, **phải xác minh việc thực thi và phục hồi sau restart**, không coi lần chạy đã được lên lịch là thành công. Luồng nhập một ASIN theo Q1 là chức năng riêng, **không phải nút đồng bộ toàn bộ**.
+- Đồng bộ (Q7 + Q8 + Q10): Admin **chỉ đọc** `sync_runs` và `sync_errors` để hiển thị trạng thái/cảnh báo tại Tổng quan; không gửi email, gọi scraper hay tạo job quét toàn danh mục theo yêu cầu. Worker có lịch 04:00 JST **chỉ thực hiện khi được khởi chạy thủ công và còn hoạt động**; cần kiểm thử lịch thực tế khi worker chạy, xử lý trạng thái thiếu lịch khi worker/máy tắt, không khẳng định tự chạy sau restart. Luồng nhập một ASIN theo Q1 là chức năng riêng.
 - Đơn (Q2 đã chốt): `simulation_created` **chỉ đọc toàn bộ**; không tạo API cập nhật ghi chú/trạng thái và không dựng trạng thái đã trả tiền.
 - Chính sách giá (Q4 + Q5): owner chỉnh một hoặc cả hai giá trị rồi bấm `Lưu thay đổi`, `v1 → v2` một lần; `Order` giữ snapshot giá/tỷ giá/phụ phí thuộc cùng policy version tại thời điểm tạo.
 
 ## 5. Bảo mật tối thiểu nhưng bắt buộc
 
 - Mật khẩu owner có hash an toàn (Argon2id/scrypt tùy thư viện triển khai); **không** hardcode mật khẩu/token vào Git.
-- **Q3 đã chốt một owner:** tạo tài khoản an toàn trong bước thiết lập nội bộ, không dùng thông tin đăng nhập mặc định công khai; không xây giao diện thêm/xóa tài khoản hay phân quyền nhân viên.
+- **Q3 + Q11 đã chốt:** tạo một owner bằng lệnh setup chạy cục bộ với nhập mật khẩu kín (không truyền mật khẩu qua tham số lệnh, không ghi vào log, source hoặc Git), hash mật khẩu an toàn và lưu tại backend/DB. Nếu đã có owner, lệnh không được tạo người thứ hai hoặc ghi đè tùy tiện; cần hướng dẫn khôi phục/reset qua quy trình local có kiểm soát, không có UI thiết lập hay quản lý user.
 - Cookie phiên `HttpOnly`, `SameSite`, `Secure` khi dùng HTTPS; hết hạn/đăng xuất có hiệu lực; rate-limit login; CSRF/Origin check với thao tác ghi.
 - Tất cả `/api/admin/*` và các route `/admin/*` nhạy cảm phải kiểm tra phiên ở server; không chỉ ẩn menu bằng JavaScript. Không đưa DB admin ra frontend.
 - Chống ID/ASIN/URL không hợp lệ: chỉ nhận ASIN 10 ký tự hoặc URL HTTPS trỏ tới `amazon.co.jp` / `www.amazon.co.jp` với đường dẫn sản phẩm có ASIN; trích xuất ASIN rồi dựng URL `https://www.amazon.co.jp/dp/{ASIN}` phía server, **không fetch trực tiếp URL đầu vào** (SSRF, redirect sang host khác).
 - Giới hạn nhập/chạy job, có nhật ký thay đổi, error state rõ; không bypass Amazon 403/429/CAPTCHA.
-- Môi trường hiện tại dùng local loopback. **Q9 chưa chốt nhu cầu truy cập từ xa**; nếu mở qua internet thì phải có HTTPS, cookie Secure, kiểm soát truy cập an toàn, backup DB, xử lý quyền dữ liệu Amazon, rà soát bảo mật và chính sách riêng tư; không chỉ mở trực tiếp cổng localhost/DB ra mạng.
+- **Q9 đã chốt (A): chỉ bind Next.js Admin và API Fastify phục vụ Admin vào `127.0.0.1` / loopback trên máy chạy dự án**; không cấu hình port forward, public hosting, VPN/LAN remote hay mở DB ra mạng trong MVP. Vẫn yêu cầu session owner, CSRF, rate limit và kiểm soát quyền phía server. Nếu sau này đổi sang truy cập internet phải có quyết định và rà soát HTTPS/bảo mật mới.
 
 ## 6. Lộ trình triển khai theo các mốc nhỏ
 
 | Mốc | Việc xây | Kiểm tra nghiệm thu |
 | --- | --- | --- |
-| **A. Đăng nhập + khung Admin** | Login duy nhất một owner theo Q3, session, middleware API, sidebar 4 mục, logout | Không đăng nhập mở `/admin`/`/api/admin` bị từ chối; thử sai password rate-limited; không có màn quản lý user |
-| **B. Xem dữ liệu thật** | Dashboard + danh sách/chi tiết đơn mô phỏng **chỉ đọc theo Q2**, danh sách sản phẩm, kết quả sync theo Q7 và **cảnh báo trong Tổng quan theo Q8** | Số liệu khớp SQL; API đơn hàng/sync không có mutation; lỗi `failed`/`partial`/`needs_human` và bỏ lỡ lịch được báo rõ trong Admin; không gửi email và không khẳng định lịch đã chạy khi chưa có `sync_run` |
+| **A. Đăng nhập + khung Admin** | CLI local khởi tạo một owner theo Q11; login/session, middleware API, sidebar 4 mục, logout; giữ truy cập loopback theo Q9 | Setup không tạo owner thứ hai/không lộ mật khẩu; thiếu session bị chặn tại `/admin`/`/api/admin`; thử sai password rate-limited; không có màn quản lý user |
+| **B. Xem dữ liệu thật** | Dashboard + danh sách/chi tiết đơn mô phỏng **chỉ đọc theo Q2**, danh sách sản phẩm, kết quả sync theo Q7 và **cảnh báo trong Tổng quan theo Q8** | Số liệu khớp SQL; API đơn hàng/sync không mutation; lỗi `failed`/`partial`/`needs_human` và thiếu lượt chạy 04:00 khi worker tắt được báo; không gửi email và không coi lịch đã chạy khi chưa có `sync_run` |
 | **C. Quản lý catalog** | Ẩn/hiện thay vì xóa theo Q6, bền qua sync và thêm lại ASIN; thêm ASIN Amazon bằng job riêng (Q1 đã chốt), nhật ký lỗi | Hidden không lọt catalog/detail công khai/checkout; cập nhật tự động và import không bật lại; lịch sử giữ nguyên; trùng ASIN không tạo job trùng; lỗi import không tạo hàng giả |
 | **D. Chính sách giá** | **Hai trường tỷ giá VND/JPY và phụ phí (%) đều chỉnh được theo Q4 + Q5**, một nút `Lưu thay đổi`, một policy version PostgreSQL, preview và audit | Một lần lưu cập nhật đồng thời cả hai; dữ liệu sai bị từ chối; checkout lấy cùng version; đơn cũ giữ nguyên; giá stale vẫn bị khóa |
-| **E. Hoàn thiện** | Tests tích hợp, accessibility cơ bản, backup/restore dev, hướng dẫn sử dụng một trang | Build/lint/test pass; thao tác nghiệp vụ tối thiểu; kiểm tra localhost sau restart |
+| **E. Hoàn thiện** | Tests tích hợp, accessibility cơ bản, backup/restore dev; hướng dẫn 1 trang để chủ động chạy/dừng frontend, backend, worker và dùng CLI owner theo Q10/Q11 | Build/lint/test pass; chỉ loopback; sau khởi động lại Windows không tự chạy; thử worker đang chạy lúc 04:00 JST và trường hợp bỏ lỡ lịch; không dựng Windows service hay web setup |
 
-**Điều kiện ngoài phạm vi:** xác minh pg-boss chạy 04:00 và khởi động lại cùng Windows là luồng vận hành riêng, phải làm trước khi coi Admin là công cụ giám sát tự động đáng tin cậy. Không ngầm coi scheduler đã xong.
+**Điều kiện vận hành Q10:** thứ tự thao tác thủ công dự kiến là bật PostgreSQL (nếu chưa chạy), backend, worker, frontend; phải kiểm tra lại lệnh chạy thực tế khi triển khai. Nếu muốn đồng bộ lúc 04:00 JST, máy và worker cần tiếp tục hoạt động đến thời điểm đó. **Không bảo đảm quét hằng ngày khi chưa chạy worker**, không tự chạy bù khi mở Admin. Tự khởi động cùng Windows **không thuộc MVP**. Chỉ kiểm chứng scheduler đúng giờ khi worker đang hoạt động, không suy đoán thành công.
+
+**Các điều kiện cần xác minh khi triển khai, không phải câu hỏi Grill mới:** collector một ASIN riêng chưa có; scheduler/worker cần kiểm thử; quyền sử dụng nội dung Amazon và điều kiện bán/nhập khẩu cần được kiểm tra; backup/restore DB và bảo mật setup owner phải được kiểm thử. Các việc này không có nghĩa Admin đã được xây.
 
 ## 7. Không làm trong bản Admin đầu tiên
 
@@ -159,8 +165,10 @@ Không dashboard nhiều biểu đồ, CRM, tồn kho Nhật, thanh toán/refund
 - **Q6 — ĐÃ CHỐT ngày 27/10/2026:** **A — “Xóa” = Ẩn và có thể Hiện lại**, không hard-delete sản phẩm, giữ lịch sử; đồng bộ Amazon và thao tác thêm ASIN **không được tự gỡ cờ ẩn**. Trạng thái ẩn chặn catalog công khai và checkout ở backend.
 - **Q7 — ĐÃ CHỐT ngày 27/10/2026:** **A — chỉ xem tình trạng đồng bộ Amazon tự động hằng ngày trong Admin**, không thêm nút `Đồng bộ Amazon ngay` hoặc API khởi động quét toàn danh mục từ Admin. Lần chạy/giờ chạy phải dựa trên `sync_runs` thực tế; cần xác minh lịch worker riêng trước khi coi số liệu đáng tin.
 - **Q8 — ĐÃ CHỐT ngày 27/10/2026:** **A — chỉ cảnh báo lỗi đồng bộ Amazon ngay trong trang Tổng quan Admin**, không gửi email hoặc thông báo chủ động. Thể hiện rõ trạng thái lỗi/một phần/cần can thiệp/bỏ lỡ lịch, thời điểm và số lỗi; không cố vượt CAPTCHA hoặc 403/429.
-- **Q9 — Đang hỏi owner:** **A. Chỉ mở Admin trên máy chạy dự án, qua localhost** (an toàn, đơn giản nhất trong giai đoạn thử nghiệm) hay **B. Được đăng nhập Admin từ xa qua internet, ví dụ điện thoại/máy khác** (cần HTTPS, triển khai và bảo vệ backend/session, không mở port trực tiếp)? Đây là lựa chọn phạm vi truy cập, không thay đổi yêu cầu chỉ có một tài khoản owner ở Q3.
-- **Để vòng Grill tiếp theo:** chốt Q9, sau đó đánh giá kết thúc Grill và hoàn thiện plan triển khai, không kéo dài phỏng vấn nếu không còn quyết định lớn.
+- **Q9 — ĐÃ CHỐT ngày 27/10/2026:** **A — Admin chỉ truy cập từ chính máy phát triển qua localhost**, không mở truy cập từ xa qua internet/LAN. Vẫn sử dụng đăng nhập bảo mật một owner theo Q3.
+- **Q10 — ĐÃ CHỐT ngày 27/10/2026:** **A — chạy website/backend/worker thủ công khi cần**, không khởi động tự động cùng Windows. Worker không chạy vào 04:00 JST thì không có kết quả sync được xác nhận; Admin phải cảnh báo thiếu lịch thay vì nói đã thành công.
+- **Q11 — ĐÃ CHỐT ngày 27/10/2026:** **A — thiết lập mật khẩu cho một owner bằng lệnh setup an toàn trên localhost/máy local**, không xây trang thiết lập tài khoản lần đầu. Không hardcode hoặc commit mật khẩu.
+- **Grill Admin kết thúc:** **11/11 câu đã được owner trả lời**, không còn câu hỏi quyết định đang mở. Bước tiếp theo (chỉ khi được giao) là triển khai code theo A → E. Theo yêu cầu owner, **không commit Git chỉ để ghi câu hỏi/trả lời**; thay đổi tài liệu hiện giữ trong working tree.
 
 ## 9. Tiêu chí “đủ tốt để sử dụng”
 

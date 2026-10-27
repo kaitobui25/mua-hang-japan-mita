@@ -1,14 +1,16 @@
 # ADR 0010 — Quản lý hiển thị sản phẩm và tỷ giá qua Admin
 
+**Ghi chú triển khai 27/10/2026:** Cờ ẩn, hàng đợi ASIN, policy giá nguyên tử và audit đã được triển khai trong app hiện có; xem [hướng dẫn vận hành](../admin-local.md). Bản quyết định bên dưới được giữ làm lịch sử thiết kế.
+
 **Ngày:** 27/10/2026 (JST)
-**Trạng thái:** `proposed / Q1 + Q4 + Q5 + Q6 accepted` — thêm hàng qua URL/ASIN Amazon, tỷ giá/phụ phí cùng một lần Lưu và ẩn sản phẩm thay vì xóa đã chốt ngày 27/10/2026; Q7 không cho quét toàn bộ từ Admin đã chốt trong ADR 0009. Phương thức cảnh báo lỗi đang chờ Q8.
+**Trạng thái:** `accepted (thiết kế; chưa triển khai code)` — Q1, Q4–Q6 và các quyết định liên quan Q2–Q3, Q7–Q11 đã chốt ngày 27/10/2026; xem ADR 0009.
 **Liên quan:** ADR 0002, 0003, 0006, 0007; `.agents/plan/04_mita_minimal_admin_grill_with_docs_plan.md`.
 
 ## Bối cảnh
 
 Sản phẩm Mita hiện được tự động upsert từ Amazon theo ASIN; nếu xóa một hàng trong DB, lần quét sau có thể nhập lại. Giá VND đang tính từ JPY và hai biến env, còn order có snapshot tỷ giá và tiền hàng lúc tạo. Chủ cửa hàng cần chỉnh tỷ giá và quyết định hàng nào được thấy nhưng không muốn bảng điều khiển phức tạp.
 
-## Quy tắc đề xuất
+## Quy tắc thiết kế đã chốt
 
 1. **Q6 — ĐÃ CHỐT (A): “Xóa khỏi cửa hàng” = Ẩn**, có nút `Hiện lại`; không hard-delete ASIN có lịch sử giá/đơn. Trạng thái ẩn admin độc lập trạng thái giá và điều kiện bán; **mọi lần sync và thao tác nhập lại ASIN đều không được tự bỏ ẩn**. Catalog, endpoint chi tiết công khai và checkout phải kiểm tra trạng thái ẩn tại server, không chỉ lọc giao diện. Ẩn không hủy bản ghi, lịch sử hoặc snapshot đơn; hiện lại vẫn chịu kiểm tra giá 24 giờ, quyền nội dung và điều kiện bán; ghi audit mỗi lần ẩn/hiện.
 2. **“Thêm hàng” — owner đã chọn A (27/10/2026):** dán ASIN hoặc URL Amazon.co.jp và chọn một trong hai danh mục, đưa vào hàng đợi riêng để backend thu thập/xác minh. Chỉ nhận URL HTTPS Amazon Japan có ASIN, trích ASIN và dựng URL chuẩn phía server, không fetch tùy ý URL user gửi. Đã có ASIN thì hiện bản ghi cũ; yêu cầu trùng đang xử lý thì hiện trạng thái cũ. Chỉ thông báo `Đã tiếp nhận` khi enqueue, còn `succeeded` chỉ khi xác minh nguồn và upsert thành công. Nguồn từ chối hoặc cần CAPTCHA thì ghi `needs_human`, không vượt chặn. **Không có chức năng nhập tên/ảnh/giá thủ công.** Bộ thu thập theo từng ASIN chưa tồn tại, phải được xây trước khi nút này vận hành.
@@ -24,7 +26,7 @@ Sản phẩm Mita hiện được tự động upsert từ Amazon theo ASIN; n�
 - Cần sửa các API công khai và checkout thống nhất: cả hidden và điều kiện bán được kiểm tra ở backend; frontend chỉ phản ánh kết quả.
 - Không xây điều chỉnh giá riêng theo ASIN, giá giảm, kho tồn, live FX, CSV, voucher, báo cáo lợi nhuận, quyền nhiều nhân viên trong phiên bản đầu.
 
-## Quyết định đã chốt và nội dung còn mở
+## Quyết định đã chốt — Grill kết thúc
 
 **Q1 — ACCEPTED:** Phương án A (Amazon link/ASIN). Không xây phương án B trong MVP.
 
@@ -42,4 +44,10 @@ Sản phẩm Mita hiện được tự động upsert từ Amazon theo ASIN; n�
 
 **Q8 — ACCEPTED (xem ADR 0009):** Chỉ hiển thị cảnh báo lỗi/partial/needs_human/bỏ lỡ lịch tại Tổng quan Admin; không gửi email hoặc thông báo chủ động. Dữ liệu lỗi phải được lấy từ lịch sử chạy thực tế.
 
-**Q9 — PENDING (xem ADR 0009):** Chỉ truy cập Admin qua localhost hay cần truy cập an toàn từ xa qua internet?
+**Q9 — ACCEPTED (xem ADR 0009):** Admin chỉ truy cập qua localhost trên máy phát triển; không triển khai internet/LAN hoặc mở port backend/DB.
+
+**Q10 — ACCEPTED (xem ADR 0009):** Website/backend/worker khởi chạy thủ công; job ASIN có thể chờ `pending` khi worker tắt; lịch 04:00 JST không thể được xác nhận nếu worker không chạy.
+
+**Q11 — ACCEPTED (xem ADR 0009):** Chỉ một owner khởi tạo bằng lệnh local an toàn; không form setup web hoặc mật khẩu mặc định.
+
+**Grill hoàn tất:** Q1–Q11 đã chốt; tài liệu chưa được commit theo yêu cầu và chưa có code Admin triển khai.

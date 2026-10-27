@@ -71,9 +71,9 @@ _Tránh_: Hủy và hoàn toàn bộ đơn
 **Gom kiện tại Nhật**:
 Ưu tiên tập hợp các sản phẩm trong một đơn để vận chuyển về Việt Nam chung một kiện; nhân viên có thể tách kiện khi hàng chậm hoặc thiếu.
 
-## Thuật ngữ đề xuất cho Admin (chưa chốt)
+## Thuật ngữ Admin MVP
 
-Các thuật ngữ dưới đây dùng cho bản kế hoạch Admin dự thảo tại `.agents/plan/04_mita_minimal_admin_grill_with_docs_plan.md`; **chưa** thay thế các quyết định nghiệp vụ đã chốt ở trên.
+Các thuật ngữ dưới đây thuộc Admin MVP được chốt qua Q1–Q11 tại `.agents/plan/04_mita_minimal_admin_grill_with_docs_plan.md`, đã triển khai local trong app hiện có; xem `docs/admin-local.md`. Chúng không thay thế các quyết định nghiệp vụ gốc ở trên.
 
 **Admin / chủ cửa hàng**:
 Người được phép đăng nhập giao diện nội bộ để xem tình hình, quản lý việc hiển thị sản phẩm và thay đổi chính sách giá; không phải tài khoản mua hàng của khách.
@@ -104,7 +104,7 @@ Sản phẩm có thể xuất hiện trong catalog khách xem khi không bị �
 _Tránh_: Được hiển thị nghĩa là còn hàng và đặt mua được
 
 **Yêu cầu thêm ASIN**:
-Đề nghị nhập một sản phẩm từ URL/ASIN Amazon vào quy trình thu thập; chỉ thành công khi worker đã kiểm tra và lưu dữ liệu nguồn. **Q1 đã chốt phương án này cho Admin MVP**, nhưng chức năng nhập ASIN riêng chưa được triển khai.
+Đề nghị nhập một sản phẩm từ URL/ASIN Amazon vào quy trình thu thập; chỉ thành công khi worker đã kiểm tra và lưu dữ liệu nguồn. **Q1 đã chốt phương án này cho Admin MVP**; hàng đợi có thể chờ khi worker chưa bật.
 _Tránh_: Dán link đồng nghĩa sản phẩm được nhập và bán ngay
 
 **Tỷ giá tính giá bán (VND/JPY)**:
@@ -130,3 +130,15 @@ _Tránh_: Có lịch 04:00 JST nghĩa là đã chạy thành công, hoặc Admin
 **Cảnh báo lỗi đồng bộ trong Admin (Q8 đã chốt)**:
 Thông báo chỉ xuất hiện tại trang Tổng quan Admin khi lần đồng bộ Amazon thất bại, thành công một phần, cần can thiệp hoặc không có lần chạy theo lịch được xác nhận. Hiển thị thời điểm, trạng thái, lỗi ghi nhận; **không gửi email, SMS hay thông báo đẩy**, và không tự chạy lại scraper.
 _Tránh_: Đã bật email tự động; thông báo lỗi đồng nghĩa có thể vượt CAPTCHA hoặc 403/429
+
+**Truy cập Admin chỉ qua localhost (Q9 đã chốt)**:
+Admin MVP chỉ được mở trên chính máy chạy dự án thông qua loopback (`localhost` / `127.0.0.1`); không cấp quyền truy cập qua internet hoặc mạng LAN. Vẫn phải đăng nhập bằng tài khoản owner duy nhất và xác thực ở backend.
+_Tránh_: Chạy localhost thì không cần mật khẩu, hoặc điện thoại khác trong cùng mạng vẫn được phép mở Admin
+
+**Khởi chạy thủ công (Q10 đã chốt)**:
+Chủ cửa hàng chủ động bật/dừng website, backend và worker trên Windows khi cần; không tự khởi chạy các tiến trình này khi bật máy. Lịch quét 04:00 JST chỉ có thể chạy khi máy/worker hoạt động đến giờ đó. Nếu không có `sync_run` thực tế, Tổng quan báo thiếu/chưa xác nhận; job nhập một ASIN có thể nằm `pending` đến khi worker được bật.
+_Tránh_: Cài lịch cron đồng nghĩa máy tắt hoặc worker tắt vẫn quét hằng ngày; mở Admin sẽ tự chạy quét bù
+
+**Khởi tạo owner bằng lệnh local (Q11 đã chốt)**:
+Một tài khoản chủ cửa hàng được thiết lập từ công cụ dòng lệnh chạy trực tiếp trên máy dự án, nhập mật khẩu kín để backend hash và lưu an toàn. Không có trang web setup/đăng ký Admin, mật khẩu mặc định hay mật khẩu lưu trong Git; lệnh không tự tạo tài khoản thứ hai.
+_Tránh_: Dán mật khẩu vào command line, ghi vào log/source hoặc xây trang đăng ký Admin công khai
