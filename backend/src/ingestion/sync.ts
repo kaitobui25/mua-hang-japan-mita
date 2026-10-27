@@ -7,6 +7,7 @@ import { discoverNeo, collectDetailNeo } from './neo.js';
 import { collectDetail } from './detail.js';
 import { config } from '../config.js';
 import type { PoolClient } from 'pg';
+import { AMAZON_ACCESS_LOCK } from './source-access.js';
 
 export async function collectCategory(
   seed: { categorySlug: string; url: string },
@@ -90,6 +91,35 @@ export async function seedExistingDetails(connection: Connection = db): Promise<
   return result.rowCount ?? 0;
 }
 
+/** Requires an explicit manual verification action; never automatically bypasses a source denial. */
+export async function acknowledgeSourceAccess(asin: string, humanVerified: boolean, connection: Connection = db): Promise<number> {
+  if (!humanVerified) throw Error('Owner must confirm Amazon access was manually verified');
+  if (asin !== 'ALL' && !/^[A-Z0-9]{10}$/.test(asin)) throw Error('Invalid ASIN');
+  const client = connection === db ? await db.connect() : connection;
+  try {
+    // Manual ACK must serialize with collectors. Otherwise it could erase a
+    // new CAPTCHA marker written between its gate check and DELETE.
+    const guard = await client.query<{ acquired: boolean }>('SELECT pg_try_advisory_lock($1) AS acquired', [AMAZON_ACCESS_LOCK]);
+    if (!guard.rows[0].acquired) throw Error('Amazon collection is in progress; retry manual acknowledgment when it finishes');
+    try {
+      await client.query('BEGIN');
+      try {
+        const result = await client.query(asin === 'ALL'
+          ? `UPDATE product_detail_queue SET state='pending',last_attempt_at=NULL WHERE state='needs_human'`
+          : `UPDATE product_detail_queue SET state='pending',last_attempt_at=NULL WHERE asin=$1 AND state='needs_human'`,
+          asin === 'ALL' ? [] : [asin]);
+        const remaining = await client.query(`SELECT 1 FROM product_detail_queue WHERE state='needs_human' LIMIT 1`);
+        if (!remaining.rowCount) await client.query(`DELETE FROM source_access_blocks WHERE source='amazon.co.jp'`);
+        await client.query('COMMIT');
+        return result.rowCount ?? 0;
+      } catch (error) { await client.query('ROLLBACK'); throw error; }
+    } finally { await client.query('SELECT pg_advisory_unlock($1)', [AMAZON_ACCESS_LOCK]); }
+  }
+  finally { if (connection === db) (client as PoolClient).release(); }
+}
+
+// Low-level detail stage: production must call through syncCatalog, which owns
+// the source-wide access lock and performs the manual-verification preflight.
 export async function processCategoryDetails(category: string, options: {
   connection?: Connection; collect?: DetailCollector; save?: (items: Observation[]) => Promise<number>;
   delay?: (milliseconds: number) => Promise<void>;
@@ -123,6 +153,7 @@ export async function processCategoryDetails(category: string, options: {
         };
       }
       saved += await save([item]);
+      if (saved % 25 === 0) console.log(`Detail backfill ${category}: ${saved} saved, ${attempted.length}/${limit} ASINs attempted`);
       await enqueueDetails(category, (item.detail?.childAsins ?? []).map(asin => ({ asin, parentAsin: item.parentAsin, sourceUrl: item.sourceUrl })), connection);
       await connection.query(`UPDATE product_detail_queue SET state='success',last_success_at=now() WHERE category_slug=$1 AND asin=$2`, [category, candidate.asin]);
       if (item.priceJpy == null) await options.onIssue?.({ asin: candidate.asin, adapter: item.sourceAdapter.startsWith('browseros-neo') ? 'browseros-neo' : 'http', state: 'parse_error', message: 'Detail read without a current price; previous price observation retained' });
@@ -141,12 +172,13 @@ export async function processCategoryDetails(category: string, options: {
 
 export async function syncCatalog(options: {
   discover?: typeof collectCategory; collect?: DetailCollector; limit?: number; connection?: PoolClient;
+  categories?: string[];
 } = {}) {
   // A manual run must not overlap the scheduled worker and double the category budget.
   const lock = options.connection ?? await db.connect();
   const release = () => { if (!options.connection) lock.release(); };
   try {
-    const locked = await lock.query<{ acquired: boolean }>('SELECT pg_try_advisory_lock(70400200) AS acquired');
+    const locked = await lock.query<{ acquired: boolean }>('SELECT pg_try_advisory_lock($1) AS acquired', [AMAZON_ACCESS_LOCK]);
     if (!locked.rows[0].acquired) { release(); return { state: 'already_running' }; }
   } catch (error) { release(); throw error; }
   let id: number | undefined;
@@ -155,16 +187,38 @@ export async function syncCatalog(options: {
   try {
     const runResult = await lock.query<{ id: string }>('INSERT INTO sync_runs DEFAULT VALUES RETURNING id');
     id = Number(runResult.rows[0].id);
+    await seedExistingDetails(lock);
+    // A prior CAPTCHA/403/429 is a source-wide manual block. Do not make new
+    // requests for *either* category before the owner has resolved it.
+    const unresolved = await lock.query<{ category_slug: string; asin: string }>(
+      `SELECT category_slug,asin FROM product_detail_queue WHERE state='needs_human'
+       ORDER BY category_slug,asin LIMIT 1`);
+    const sourceBlock = await lock.query<{ reason: string }>(
+      `SELECT reason FROM source_access_blocks WHERE source='amazon.co.jp'`);
+    if (unresolved.rows[0] || sourceBlock.rows[0]) {
+      const note = unresolved.rows[0]
+        ? `Amazon human verification pending for ${unresolved.rows[0].category_slug}/${unresolved.rows[0].asin}`
+        : `Amazon source access requires manual verification`;
+      await lock.query(`UPDATE sync_runs SET finished_at=now(),state='needs_human',
+        error_count=1,note=$2 WHERE id=$1`, [id, note]);
+      console.warn(note);
+      return { id, state: 'needs_human', discovered: 0, saved: 0, errors: 1, deferred };
+    }
     for (const seed of seeds) {
+      if (options.categories && !options.categories.includes(seed.categorySlug)) continue;
       const report = async (issue: DiscoveryIssue & { asin?: string }) => {
         errors++;
-        if (issue.state === 'blocked' || issue.state === 'needs_human') blocked = true;
+        if (issue.state === 'blocked' || issue.state === 'needs_human') {
+          blocked = true;
+          await lock.query(`INSERT INTO source_access_blocks(source,reason) VALUES('amazon.co.jp',$1)
+            ON CONFLICT(source) DO UPDATE SET reason=EXCLUDED.reason,blocked_at=now()`,
+          ['Amazon requested manual verification before further collection']);
+        }
         await lock.query('INSERT INTO sync_errors(sync_run_id,category_slug,asin,adapter,state,message) VALUES($1,$2,$3,$4,$5,$6)',
           [id, seed.categorySlug, issue.asin ?? null, issue.adapter, issue.state, issue.page ? `Page ${issue.page}: ${issue.message}` : issue.message]);
       };
       try {
         // Every existing ASIN is eligible daily, including ones no longer on listings.
-        await seedExistingDetails(lock);
         try {
           const result = await (options.discover ?? collectCategory)(seed);
           discovered += new Set(result.observations.map(o => o.asin)).size;
@@ -204,7 +258,7 @@ export async function syncCatalog(options: {
     if (id) await lock.query('UPDATE sync_runs SET finished_at=now(),state=$2,note=$3 WHERE id=$1', [id, 'failed', String(error)]);
     throw error;
   } finally {
-    try { await lock.query('SELECT pg_advisory_unlock(70400200)'); }
+    try { await lock.query('SELECT pg_advisory_unlock($1)', [AMAZON_ACCESS_LOCK]); }
     finally { release(); }
   }
 }

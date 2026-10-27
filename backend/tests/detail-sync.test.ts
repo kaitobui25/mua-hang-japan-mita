@@ -6,7 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { db } from '../src/db/pool.js';
 import { ingestObservations } from '../src/ingestion/store.js';
-import { syncCatalog, seedExistingDetails, processCategoryDetails } from '../src/ingestion/sync.js';
+import { syncCatalog, seedExistingDetails, processCategoryDetails, acknowledgeSourceAccess } from '../src/ingestion/sync.js';
 import { SourceError, type Observation } from '../src/ingestion/source.js';
 
 const category = 'thuc-pham-bo-sung';
@@ -73,6 +73,29 @@ test('daily sync refreshes existing ASINs on discovery errors, records backlog a
     const errors = await isolated.query('SELECT state,asin FROM sync_errors WHERE sync_run_id=$1', [blocked.id]);
     assert.equal(errors.rows[0].state, 'blocked');
     assert.equal(errors.rows[0].asin, child);
+    // A blocked category must not issue further Amazon requests on a later run.
+    const paused = await syncCatalog({
+      connection: isolated, categories: [category],
+      discover: async () => { assert.fail('human verification not cleared: do not hit listing'); },
+      collect: async () => { assert.fail('human verification not cleared: do not hit detail'); }
+    });
+    assert.equal(paused.state, 'needs_human');
+    assert.equal(paused.saved, 0);
+    await assert.rejects(acknowledgeSourceAccess(child, false, isolated), /manually verified/);
+    assert.equal(await acknowledgeSourceAccess(child, true, isolated), 1);
+    assert.equal((await isolated.query('SELECT state FROM product_detail_queue WHERE asin=$1', [child])).rows[0].state, 'pending');
+    // A listing may be blocked before an ASIN can be identified. The global
+    // source marker must protect later categories and future worker restarts.
+    const denied = await syncCatalog({ connection: isolated, categories: [category],
+      discover: async () => { throw new SourceError('blocked', 'HTTP 403 listing'); },
+      collect: async () => { assert.fail('no detail after listing denial'); } });
+    assert.equal(denied.state, 'needs_human');
+    assert.equal((await isolated.query('SELECT count(*)::int AS n FROM source_access_blocks')).rows[0].n, 1);
+    const listingPaused = await syncCatalog({ connection: isolated, categories: ['thuc-pham-cho-be'],
+      discover: async () => { assert.fail('source gate must stop other categories'); } });
+    assert.equal(listingPaused.state, 'needs_human');
+    assert.equal(await acknowledgeSourceAccess('ALL', true, isolated), 0);
+    assert.equal((await isolated.query('SELECT count(*)::int AS n FROM source_access_blocks')).rows[0].n, 0);
   } finally {
     await isolated.query('RESET search_path');
     await isolated.query(`DROP SCHEMA ${namespace} CASCADE`);

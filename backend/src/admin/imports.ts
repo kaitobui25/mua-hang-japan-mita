@@ -4,6 +4,7 @@ import { AdminError, audit, pagination, transaction } from './data.js';
 import { normalizeAmazonInput, collectDetail } from '../ingestion/detail.js';
 import { ingestObservations } from '../ingestion/store.js';
 import { SourceError, type Observation } from '../ingestion/source.js';
+import { AMAZON_ACCESS_LOCK } from '../ingestion/source-access.js';
 
 export async function enqueueImport(input: unknown, category: unknown, actor: number) {
   let asin: string;
@@ -34,28 +35,52 @@ export async function listImports(q: Record<string, string | undefined>) {
 // One request at a time per worker; SKIP LOCKED also supports multiple local workers.
 // No automatic source retry after denial. An interrupted claim requires owner review.
 export async function processNextImport(collector: (asin: string, category: string) => Promise<Observation> = collectDetail) {
-  await db.query("UPDATE catalog_import_requests SET state='needs_human',error='Worker bị gián đoạn; kiểm tra trước khi yêu cầu lại.',finished_at=now() WHERE state='running' AND started_at<now()-interval '5 minutes'");
-  const claimed = await db.query(`UPDATE catalog_import_requests SET state='running',started_at=now()
-    WHERE id=(SELECT id FROM catalog_import_requests WHERE state='pending' ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *`);
-  const job = claimed.rows[0];
-  if (!job) return false;
+  const client = await db.connect();
   try {
-    const observation = await collector(job.asin, job.category_slug);
-    if (observation.asin !== job.asin || observation.categorySlug !== job.category_slug || !observation.name?.trim() ||
-      !observation.imageUrl || !Number.isInteger(observation.priceJpy) || observation.priceJpy! <= 0 ||
-      !Number.isFinite(new Date(observation.observedAt).getTime()) || new Date(observation.observedAt).getTime() > Date.now()) throw new SourceError('parse_error', 'Dữ liệu sản phẩm không hợp lệ.');
-    await transaction(async client => {
-      const current = await client.query("SELECT id FROM catalog_import_requests WHERE id=$1 AND state='running' FOR UPDATE", [job.id]);
-      if (!current.rowCount) return;
-      await ingestObservations([observation], undefined, client);
-      await client.query("UPDATE catalog_import_requests SET state='succeeded',finished_at=now() WHERE id=$1", [job.id]);
-      await audit(client, job.actor_id, 'catalog.import_succeeded', job.asin, null, { id: job.id });
-    });
-  } catch (error) {
-    const state = error instanceof SourceError && ['blocked', 'needs_human'].includes(error.state) ? 'needs_human' : 'failed';
-    // Store a source message, never arbitrary SQL/connection errors or secrets.
-    const message = error instanceof SourceError ? error.message.slice(0, 1000) : 'Không thể lưu sản phẩm; kiểm tra worker và cơ sở dữ liệu.';
-    await db.query("UPDATE catalog_import_requests SET state=$2,error=$3,finished_at=now() WHERE id=$1 AND state='running'", [job.id, state, message]);
-  }
-  return true;
+    // Do not claim a job while another importer or the daily sync is fetching
+    // Amazon. A busy lock leaves the job pending for the next worker poll.
+    const guard = await client.query<{ acquired: boolean }>('SELECT pg_try_advisory_lock($1) AS acquired', [AMAZON_ACCESS_LOCK]);
+    if (!guard.rows[0].acquired) return false;
+    try {
+      await client.query("UPDATE catalog_import_requests SET state='needs_human',error='Worker bị gián đoạn; kiểm tra trước khi yêu cầu lại.',finished_at=now() WHERE state='running' AND started_at<now()-interval '5 minutes'");
+      // Check the persisted Amazon gate *after* claiming the common source lock.
+      const gate = await client.query<{ blocked: boolean }>(`SELECT (
+        EXISTS (SELECT 1 FROM source_access_blocks WHERE source='amazon.co.jp') OR
+        EXISTS (SELECT 1 FROM product_detail_queue WHERE state='needs_human')) AS blocked`);
+      if (gate.rows[0].blocked) return false;
+      const claimed = await client.query(`UPDATE catalog_import_requests SET state='running',started_at=now()
+        WHERE id=(SELECT id FROM catalog_import_requests WHERE state='pending' ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *`);
+      const job = claimed.rows[0];
+      if (!job) return false;
+      try {
+        const observation = await collector(job.asin, job.category_slug);
+        if (observation.asin !== job.asin || observation.categorySlug !== job.category_slug || !observation.name?.trim() ||
+          !observation.imageUrl || !Number.isInteger(observation.priceJpy) || observation.priceJpy! <= 0 ||
+          !Number.isFinite(new Date(observation.observedAt).getTime()) || new Date(observation.observedAt).getTime() > Date.now()) throw new SourceError('parse_error', 'Dữ liệu sản phẩm không hợp lệ.');
+        await client.query('BEGIN');
+        try {
+          const current = await client.query("SELECT id FROM catalog_import_requests WHERE id=$1 AND state='running' FOR UPDATE", [job.id]);
+          if (current.rowCount) {
+            await ingestObservations([observation], undefined, client);
+            await client.query("UPDATE catalog_import_requests SET state='succeeded',finished_at=now() WHERE id=$1", [job.id]);
+            await audit(client, job.actor_id, 'catalog.import_succeeded', job.asin, null, { id: job.id });
+          }
+          await client.query('COMMIT');
+        } catch (error) { await client.query('ROLLBACK'); throw error; }
+      } catch (error) {
+        const state = error instanceof SourceError && ['blocked', 'needs_human'].includes(error.state) ? 'needs_human' : 'failed';
+        if (state === 'needs_human') {
+          await client.query(`INSERT INTO source_access_blocks(source,reason)
+            VALUES('amazon.co.jp','Admin ASIN import requires manual Amazon verification')
+            ON CONFLICT(source) DO UPDATE SET reason=EXCLUDED.reason,blocked_at=now()`);
+        }
+        // Store a source message, never arbitrary SQL/connection errors or secrets.
+        const message = error instanceof SourceError ? error.message.slice(0, 1000) : 'Không thể lưu sản phẩm; kiểm tra worker và cơ sở dữ liệu.';
+        await client.query("UPDATE catalog_import_requests SET state=$2,error=$3,finished_at=now() WHERE id=$1 AND state='running'", [job.id, state, message]);
+      }
+      return true;
+    } finally {
+      await client.query('SELECT pg_advisory_unlock($1)', [AMAZON_ACCESS_LOCK]);
+    }
+  } finally { client.release(); }
 }

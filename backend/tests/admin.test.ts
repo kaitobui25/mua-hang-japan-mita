@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
+import pg from 'pg';
 import { db } from '../src/db/pool.js';
+import { config } from '../src/config.js';
 import { buildServer } from '../src/server.js';
 import { provisionOwner } from '../src/admin/owner.js';
 import { digest, hashPassword, verifyPassword } from '../src/admin/security.js';
 import { enqueueImport, processNextImport } from '../src/admin/imports.js';
+import { acknowledgeSourceAccess, syncCatalog } from '../src/ingestion/sync.js';
+import { AMAZON_ACCESS_LOCK } from '../src/ingestion/source-access.js';
 import { getCatalogSettings, overview, savePolicy, setVisibility } from '../src/admin/data.js';
 import { getProductDetails, listCatalog } from '../src/catalog.js';
 import { createSimulationOrder } from '../src/orders.js';
@@ -219,6 +223,16 @@ test('Admin MVP integration', async t => {
     assert.equal((await db.query('SELECT count(*)::int AS n FROM catalog_import_requests WHERE asin=$1', [target])).rows[0].n, 1);
     assert.ok(results.some(r => 'duplicate' in r && r.duplicate));
     assert.equal(await getProductDetails(target), null);
+    const otherWorker = new pg.Client({ connectionString: config.databaseUrl });
+    await otherWorker.connect();
+    try {
+      await otherWorker.query('SELECT pg_advisory_lock($1)', [AMAZON_ACCESS_LOCK]);
+      assert.equal(await processNextImport(async () => { assert.fail('must not fetch while sync owns Amazon mutex'); }), false);
+      assert.equal((await db.query('SELECT state FROM catalog_import_requests WHERE asin=$1', [target])).rows[0].state, 'pending');
+    } finally {
+      await otherWorker.query('SELECT pg_advisory_unlock($1)', [AMAZON_ACCESS_LOCK]);
+      await otherWorker.end();
+    }
     await processNextImport(async id => observation(id));
     assert.ok(await getProductDetails(target));
     assert.equal((await db.query('SELECT state FROM catalog_import_requests WHERE asin=$1', [target])).rows[0].state, 'succeeded');
@@ -227,11 +241,42 @@ test('Admin MVP integration', async t => {
       await processNextImport(async () => { throw new SourceError(denied ? 'blocked' : 'parse_error', denied ? 'HTTP 403' : 'Missing product title'); });
       assert.equal((await db.query('SELECT state FROM catalog_import_requests WHERE asin=$1', [id])).rows[0].state, denied ? 'needs_human' : 'failed');
       assert.equal(await getProductDetails(id), null);
+      if (denied) {
+        assert.equal((await db.query(`SELECT count(*)::int AS n FROM source_access_blocks WHERE source='amazon.co.jp'`)).rows[0].n, 1);
+        assert.equal(await processNextImport(async () => { assert.fail('must not retry Amazon after import denial'); }), false);
+        assert.equal(await acknowledgeSourceAccess('ALL', true), 0);
+      }
     }
     await enqueueImport('A000000006', category, 1);
     await db.query("UPDATE catalog_import_requests SET state='running',started_at=now()-interval '6 minutes' WHERE asin='A000000006'");
     await processNextImport();
     assert.equal((await db.query("SELECT state FROM catalog_import_requests WHERE asin='A000000006'")).rows[0].state, 'needs_human');
+    // Conversely, while an import holds the mutex, sync cannot start a new
+    // category request. Import denial is then visible to all later syncs.
+    await enqueueImport('A000000007', category, 1);
+    let signalCollector!: () => void;
+    let finishCollector!: () => void;
+    const started = new Promise<void>(resolve => { signalCollector = resolve; });
+    const resume = new Promise<void>(resolve => { finishCollector = resolve; });
+    const inflight = processNextImport(async () => {
+      signalCollector();
+      await resume;
+      throw new SourceError('blocked', 'CAPTCHA');
+    });
+    await started;
+    try {
+      // Separate pool simulates another process even when primary DB_POOL_MAX=1.
+      const competingPool = new pg.Pool({ connectionString: config.databaseUrl, max: 1 });
+      const competing = await competingPool.connect();
+      try {
+        const overlapping = await syncCatalog({ connection: competing, discover: async () => { assert.fail('sync must not crawl while Admin fetches'); } });
+        assert.equal(overlapping.state, 'already_running');
+        await assert.rejects(acknowledgeSourceAccess('ALL', true, competing), /collection is in progress/);
+      } finally { competing.release(); await competingPool.end(); }
+    } finally { finishCollector(); }
+    assert.equal(await inflight, true);
+    assert.equal((await db.query("SELECT state FROM catalog_import_requests WHERE asin='A000000007'")).rows[0].state, 'needs_human');
+    assert.equal((await db.query("SELECT count(*)::int AS n FROM source_access_blocks WHERE source='amazon.co.jp'")).rows[0].n, 1);
   });
   await t.test('import queue bounds hourly submissions and total pending work', async () => {
     const count = (await db.query('SELECT count(*)::int AS n FROM catalog_import_requests')).rows[0].n;
@@ -282,5 +327,10 @@ test('Admin MVP integration', async t => {
       assert.equal(Number(persisted.merchandise_vnd), toVnd(1000, { fxJpyToVnd: Number(persisted.fx_jpy_to_vnd), serviceFeePercent: Number(persisted.service_fee_percent) }) * 2);
       assert.equal(persisted.pricing_policy_version, order.version);
     }
+  });
+  await t.test('sync refuses all Amazon requests after an Admin import denial', async () => {
+    const paused = await syncCatalog({ discover: async () => { assert.fail('source blocked after Admin denial'); } });
+    assert.equal(paused.state, 'needs_human');
+    assert.equal(paused.discovered, 0);
   });
 });

@@ -1,7 +1,7 @@
 import { PgBoss } from 'pg-boss';
 import { config } from './config.js';
 import { db } from './db/pool.js';
-import { importObservedSnapshot, syncCatalog, seedExistingDetails } from './ingestion/sync.js';
+import { importObservedSnapshot, syncCatalog, seedExistingDetails, acknowledgeSourceAccess } from './ingestion/sync.js';
 import { processNextImport } from './admin/imports.js';
 import { dailyCron, dailyTimezone, shouldRunDaily } from './ingestion/schedule.js';
 import { translatePendingProducts } from './translation/jobs.js';
@@ -40,26 +40,33 @@ if (command === 'once') {
   finally { await db.end(); }
 } else if (command === 'backfill:status') {
   try {
-    const { rows } = await db.query(`SELECT p.category_slug,COUNT(DISTINCT p.asin)::int AS products,
-      COUNT(DISTINCT d.asin)::int AS detailed,
-      COUNT(DISTINCT t.asin)::int AS translated,
-      COUNT(DISTINCT q.asin) FILTER (WHERE q.state='pending')::int AS pending,
-      COUNT(DISTINCT q.asin) FILTER (WHERE q.state='failed')::int AS failed,
-      COUNT(DISTINCT q.asin) FILTER (WHERE q.state='needs_human')::int AS needs_human
-      FROM products p LEFT JOIN product_details d ON d.asin=p.asin
-      LEFT JOIN product_translations t ON t.asin=p.asin AND t.locale='vi' AND t.status='success'
-      LEFT JOIN product_detail_queue q ON q.asin=p.asin AND q.category_slug=p.category_slug
-      GROUP BY p.category_slug ORDER BY p.category_slug`);
+    const { rows } = await db.query(`SELECT c.slug AS category_slug,
+      (SELECT count(*)::int FROM products p WHERE p.category_slug=c.slug) AS products,
+      (SELECT count(*)::int FROM product_details d JOIN products p ON p.asin=d.asin WHERE p.category_slug=c.slug) AS detailed,
+      (SELECT count(*)::int FROM product_translations t JOIN products p ON p.asin=t.asin WHERE p.category_slug=c.slug AND t.status='success' AND t.locale='vi') AS translated,
+      (SELECT count(*)::int FROM product_detail_queue q WHERE q.category_slug=c.slug AND q.state='pending') AS pending,
+      (SELECT count(*)::int FROM product_detail_queue q WHERE q.category_slug=c.slug AND q.state='failed') AS failed,
+      (SELECT count(*)::int FROM product_detail_queue q WHERE q.category_slug=c.slug AND q.state='needs_human') AS needs_human
+      FROM categories c WHERE c.slug IN ('thuc-pham-bo-sung','thuc-pham-cho-be') ORDER BY c.slug`);
     console.table(rows);
+  } finally { await db.end(); }
+} else if (command === 'backfill:ack') {
+  try {
+    const asin = process.env.BACKFILL_ACK_ASIN?.trim().toUpperCase() ?? '';
+    const confirmed = process.env.BACKFILL_ACCESS_CONFIRMED === '1';
+    console.log('Manually verified ASINs requeued:', await acknowledgeSourceAccess(asin, confirmed));
   } finally { await db.end(); }
 } else if (command === 'backfill') {
   const parsed = Number(process.env.BACKFILL_LIMIT_PER_CATEGORY ?? '15');
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 200) throw Error('BACKFILL_LIMIT_PER_CATEGORY must be 1..200');
+  const category = process.env.BACKFILL_CATEGORY_SLUG;
+  if (category && !['thuc-pham-bo-sung', 'thuc-pham-cho-be'].includes(category)) throw Error('Invalid BACKFILL_CATEGORY_SLUG');
   try {
     console.log('Existing catalog ASINs newly queued:', await seedExistingDetails());
     // Deliberately no listing discovery; do not exceed category budget or bypass source denial.
     console.log('Manual backfill result:', await syncCatalog({
-      limit: parsed, discover: async () => ({ observations: [], issues: [] })
+      limit: parsed, categories: category ? [category] : undefined,
+      discover: async () => ({ observations: [], issues: [] })
     }));
   } finally { await db.end(); }
 } else if (command === 'daily') {
@@ -111,7 +118,7 @@ if (command === 'once') {
     process.once('SIGTERM', () => void halt());
   } catch (error) { await boss.stop(); await db.end(); throw error; }
 } else {
-  console.error('Usage: tsx src/worker.ts once|import|translate|backfill:seed|backfill:status|backfill|daily');
+  console.error('Usage: tsx src/worker.ts once|import|translate|backfill:seed|backfill:status|backfill:ack|backfill|daily');
   process.exitCode = 1;
   await db.end();
 }

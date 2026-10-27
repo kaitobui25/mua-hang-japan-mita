@@ -81,9 +81,15 @@ CREATE TABLE IF NOT EXISTS product_translations (
   model text,
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','success','failed')),
   translated_at timestamptz,
+  detail_attempted_at timestamptz,
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (asin, locale)
 );
+-- Incremental translation: a verified Vietnamese title may be published while
+-- the larger description still awaits free model quota. Existing rows default
+-- to fully translated (false) for backward compatibility.
+ALTER TABLE product_translations ADD COLUMN IF NOT EXISTS name_only boolean NOT NULL DEFAULT false;
+ALTER TABLE product_translations ADD COLUMN IF NOT EXISTS detail_attempted_at timestamptz;
 -- Also holds discovered children before they have a valid product snapshot.
 CREATE TABLE IF NOT EXISTS product_detail_queue (
   category_slug text NOT NULL REFERENCES categories(slug),
@@ -95,6 +101,13 @@ CREATE TABLE IF NOT EXISTS product_detail_queue (
   last_success_at timestamptz,
   enqueued_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (category_slug, asin)
+);
+-- Global source deny marker: a listing 403/CAPTCHA may have no ASIN and must
+-- still block all later categories until an explicit manual acknowledgment.
+CREATE TABLE IF NOT EXISTS source_access_blocks (
+  source text PRIMARY KEY,
+  reason text NOT NULL,
+  blocked_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS product_detail_queue_fair_idx
   ON product_detail_queue(category_slug, last_attempt_at NULLS FIRST, enqueued_at, asin);
