@@ -103,6 +103,8 @@ Mô tả sử dụng và giao thức SSH giới hạn quyền xem `deploy/mita/c
 
 Ngày 27/10/2026: thử GitHub Actions build-only thành công trên Ubuntu và chuyển thủ công **chính artifact đó** qua forced SSH gate để nghiệm thu receiver, public footer hiện `v0.3`. **Cả ba GitHub secrets `MITA_DEPLOY_SSH_KEY`, `MITA_DEPLOY_HOST`, `MITA_DEPLOY_KNOWN_HOSTS` đã được xác nhận tồn tại lúc 18:02 JST.** Kiểm tra deploy thực tế từ GitHub Actions ở từng workflow run; có secret chưa đồng nghĩa có thể bảo đảm deploy thành công.
 
+**Nghiệm thu deploy tự động:** commit `eca2fa1bfa9d` có `[deploy]` được push lên `main`, GitHub Actions run [40478008591](https://github.com/kaitobui25/mua-hang-japan-mita/actions/runs/40478008591) hoàn thành **success** sau 1 phút 59 giây, bao gồm bước SSH deploy. VPS `/opt/mita/current` trỏ đến `/opt/mita/releases/v0.3-eca2fa1bfa9d`, `release-info.json` ghi đúng commit và version `0.3`; Mita/E-KAIWA HTTP 200, API khỏe, catalog 122 sản phẩm, Admin/checkout public giữ chặn như receiver kiểm tra. Commit tài liệu sau nghiệm thu không có `[deploy]` để tránh redeploy không cần thiết.
+
 
 Theo quyết định owner: **không lập lịch hoặc tạo backup**; không có khả năng khôi phục dữ liệu mới nếu VPS/đĩa/DB hỏng. Thư mục dữ liệu local cũ vẫn còn sau migration nhưng **không đồng bộ** và **không phải backup** của production. Không chạy `migrate-vps.ps1 -Apply` lần thứ hai: đây chỉ là tiện ích chuyển ban đầu và từ chối bảng target đã có dữ liệu.
 
