@@ -5,7 +5,7 @@ import { buildServer } from '../src/server.js';
 import { provisionOwner } from '../src/admin/owner.js';
 import { digest, hashPassword, verifyPassword } from '../src/admin/security.js';
 import { enqueueImport, processNextImport } from '../src/admin/imports.js';
-import { overview, savePolicy, setVisibility } from '../src/admin/data.js';
+import { getCatalogSettings, overview, savePolicy, setVisibility } from '../src/admin/data.js';
 import { getProductDetails, listCatalog } from '../src/catalog.js';
 import { createSimulationOrder } from '../src/orders.js';
 import { getPricingPolicy, toVnd } from '../src/pricing.js';
@@ -76,13 +76,13 @@ test('Admin MVP integration', async t => {
     assert.equal((await db.query('SELECT count(*)::int AS n FROM admin_accounts')).rows[0].n, 1);
   });
   await t.test('all admin reads and mutations require a session, with no PII leakage', async () => {
-    for (const url of ['/session', '/overview', '/orders', '/orders/00000000-0000-0000-0000-000000000000', '/products', '/pricing', '/imports']) {
+    for (const url of ['/session', '/overview', '/orders', '/orders/00000000-0000-0000-0000-000000000000', '/products', '/pricing', '/catalog-settings', '/imports']) {
       const result = await server.inject({ url: `/api/admin${url}`, headers: local });
       assert.equal(result.statusCode, 401, url);
       assert.equal(result.body.includes('Private'), false);
       assert.equal(result.headers['cache-control'], 'no-store');
     }
-    for (const [method, url] of [['POST', '/imports'], ['PUT', '/pricing'], ['POST', '/pricing/preview'], ['POST', '/logout'], ['PATCH', `/products/${asin}/visibility`]] as const) {
+    for (const [method, url] of [['POST', '/imports'], ['PUT', '/pricing'], ['PUT', '/catalog-settings'], ['POST', '/pricing/preview'], ['POST', '/logout'], ['PATCH', `/products/${asin}/visibility`]] as const) {
       assert.equal((await server.inject({ method, url: `/api/admin${url}`, headers: local, payload: {} })).statusCode, 401);
     }
     assert.equal((await server.inject({ url: '/api/admin/overview', headers: { host: 'evil.test' } })).statusCode, 403);
@@ -141,6 +141,50 @@ test('Admin MVP integration', async t => {
     await db.query("UPDATE products SET rights_status='local_test_only',availability='out_of_stock' WHERE asin=$1", [asin]);
     await assert.rejects(checkout());
     await db.query("UPDATE products SET availability='unknown' WHERE asin=$1", [asin]);
+  });
+  await t.test('local_test_only switch defaults OFF, changes public catalog immediately, remains private and audited', async () => {
+    const headers = { ...local, cookie, 'x-csrf-token': csrf };
+    const initial = await getCatalogSettings();
+    assert.deepEqual(initial, { version: 1, hideLocalTestOnly: false });
+    assert.equal((await server.inject({ url: '/api/admin/catalog-settings', headers })).json().hideLocalTestOnly, false);
+    assert.equal((await listCatalog({ page: 1, limit: 20 })).total > 0, true);
+    assert.ok(await getProductDetails('A000000002'));
+    const initialOverview = await overview();
+    assert.ok(initialOverview.visible_products > 0);
+
+    for (const payload of [{ version: 1, hideLocalTestOnly: 'true' }, { version: 0, hideLocalTestOnly: true }]) {
+      const invalid = await server.inject({ method: 'PUT', url: '/api/admin/catalog-settings', headers, payload });
+      assert.equal(invalid.statusCode, 400, invalid.body);
+    }
+    assert.equal((await server.inject({ method: 'PUT', url: '/api/admin/catalog-settings', headers: { ...local, cookie }, payload: initial })).statusCode, 403);
+    assert.equal((await server.inject({ method: 'PUT', url: '/api/admin/catalog-settings', headers: { ...headers, origin: 'https://evil.test' }, payload: initial })).statusCode, 403);
+
+    const on = await server.inject({ method: 'PUT', url: '/api/admin/catalog-settings', headers, payload: { version: 1, hideLocalTestOnly: true } });
+    assert.equal(on.statusCode, 200, on.body);
+    assert.deepEqual(on.json(), { version: 2, hideLocalTestOnly: true });
+    assert.equal((await listCatalog({ page: 1, limit: 20 })).total, 0);
+    assert.equal(await getProductDetails('A000000002'), null);
+    assert.equal((await overview()).visible_products, 0);
+    const stale = await server.inject({ method: 'PUT', url: '/api/admin/catalog-settings', headers, payload: { version: 1, hideLocalTestOnly: false } });
+    assert.equal(stale.statusCode, 409);
+    assert.equal((await getCatalogSettings()).hideLocalTestOnly, true);
+
+    const off = await server.inject({ method: 'PUT', url: '/api/admin/catalog-settings', headers, payload: { version: 2, hideLocalTestOnly: false } });
+    assert.equal(off.statusCode, 200, off.body);
+    assert.deepEqual(await getCatalogSettings(), { version: 3, hideLocalTestOnly: false });
+    assert.ok((await listCatalog({ page: 1, limit: 20 })).total > 0);
+    assert.ok(await getProductDetails('A000000002'));
+    const audit = await db.query("SELECT before_value,after_value FROM admin_audit_events WHERE action='catalog.visibility_policy' ORDER BY id");
+    assert.equal(audit.rowCount, 2);
+    assert.equal(audit.rows[0].after_value.hideLocalTestOnly, true);
+    assert.equal(audit.rows[1].after_value.hideLocalTestOnly, false);
+    // Unverified and manually hidden products are excluded even with switch OFF.
+    await setVisibility(asin, true, 1);
+    assert.equal(await getProductDetails(asin), null);
+    await setVisibility(asin, false, 1);
+    await db.query("UPDATE products SET rights_status='unverified' WHERE asin='A000000002'");
+    assert.equal(await getProductDetails('A000000002'), null);
+    await db.query("UPDATE products SET rights_status='local_test_only' WHERE asin='A000000002'");
   });
   await t.test('policy validation, optimistic conflict, atomic save, and historical order snapshots', async () => {
     const old = await checkout();

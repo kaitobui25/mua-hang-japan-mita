@@ -12,10 +12,12 @@ export type DbProduct = {
   admin_hidden_at: Date | null;
 };
 
-const publicRightsSql = config.publicReadOnly ? "rights_status = 'verified'" : "rights_status IN ('local_test_only','verified')";
+// Read the singleton setting in SQL so catalog/detail/overview reflect Admin changes
+// immediately without an API restart. Unverified remains excluded in both modes.
+const publicRightsSql = "(rights_status = 'verified' OR (rights_status = 'local_test_only' AND EXISTS (SELECT 1 FROM catalog_settings WHERE id=1 AND NOT hide_local_test_only)))";
 export const publicVisibilitySql = `admin_hidden_at IS NULL AND ${publicRightsSql}`;
 export function canCheckoutProduct(p: DbProduct) {
-  return !p.admin_hidden_at && (p.rights_status === 'verified' || (!config.publicReadOnly && p.rights_status === 'local_test_only')) &&
+  return !config.publicReadOnly && !p.admin_hidden_at && ['verified', 'local_test_only'].includes(p.rights_status) &&
     p.sale_status === 'ready' && !['unavailable', 'out_of_stock'].includes(p.availability) &&
     p.price_jpy !== null && p.price_jpy > 0 && isFresh(p.price_observed_at);
 }

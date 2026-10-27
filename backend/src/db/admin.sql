@@ -26,6 +26,15 @@ CREATE TABLE IF NOT EXISTS pricing_policy (
   service_fee_percent numeric(6,2) NOT NULL CHECK (service_fee_percent >= 0 AND service_fee_percent <= 100),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+-- OFF by default: local_test_only products are included in the public catalog.
+-- The owner can enable this switch to hide them again without changing rights_status.
+CREATE TABLE IF NOT EXISTS catalog_settings (
+  id integer PRIMARY KEY CHECK (id = 1),
+  version integer NOT NULL DEFAULT 1 CHECK (version > 0),
+  hide_local_test_only boolean NOT NULL DEFAULT false,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO catalog_settings(id) VALUES (1) ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS admin_audit_events (
   id bigserial PRIMARY KEY,
   actor_id integer NOT NULL REFERENCES admin_accounts(id),

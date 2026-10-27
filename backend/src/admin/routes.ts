@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { db } from '../db/pool.js';
 import { getPricingPolicy, toVnd, validatePolicy } from '../pricing.js';
-import { AdminError, listOrders, listProducts, orderDetail, overview, savePolicy, setVisibility } from './data.js';
+import { AdminError, getCatalogSettings, listOrders, listProducts, orderDetail, overview, saveCatalogSettings, savePolicy, setVisibility } from './data.js';
 import { enqueueImport, listImports } from './imports.js';
 import { csrfToken, digest, getSession, isLocalRequest, login, readToken, setSessionCookie, validOrigin } from './security.js';
 
@@ -70,6 +70,12 @@ export async function adminRoutes(server: FastifyInstance) {
   server.get('/pricing', async () => {
     const policy = await getPricingPolicy();
     return { ...policy, exampleVnd: toVnd(1000, policy) };
+  });
+  server.get('/catalog-settings', async () => getCatalogSettings());
+  server.put('/catalog-settings', async request => {
+    const body = request.body as Parameters<typeof saveCatalogSettings>[0] | null;
+    if (!body) throw new AdminError(400, 'Thiếu cấu hình hiển thị.');
+    return saveCatalogSettings(body, request.adminSession!.actorId);
   });
   server.post('/pricing/preview', async request => {
     const body = request.body as { fxJpyToVnd: number; serviceFeePercent: number } | null;

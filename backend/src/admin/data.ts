@@ -62,6 +62,25 @@ export async function savePolicy(policy: PricingPolicy, actor: number) {
     return { ...next, exampleVnd: toVnd(1000, next) };
   });
 }
+export async function getCatalogSettings(client: Pick<PoolClient, 'query'> = db) {
+  const result = await client.query<{ version: number; hide_local_test_only: boolean }>('SELECT version,hide_local_test_only FROM catalog_settings WHERE id=1');
+  if (!result.rows[0]) throw new Error('Run database migration before serving catalog settings');
+  return { version: result.rows[0].version, hideLocalTestOnly: result.rows[0].hide_local_test_only };
+}
+export async function saveCatalogSettings(value: { version: number; hideLocalTestOnly: boolean }, actor: number) {
+  if (!value || !Number.isInteger(value.version) || value.version < 1 || typeof value.hideLocalTestOnly !== 'boolean') {
+    throw new AdminError(400, 'Cấu hình hiển thị không hợp lệ.');
+  }
+  return transaction(async client => {
+    await client.query('SELECT id FROM catalog_settings WHERE id=1 FOR UPDATE');
+    const before = await getCatalogSettings(client);
+    if (before.version !== value.version) throw new AdminError(409, 'Cấu hình đã thay đổi. Tải lại trước khi lưu.');
+    await client.query('UPDATE catalog_settings SET version=version+1,hide_local_test_only=$1,updated_at=now() WHERE id=1', [value.hideLocalTestOnly]);
+    const after = await getCatalogSettings(client);
+    await audit(client, actor, 'catalog.visibility_policy', String(after.version), before, after);
+    return after;
+  });
+}
 export async function listOrders(q: Record<string, string | undefined>) {
   const { page, limit, offset } = pagination(q);
   const term = `%${q.q ?? ''}%`;
