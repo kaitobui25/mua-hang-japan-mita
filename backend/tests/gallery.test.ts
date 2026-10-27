@@ -1,5 +1,6 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { db } from '../src/db/pool.js';
 import { parseDetail } from '../src/ingestion/detail.js';
 import { uniqueImages } from '../src/ingestion/enrichment.js';
@@ -52,7 +53,7 @@ test('complete selected initial gallery has provenance and excludes other color 
 });
 
 test('single-quoted source keys remain supported and initial is bounded to colorImages', () => {
-  const item = parse(`<script>var gallery = {'colorImages': {'initial': [{"hiRes":"${url('front')}"}]}};</script>`);
+  const item = parse(`<img id="landingImage" src="${url('front', 'SX38')}"><script>var gallery = {'colorImages': {'initial': [{"hiRes":"${url('front')}"}]}};</script>`);
   assert.deepEqual(item.imageUrls, [url('front')]);
   assert.ok(item.detail!.provenance.sections.includes('gallery:complete'));
   const partial = parse(`<img id="landingImage" src="${url('front')}">
@@ -61,6 +62,60 @@ test('single-quoted source keys remain supported and initial is bounded to color
     <div data-asin="G000000004">${initial([{ hiRes: url('other-owner') }])}</div>`);
   assert.deepEqual(partial.imageUrls, [url('front')]);
   assert.ok(partial.detail!.provenance.sections.includes('gallery:partial'));
+});
+
+test('unbound scripts cannot supply images or complete a partial product gallery', () => {
+  const item = parse(`<img id="landingImage" src="${url('front', 'SX300')}">
+    <script>${JSON.stringify({ colorImages: { initial: [{ hiRes: url('unrelated') }] } })}</script>`);
+  assert.deepEqual(item.imageUrls, [url('front', 'SX300')]);
+  assert.ok(item.detail!.provenance.sections.includes('gallery:partial'));
+  assert.ok(!item.detail!.provenance.sections.includes('colorImages.initial'));
+});
+
+test('scripts without currentAsin require selected ownership or an exact known product image identity', () => {
+  const gallery = (id: string) => `<script>${JSON.stringify({ colorImages: { initial: [{ hiRes: url(id) }, { hiRes: url('back') }] } })}</script>`;
+  for (const body of [
+    `<div data-asin="${asin}">${gallery('front')}</div>`,
+    `<img id="landingImage" src="${url('front', 'SX38')}">${gallery('front')}`,
+    `<div id="altImages"><img src="${url('front', 'SX38')}"></div>${gallery('front')}`
+  ]) {
+    const item = parse(body);
+    assert.deepEqual(item.imageUrls, [url('front'), url('back')]);
+    assert.ok(item.detail!.provenance.sections.includes('gallery:complete'));
+  }
+  for (const body of [
+    gallery('front-extra'),
+    `<div data-asin="G000000004"><div id="altImages"><img src="${url('front-extra')}"></div></div>${gallery('front-extra')}`,
+    `<div data-asin="G000000004">${gallery('front')}</div>`,
+    initial([{ hiRes: url('front') }], 'G000000004'),
+    `<div id="recommendations">${gallery('front')}</div>`,
+    `<div data-asin="G000000004"><div data-asin="${asin}">${gallery('front')}</div></div>`,
+    `${initial([{ hiRes: url('bridge') }])}${gallery('bridge')}`
+  ]) {
+    const item = parse(`<img id="landingImage" src="${url('front', 'SX300')}">${body}`);
+    assert.ok(!item.imageUrls!.includes(url('back')), body);
+  }
+});
+
+test('unowned scripts can bind through an observed thumbnail or main image dictionary', () => {
+  for (const image of [
+    { thumb: url('front', 'SX38'), hiRes: url('front') },
+    { main: { [url('front')]: [1500, 1500] } }
+  ]) {
+    const item = parse(`<img id="landingImage" data-a-dynamic-image='${JSON.stringify({ [url('front', 'SX300')]: [300, 300] })}'>
+      <script>${JSON.stringify({ colorImages: { initial: [image, { hiRes: url('back') }] } })}</script>`);
+    assert.deepEqual(item.imageUrls, [url('front'), url('back')]);
+    assert.ok(item.detail!.provenance.sections.includes('gallery:complete'));
+  }
+});
+
+test('existing Amazon fixture retains its complete five-image high resolution gallery without currentAsin', async () => {
+  const html = await readFile(new URL('./fixtures/amazon-detail.html', import.meta.url), 'utf8');
+  const item = parseDetail(html, 'B000000001', 'thuc-pham-bo-sung');
+  assert.deepEqual(item.imageUrls, [url('cover'), url('back', 'SL1200'),
+    'https://m.media-amazon.com/images/I/side.jpg', url('nutrition'),
+    'https://m.media-amazon.com/images/I/scoop.jpg']);
+  assert.ok(item.detail!.provenance.sections.includes('gallery:complete'));
 });
 
 test('store preserves real gallery and its timestamp on partial refresh, but replaces complete gallery', async () => {
@@ -75,6 +130,7 @@ test('store preserves real gallery and its timestamp on partial refresh, but rep
     const before = await read();
     for (const body of [
       `<img id="landingImage" src="${url('front', 'SX300')}">`,
+      `<img id="landingImage" src="${url('front', 'SX300')}"><script>{"colorImages":{"initial":[{"hiRes":"${url('unrelated')}"}]}}</script>`,
       initial([{ hiRes: url('front') }, { hiRes: 'https://evil.test/invalid.jpg' }]),
       `<img id="landingImage" src="${url('front')}">${initial([{ hiRes: url('other-asin') }], 'G000000004')}`
     ]) {

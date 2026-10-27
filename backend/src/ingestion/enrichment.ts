@@ -52,12 +52,15 @@ export function uniqueImages(urls: unknown[], dimensions: ReadonlyMap<string, nu
   for (const url of urls.filter(amazonImageUrl)) {
     // Identity ignores Amazon resize modifiers, but the returned URL is always observed.
     const pathname = new URL(url).pathname;
-    const key = pathname.replace(/\._[^/]+_\./, '.');
+    const key = imageIdentity(url);
     const size = Number(pathname.match(/(?:SL|SX|SY|AC_SL|AC_SX|AC_SY)(\d+)/)?.[1] ?? 0);
     const area = dimensions.get(url) ?? size * size;
     if (!found.has(key) || area > found.get(key)!.area) found.set(key, { url, area });
   }
   return [...found.values()].slice(0, 5).map(image => image.url);
+}
+function imageIdentity(url: string): string {
+  return new URL(url).pathname.replace(/\._[^/]+_\./, '.');
 }
 function dynamicImage(value: string | undefined, dimensions: Map<string, number>): string[] {
   if (!value) return [];
@@ -78,16 +81,38 @@ export function extractEnrichment($: CheerioAPI, asin: string, observedAt: strin
   const dimensions = new Map<string, number>();
   const gallerySections: string[] = [];
   let completeGallery = false;
-  const landing = $('#landingImage, #imgBlkFront').first();
+  const selectedNode = (node: ReturnType<CheerioAPI>) =>
+    !node.closest('[id*="recommend"], [id*="sims-"], [id^="variation_"]').length &&
+    !node.parents('[data-asin]').addBack('[data-asin]').toArray().some(el => {
+      const owner = $(el).attr('data-asin');
+      return owner && owner !== asin;
+    });
+  const landing = $('#landingImage, #imgBlkFront').filter((_, el) => selectedNode($(el))).first();
+  const altImages = $('#altImages img').filter((_, el) => selectedNode($(el)));
+  const landingImages = [landing.attr('data-old-hires'), ...dynamicImage(landing.attr('data-a-dynamic-image'), dimensions), landing.attr('src')];
+  // Only product DOM images can bind an otherwise unowned script. Accepted scripts
+  // must not lend their identities to later, unrelated scripts.
+  const knownImages = new Set(landingImages.filter(amazonImageUrl).map(imageIdentity));
+  altImages.each((_, el) => {
+    const node = $(el);
+    const candidates = [node.attr('data-old-hires'), ...dynamicImage(node.attr('data-a-dynamic-image'), dimensions), node.attr('src')];
+    for (const url of candidates.filter(amazonImageUrl)) knownImages.add(imageIdentity(url));
+  });
   images.push(landing.attr('data-old-hires'));
   for (const [index, script] of scripts.entries()) {
     // Only the selected product's initial gallery, never other color/child galleries.
     const node = $('script').eq(index);
     const owner = node.closest('[data-asin]').attr('data-asin');
     const currentAsin = jsonProperty(script, 'currentAsin');
-    if ((owner && owner !== asin) || (currentAsin && currentAsin !== asin) || node.closest('[id*="recommend"], [id*="sims-"]').length) continue;
+    if (!selectedNode(node) || (jsonPropertySource(script, 'currentAsin') !== undefined && currentAsin !== asin)) continue;
     const initial = jsonProperty(jsonPropertySource(script, 'colorImages') ?? '', 'initial');
     if (!Array.isArray(initial)) continue;
+    const bound = owner === asin || currentAsin === asin || initial.some(image => {
+      const item = record(image);
+      return [item.hiRes, item.large, item.thumb, ...Object.keys(record(item.main))]
+        .filter(amazonImageUrl).some(url => knownImages.has(imageIdentity(url)));
+    });
+    if (!bound) continue;
     let valid = 0;
     for (const image of initial) {
       const item = record(image);
@@ -98,13 +123,12 @@ export function extractEnrichment($: CheerioAPI, asin: string, observedAt: strin
     if (valid) gallerySections.push('colorImages.initial');
     if (valid > 0 && valid === initial.length) completeGallery = true;
   }
-  $('#altImages img').each((_, el) => {
+  altImages.each((_, el) => {
     const node = $(el);
     const candidates = [node.attr('data-old-hires'), ...dynamicImage(node.attr('data-a-dynamic-image'), dimensions), node.attr('src')];
     images.push(...candidates);
     if (candidates.some(amazonImageUrl)) gallerySections.push('altImages');
   });
-  const landingImages = [landing.attr('data-old-hires'), ...dynamicImage(landing.attr('data-a-dynamic-image'), dimensions), landing.attr('src')];
   images.push(...landingImages);
   if (landingImages.some(amazonImageUrl)) gallerySections.push('landingImage');
   const imageUrls = uniqueImages(images, dimensions);
