@@ -2,6 +2,8 @@ import { PgBoss } from 'pg-boss';
 import { config } from './config.js';
 import { db } from './db/pool.js';
 import { importObservedSnapshot, syncCatalog } from './ingestion/sync.js';
+import { processNextImport } from './admin/imports.js';
+import { dailyCron, dailyTimezone, shouldRunDaily } from './ingestion/schedule.js';
 
 const command = process.argv[2];
 if (command === 'once') {
@@ -11,14 +13,37 @@ if (command === 'once') {
   try { console.log('Imported observed products:', await importObservedSnapshot()); }
   finally { await db.end(); }
 } else if (command === 'daily') {
+  const startedAt = new Date();
   const boss = new PgBoss({ connectionString: config.databaseUrl, schema: 'mita_queue' });
+  boss.on('error', () => console.error('Catalog scheduler error; check local database.'));
+  let stopping = false;
+  let importWork: Promise<void> = Promise.resolve();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const pollImports = () => {
+    importWork = (async () => {
+      try { await processNextImport(); }
+      catch { console.error('ASIN import queue error; check local database.'); }
+      if (!stopping) timer = setTimeout(pollImports, 3000);
+    })();
+  };
   try {
     await boss.start();
     await boss.createQueue('catalog.daily');
-    await boss.work('catalog.daily', async () => { await syncCatalog(); });
-    await boss.schedule('catalog.daily', '0 4 * * *', {}, { tz: 'Asia/Tokyo' });
+    await boss.work('catalog.daily', { includeMetadata: true }, async jobs => {
+      for (const job of jobs) {
+        if (shouldRunDaily(job.createdOn, startedAt)) await syncCatalog();
+        else console.log('Skipped daily scan from downtime/outside the scheduled window.');
+      }
+    });
+    await boss.schedule('catalog.daily', dailyCron, {}, { tz: dailyTimezone });
+    pollImports();
     console.log('Mita catalog worker active, 04:00 Asia/Tokyo daily');
-    const halt = async () => { await boss.stop(); await db.end(); process.exit(0); };
+    const halt = async () => {
+      stopping = true;
+      if (timer) clearTimeout(timer);
+      await importWork;
+      await boss.stop(); await db.end(); process.exit(0);
+    };
     process.once('SIGINT', () => void halt());
     process.once('SIGTERM', () => void halt());
   } catch (error) { await boss.stop(); await db.end(); throw error; }

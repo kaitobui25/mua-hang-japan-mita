@@ -11,6 +11,7 @@ export type Observation = {
   sourceUrl: string; imageUrl?: string | null; priceJpy?: number | null;
   observedAt: string; sourceAdapter: string;
   parentAsin?: string | null; sourceProductId?: string | null;
+  availability?: 'in_stock' | 'out_of_stock' | 'unknown';
 };
 
 export class SourceError extends Error {
@@ -39,6 +40,7 @@ export async function getHtml(url: string): Promise<string> {
   let response: Response;
   try {
     response = await fetch(url, {
+    redirect: 'manual',
     signal: AbortSignal.timeout(config.amazonTimeoutMs),
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',

@@ -35,6 +35,7 @@ function Start-MitaService([string]$name,[string]$folder,[string]$script,[int]$p
   $output = Join-Path $runtime "$name.out.log"
   $errors = Join-Path $runtime "$name.err.log"
   $process = Start-Process -FilePath 'npm.cmd' -ArgumentList @('run',$script) -WorkingDirectory $folder -WindowStyle Hidden -RedirectStandardOutput $output -RedirectStandardError $errors -PassThru
+  @{ Id = $process.Id; StartedAt = $process.StartTime.ToUniversalTime().ToString('o') } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runtime "$name.pid.json") -Encoding UTF8
   Write-Host "$name started PID=$($process.Id)"
 }
 Start-MitaService 'api' $backend 'start' 4000
@@ -47,3 +48,4 @@ if ($dailyWorker) {
 }
 Write-Host 'Local Mita: http://127.0.0.1:3000'
 Write-Host 'Daily catalog sync: 04:00 Asia/Tokyo'
+Write-Host 'Manual stop: ./scripts/stop-local.ps1 (add -StopDatabase to stop the project PostgreSQL cluster)'

@@ -10,5 +10,9 @@ backend/.local-db/
 backend/.local-postgres.log
 backend/*.log
 backend/.env
+backend/.test-build/
+*.dump
+.verification/
+.backups/
 .env
 .agents/runtime/

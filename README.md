@@ -1,6 +1,8 @@
 # Mita Japan — local storefront
 
-Website mua hộ Nhật dành cho khách Việt. Garden UI (Next.js), catalog/checkout API (Fastify + TypeScript), PostgreSQL 18 chạy trực tiếp trên Windows. **Checkout chỉ là mô phỏng, không thu tiền thật.** Giá bán bằng VND dùng tỷ giá/phụ phí cố định trong cấu hình, **không phải báo giá đang giao dịch**.
+Website mua hộ Nhật dành cho khách Việt. Garden UI (Next.js), catalog/checkout API (Fastify + TypeScript), PostgreSQL 18 chạy trực tiếp trên Windows. **Checkout chỉ là mô phỏng, không thu tiền thật.** Giá bán VND dùng chính sách tỷ giá/phụ phí lưu trong PostgreSQL, **không phải báo giá đang giao dịch**.
+
+Admin local tại `/admin`: một owner, Tổng quan / Sản phẩm / Đơn hàng / Cấu hình. Xem [hướng dẫn khởi tạo owner, chạy/dừng, backup/restore và sử dụng Admin](docs/admin-local.md). Không Docker, truy cập LAN/internet hoặc tự khởi động cùng Windows.
 
 ## Bắt đầu (Windows, không Docker)
 
@@ -33,7 +35,7 @@ Trang chủ → danh mục whey/đồ ăn trẻ em → mở sản phẩm → th�
 
 ## Cấu hình
 
-API đọc biến môi trường ở `backend/.env.example`: `DATABASE_URL`, `API_PORT`, `FX_JPY_TO_VND` (mặc định 190 VND/JPY), `SERVICE_FEE_PERCENT` (mặc định 12). Nền tảng tách module nhỏ theo `backend/src/{catalog,pricing,orders,ingestion,db}`. Không có Docker, Redis hoặc dịch vụ bắt buộc ngoài Node và PostgreSQL. Bộ phận frontend dùng `/api/*` cùng origin, Next chuyển qua `127.0.0.1:4000`.
+Mẫu biến môi trường ở `backend/.env.example` (không tự nạp): `DATABASE_URL`, `API_PORT`, `WEB_PORT`, `FX_JPY_TO_VND` (seed mặc định 190 VND/JPY), `SERVICE_FEE_PERCENT` (seed mặc định 12). Sau migration, policy DB là nguồn giá; chỉnh đồng thời hai thông số qua Admin, không đổi snapshot đơn cũ. Nền tảng tách module nhỏ theo `backend/src/{admin,catalog,pricing,orders,ingestion,db}`. Không có Docker, Redis hoặc dịch vụ bắt buộc ngoài Node và PostgreSQL. Frontend dùng `/api/*` cùng origin, Next chuyển qua loopback Fastify.
 
 ## Kiểm tra
 

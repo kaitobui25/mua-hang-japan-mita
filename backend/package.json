@@ -6,9 +6,11 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
-    "test": "tsx --test tests/*.test.ts",
+    "test": "tsx tests/run.ts",
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx src/db/migrate.ts",
+    "admin:setup": "tsx src/admin/owner.ts setup",
+    "admin:reset": "tsx src/admin/owner.ts reset",
     "worker:once": "tsx src/worker.ts once",
     "worker:daily": "tsx src/worker.ts daily"
   },

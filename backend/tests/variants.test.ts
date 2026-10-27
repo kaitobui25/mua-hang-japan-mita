@@ -38,8 +38,8 @@ test('detail API groups only products with the same observed key and category', 
       [otherCategory, 'thuc-pham-cho-be', 'parent_asin', parent, 500]
     ] as const) {
       await client.query(`INSERT INTO products
-        (asin, category_slug, name, source_url, source_adapter, variant_group_basis, variant_group_id, price_jpy)
-        VALUES ($1,$2,'Identical name','https://www.amazon.co.jp/dp/test','test',$3,$4,$5)`,
+        (asin, category_slug, name, source_url, source_adapter, variant_group_basis, variant_group_id, price_jpy,rights_status)
+        VALUES ($1,$2,'Identical name','https://www.amazon.co.jp/dp/test','test',$3,$4,$5,'local_test_only')`,
       [id, category, basis, groupId, price]);
     }
 

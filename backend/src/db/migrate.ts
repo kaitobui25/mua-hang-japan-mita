@@ -1,11 +1,23 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { db } from './pool.js';
+import { config } from '../config.js';
+import { validatePolicy } from '../pricing.js';
 
 const path = fileURLToPath(new URL('./schema.sql', import.meta.url));
+const client = await db.connect();
 try {
-  await db.query(await readFile(path, 'utf8'));
+  validatePolicy({ fxJpyToVnd: config.fxJpyToVnd, serviceFeePercent: config.serviceFeePercent });
+  await client.query('BEGIN');
+  await client.query(await readFile(path, 'utf8'));
+  await client.query(await readFile(new URL('./admin.sql', import.meta.url), 'utf8'));
+  await client.query('INSERT INTO pricing_policy(id,fx_jpy_to_vnd,service_fee_percent) VALUES(1,$1,$2) ON CONFLICT DO NOTHING', [config.fxJpyToVnd, config.serviceFeePercent]);
+  await client.query('COMMIT');
   console.log('Mita database schema applied');
+} catch (error) {
+  await client.query('ROLLBACK');
+  throw error;
 } finally {
+  client.release();
   await db.end();
 }
