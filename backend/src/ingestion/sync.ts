@@ -1,9 +1,55 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { db } from '../db/pool.js';
-import { discoverHttp, seeds, SourceError, type Observation } from './source.js';
+import { discoverHttp, seeds, SourceError, type DiscoveryResult, type DiscoveryIssue, type Observation } from './source.js';
 import { ingestObservations } from './store.js';
 import { discoverNeo } from './neo.js';
+
+export async function collectCategory(
+  seed: { categorySlug: string; url: string },
+  http: (category: string, url: string) => Promise<DiscoveryResult> = discoverHttp,
+  neo: (category: string, url: string) => Promise<Observation[]> = discoverNeo
+): Promise<DiscoveryResult> {
+  let result: DiscoveryResult;
+  try {
+    result = await http(seed.categorySlug, seed.url);
+  } catch (error) {
+    // Only source markup/JS failures permit browser fallback, not access denial.
+    if (!(error instanceof SourceError) || error.state !== 'parse_error') throw error;
+    return { observations: await neo(seed.categorySlug, seed.url), issues: [] };
+  }
+
+  const missing = result.observations.filter(o => o.priceJpy == null);
+  if (!missing.length) return result;
+  const observations = new Map(result.observations.map(o => [o.asin, o]));
+  const issues = [...result.issues];
+  try {
+    // Preserve the full HTTP discovery. Neo can supplement verified prices and
+    // explicit family identifiers without replacing otherwise-valid HTTP data.
+    for (const item of await neo(seed.categorySlug, seed.url)) {
+      const previous = observations.get(item.asin);
+      if (previous && (
+        (previous.priceJpy == null && item.priceJpy != null) ||
+        (item.parentAsin != null && item.parentAsin !== previous.parentAsin) ||
+        (item.sourceProductId != null && item.sourceProductId !== previous.sourceProductId)
+      )) {
+        const refreshPrice = previous.priceJpy == null && item.priceJpy != null;
+        observations.set(item.asin, {
+          ...previous,
+          ...(refreshPrice ? { priceJpy: item.priceJpy, observedAt: item.observedAt, sourceAdapter: item.sourceAdapter } : {}),
+          parentAsin: item.parentAsin ?? previous.parentAsin,
+          sourceProductId: item.sourceProductId ?? previous.sourceProductId
+        });
+      }
+    }
+    const unresolved = [...observations.values()].filter(o => o.priceJpy == null).length;
+    if (unresolved) issues.push({ adapter: 'browseros-neo', state: 'parse_error', message: `${unresolved} discovered ASINs have no observed price after Neo fallback` });
+  } catch (error) {
+    const failure = error instanceof SourceError ? error : new SourceError('needs_human', String(error), 'browseros-neo');
+    issues.push({ adapter: failure.adapter, state: failure.state, message: failure.message });
+  }
+  return { observations: [...observations.values()], issues };
+}
 
 export async function syncCatalog() {
   const runResult = await db.query<{ id: string }>('INSERT INTO sync_runs DEFAULT VALUES RETURNING id');
@@ -12,25 +58,21 @@ export async function syncCatalog() {
   try {
     for (const seed of seeds) {
       try {
-        let observations: Observation[];
-        try {
-          observations = await discoverHttp(seed.categorySlug, seed.url);
-        } catch (error) {
-          // Markup/JS issues can use the already-running local Neo browser.
-          // Access denial always stops: browser fallback must not bypass blocks.
-          if (!(error instanceof SourceError) || error.state !== 'parse_error') throw error;
-          console.warn(`${seed.categorySlug}: HTML parser failed; trying local BrowserOS Neo`);
-          observations = await discoverNeo(seed.categorySlug, seed.url);
-        }
+        const { observations, issues } = await collectCategory(seed);
         discovered += observations.length;
         saved += await ingestObservations(observations, id);
+        for (const issue of issues) {
+          errors++;
+          if (issue.state === 'blocked' || issue.state === 'needs_human') blocked = true;
+          await db.query('INSERT INTO sync_errors(sync_run_id,category_slug,adapter,state,message) VALUES($1,$2,$3,$4,$5)', [id, seed.categorySlug, issue.adapter, issue.state, issue.page ? `Page ${issue.page}: ${issue.message}` : issue.message]);
+        }
         console.log(`${seed.categorySlug}: ${observations.length} discovered`);
       } catch (error) {
         errors++;
         const status = error instanceof SourceError ? error.state : 'temporary';
-        if (status === 'blocked') blocked = true;
+        if (status === 'blocked' || status === 'needs_human') blocked = true;
         console.error(`${seed.categorySlug}: ${status}:`, error);
-        await db.query('INSERT INTO sync_errors(sync_run_id,category_slug,adapter,state,message) VALUES($1,$2,$3,$4,$5)', [id, seed.categorySlug, 'http', status, String(error)]);
+        await db.query('INSERT INTO sync_errors(sync_run_id,category_slug,adapter,state,message) VALUES($1,$2,$3,$4,$5)', [id, seed.categorySlug, error instanceof SourceError ? error.adapter : 'http', status, String(error)]);
       }
     }
     const state = blocked ? 'needs_human' : errors ? (saved ? 'partial' : 'failed') : 'success';

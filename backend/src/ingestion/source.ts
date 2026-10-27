@@ -10,11 +10,15 @@ export type Observation = {
   asin: string; name: string; brand?: string | null; categorySlug: string;
   sourceUrl: string; imageUrl?: string | null; priceJpy?: number | null;
   observedAt: string; sourceAdapter: string;
+  parentAsin?: string | null; sourceProductId?: string | null;
 };
 
 export class SourceError extends Error {
-  constructor(public state: 'blocked' | 'temporary' | 'parse_error', message: string) { super(message); }
+  constructor(public state: 'blocked' | 'needs_human' | 'temporary' | 'parse_error', message: string, public adapter: 'http' | 'browseros-neo' = 'http') { super(message); }
 }
+
+export type DiscoveryIssue = { state: SourceError['state']; adapter: SourceError['adapter']; message: string; page?: number };
+export type DiscoveryResult = { observations: Observation[]; issues: DiscoveryIssue[] };
 
 const asinPattern = /^[A-Z0-9]{10}$/;
 
@@ -32,14 +36,19 @@ export function parseJpy(text: string): number | null {
 }
 
 export async function getHtml(url: string): Promise<string> {
-  const response = await fetch(url, {
+  let response: Response;
+  try {
+    response = await fetch(url, {
     signal: AbortSignal.timeout(config.amazonTimeoutMs),
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
       'Accept-Language': 'ja-JP,ja;q=0.9,en-US;q=0.7',
       Accept: 'text/html,application/xhtml+xml'
     }
-  });
+    });
+  } catch (error) {
+    throw new SourceError('temporary', `Amazon network/timeout error: ${String(error)}`);
+  }
   if (response.status === 403 || response.status === 429) throw new SourceError('blocked', `Amazon HTTP ${response.status}; manual review required`);
   if (response.status >= 500 || response.status === 408) throw new SourceError('temporary', `Amazon HTTP ${response.status}`);
   if (!response.ok) throw new SourceError('parse_error', `Unexpected source HTTP ${response.status}`);
@@ -70,29 +79,58 @@ export function parseListing(html: string, categorySlug: string, observedAt = ne
     const priceJpy = parseJpy(priceElement.text());
     const rawImage = picture.attr('data-src') || picture.attr('src') || null;
     const imageUrl = rawImage?.startsWith('https://') ? rawImage : null;
+    // Only group variations when the source explicitly exposes a shared identifier.
+    // Never guess a parent from similar names or adjacent listing cards.
+    const rawParent = (card.attr('data-parent-asin') ?? '').toUpperCase();
+    const parentAsin = asinPattern.test(rawParent) ? rawParent : null;
+    const rawFamily = card.attr('data-product-family-id') ?? '';
+    const sourceProductId = /^[A-Za-z0-9_-]{3,64}$/.test(rawFamily) ? rawFamily : null;
     found.set(asin, {
       asin, name: title.slice(0, 500), brand: null, categorySlug,
-      sourceUrl: `https://www.amazon.co.jp/dp/${asin}`,
+      parentAsin, sourceProductId, sourceUrl: `https://www.amazon.co.jp/dp/${asin}`,
       imageUrl, priceJpy, observedAt, sourceAdapter: 'http'
     });
   });
   return [...found.values()];
 }
 
-export async function discoverHttp(categorySlug: string, url: string): Promise<Observation[]> {
+type DiscoverOptions = {
+  fetchPage?: (url: string) => Promise<string>;
+  delay?: (milliseconds: number) => Promise<void>;
+  maxPages?: number;
+};
+
+const sleep = (milliseconds: number) => new Promise<void>(resolve => setTimeout(resolve, milliseconds));
+
+// Three attempts total, only for network/timeouts/5xx. Never retry access denial.
+export async function fetchPageWithRetry(url: string, fetchPage = getHtml, delay = sleep): Promise<string> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fetchPage(url);
+    } catch (error) {
+      const sourceError = error instanceof SourceError ? error : new SourceError('temporary', String(error));
+      if (sourceError.state !== 'temporary' || attempt >= 3) throw sourceError;
+      await delay(500 * 2 ** (attempt - 1));
+    }
+  }
+}
+
+export async function discoverHttp(categorySlug: string, url: string, options: DiscoverOptions = {}): Promise<DiscoveryResult> {
   const results = new Map<string, Observation>();
-  const pageCount = categorySlug === 'thuc-pham-bo-sung' ? 6 : 5;
+  const issues: DiscoveryIssue[] = [];
+  const delay = options.delay ?? sleep;
+  const pageCount = options.maxPages ?? (categorySlug === 'thuc-pham-bo-sung' ? 6 : 5);
   for (let page = 1; page <= pageCount && results.size < config.maxDiscover; page++) {
     const target = new URL(url);
     if (page > 1) target.searchParams.set(categorySlug === 'thuc-pham-bo-sung' ? 'pg' : 'page', String(page));
     let html: string;
     try {
-      html = await getHtml(target.toString());
+      html = await fetchPageWithRetry(target.toString(), options.fetchPage ?? getHtml, delay);
     } catch (error) {
-      // A later pagination page can fail without invalidating the first page.
-      // Access denial is different: stop instead of trying alternate browsers.
-      if (page === 1 || (error instanceof SourceError && error.state === 'blocked')) throw error;
-      console.warn(`Pagination ended at page ${page} (${categorySlug}): ${String(error)}`);
+      if (page === 1) throw error;
+      const failure = error instanceof SourceError ? error : new SourceError('temporary', String(error));
+      // Preserve the pages already read, but surface the incomplete crawl.
+      issues.push({ state: failure.state, adapter: failure.adapter, page, message: failure.message });
       break;
     }
     const observations = parseListing(html, categorySlug);
@@ -106,7 +144,7 @@ export async function discoverHttp(categorySlug: string, url: string): Promise<O
       }
     }
     if (newlySeen === 0) break;
-    if (page < pageCount) await new Promise(resolve => setTimeout(resolve, 1200));
+    if (page < pageCount) await delay(1200);
   }
-  return [...results.values()];
+  return { observations: [...results.values()], issues };
 }
