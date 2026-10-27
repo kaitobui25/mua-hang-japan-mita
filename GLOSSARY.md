@@ -96,7 +96,7 @@ Sản phẩm có thể xuất hiện trong catalog khách xem khi không bị �
 _Tránh_: Được hiển thị nghĩa là còn hàng và đặt mua được
 
 **Yêu cầu thêm ASIN**:
-Đề nghị nhập một sản phẩm từ URL/ASIN Amazon vào quy trình thu thập; chỉ thành công khi worker đã kiểm tra và lưu dữ liệu nguồn. Đây là phương án đang đề xuất, chờ owner chọn.
+Đề nghị nhập một sản phẩm từ URL/ASIN Amazon vào quy trình thu thập; chỉ thành công khi worker đã kiểm tra và lưu dữ liệu nguồn. **Q1 đã chốt phương án này cho Admin MVP**, nhưng chức năng nhập ASIN riêng chưa được triển khai.
 _Tránh_: Dán link đồng nghĩa sản phẩm được nhập và bán ngay
 
 **Tỷ giá tính giá bán (VND/JPY)**:

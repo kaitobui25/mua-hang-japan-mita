@@ -1,7 +1,7 @@
 # ADR 0009 — Admin tối giản cho một chủ cửa hàng
 
 **Ngày:** 27/10/2026 (JST)
-**Trạng thái:** `proposed` — chờ owner xác nhận, **chưa phải quyết định đã chốt**.
+**Trạng thái:** `proposed` — Q1 về thêm sản phẩm đã chốt trong ADR 0010; phạm vi thao tác với đơn hàng đang chờ Q2.
 **Liên quan:** `.agents/plan/04_mita_minimal_admin_grill_with_docs_plan.md`, ADR 0001–0008.
 
 ## Bối cảnh
@@ -32,4 +32,4 @@ Mita đã có website bán hàng thử nghiệm, catalog và đơn hàng mô ph�
 
 ## Chưa chốt
 
-Owner chưa xác nhận cách thêm sản phẩm: nhập URL/ASIN Amazon hay tạo hàng thủ công ngoài Amazon. Việc này thuộc ADR 0010; không xây UI thao tác nhập trước khi quyết định.
+Owner đã chốt **thêm sản phẩm bằng link/ASIN Amazon** trong ADR 0010. **Q2 còn mở:** màn Đơn hàng chỉ xem danh sách/chi tiết đơn mô phỏng, hay được ghi chú và cập nhật trạng thái xử lý nội bộ (không bao giờ tự đánh dấu đã thanh toán)?

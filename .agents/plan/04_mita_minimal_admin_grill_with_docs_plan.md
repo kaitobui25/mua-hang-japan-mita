@@ -1,7 +1,7 @@
 # Mita Japan — Grill with Docs: Admin tối giản
 
 **Ngày:** 27/10/2026 (JST)
-**Trạng thái:** `draft / awaiting owner answer` — kế hoạch đề xuất, **chưa được người dùng chốt**, chưa triển khai code.
+**Trạng thái:** `draft / Q1 accepted / awaiting Q2` — Q1 đã được owner chốt; các phần còn lại vẫn là đề xuất, chưa triển khai code.
 **Ưu tiên:** chủ cửa hàng chưa quen quản trị website, cần giao diện dễ hiểu, ít thao tác, không thêm tính năng chỉ vì các website khác có.
 **Căn cứ:** `GLOSSARY.md`, ADR 0001–0008, `docs/adr/0009-minimal-owner-admin.md`, `docs/adr/0010-admin-catalog-and-pricing-rules.md`, code backend/frontend hiện tại. Không dùng Docker.
 
@@ -66,7 +66,8 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 - Ô tìm theo **ASIN hoặc tên**; một bộ lọc danh mục và một bộ lọc `Đang hiện / Đang ẩn`.
 - Bảng 5–6 cột: Ảnh nhỏ, Tên/ASIN, Danh mục, Giá VND tham khảo, Trạng thái, `Ẩn` / `Hiện lại`.
 - **Ẩn** có xác nhận ngắn; **Hiện lại** chỉ khôi phục khả năng hiển thị, **không** bỏ qua kiểm tra giá quá 24 giờ hoặc điều kiện được phép bán.
-- **Thêm sản phẩm**: đề xuất nhập **URL sản phẩm Amazon.co.jp hoặc ASIN**, chọn một trong hai danh mục, gửi vào hàng chờ nhập. Worker mới kiểm tra nguồn và dữ liệu; thành công mới upsert sản phẩm, sai/hạn chế/403/CAPTCHA thì giữ `pending`/`needs_human` hoặc báo lỗi. **Chưa có collector chi tiết ASIN riêng trong code**, cần xây adapter có giới hạn/thời gian chờ; không chỉ tạo một sản phẩm giả.
+- **Thêm sản phẩm (Q1 đã chốt: A)**: owner dán **URL sản phẩm Amazon.co.jp hoặc ASIN**, chọn một trong hai danh mục hiện có, rồi bấm `Thêm`. Backend chuẩn hóa URL và ASIN, đưa yêu cầu vào hàng đợi nhập; giao diện chỉ báo `Đã tiếp nhận yêu cầu` thay vì `Đã thêm thành công` khi chưa có kết quả. Worker đọc dữ liệu nguồn và upsert theo ASIN sau khi kiểm tra đủ trường bắt buộc; trạng thái hiển thị là `pending`, `running`, `succeeded`, `failed` hoặc `needs_human`. **Chưa có collector chi tiết ASIN riêng trong code**, cần triển khai adapter chuyên biệt và kiểm thử, không tạo sản phẩm giả khi nguồn lỗi.
+- ASIN đã tồn tại: mở sản phẩm tương ứng; yêu cầu trùng đang chạy: hiện trạng thái cũ thay vì tạo công việc thứ hai. Không cho nhập tay tên, ảnh hay giá để tránh mâu thuẫn với nguồn Amazon.
 - Sản phẩm từ sync hằng ngày và từ thao tác “Thêm” sử dụng cùng kho products, không tạo kho dữ liệu khác.
 - Không cần chỉnh từng mô tả, ảnh, SEO, tồn kho thủ công, sản phẩm khuyến mại hoặc nhập CSV trong MVP.
 
@@ -103,7 +104,7 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 | --- | --- | --- |
 | `AdminAccount` / `AdminSession` | Một owner + hash mật khẩu, phiên đăng nhập có hạn | Không lưu mật khẩu dạng rõ; mọi admin mutation xác thực phía backend |
 | `ProductVisibility` | `products.admin_hidden_at` nullable (+ lý do nếu cần) | Worker không bỏ ẩn; checkout không chấp nhận sản phẩm đang ẩn |
-| `CatalogImportRequest` | ID, category, ASIN, state, created_at, error | Một ASIN hợp lệ, trạng thái pending/running/succeeded/failed/needs_human; không xác nhận thành công trước khi nguồn đủ dữ liệu |
+| `CatalogImportRequest` | ID, category, ASIN, state, created_at, error | Q1 đã chốt: chỉ nhập từ Amazon URL/ASIN; một ASIN hợp lệ, trạng thái pending/running/succeeded/failed/needs_human; không xác nhận thành công trước khi nguồn đủ dữ liệu |
 | `PricingPolicy` | Bản ghi cấu hình đang hoạt động, version, tỷ giá, phụ phí, updated_at | Giới hạn hợp lệ, thay đổi giá chỉ cho đơn mới; snapshot đơn giữ nguyên |
 | `AdminAuditEvent` | Actor, action, object, before/after hữu ích, timestamp | Ghi thay đổi giá, ẩn/hiện và yêu cầu nhập; không lưu password/secret |
 
@@ -120,7 +121,7 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 - Mật khẩu owner có hash an toàn (Argon2id/scrypt tùy thư viện triển khai); **không** hardcode mật khẩu/token vào Git.
 - Cookie phiên `HttpOnly`, `SameSite`, `Secure` khi dùng HTTPS; hết hạn/đăng xuất có hiệu lực; rate-limit login; CSRF/Origin check với thao tác ghi.
 - Tất cả `/api/admin/*` và các route `/admin/*` nhạy cảm phải kiểm tra phiên ở server; không chỉ ẩn menu bằng JavaScript. Không đưa DB admin ra frontend.
-- Chống ID/ASIN/URL không hợp lệ; chỉ URL Amazon.co.jp chuẩn; không fetch URL do admin dán một cách tùy ý (SSRF).
+- Chống ID/ASIN/URL không hợp lệ: chỉ nhận ASIN 10 ký tự hoặc URL HTTPS trỏ tới `amazon.co.jp` / `www.amazon.co.jp` với đường dẫn sản phẩm có ASIN; trích xuất ASIN rồi dựng URL `https://www.amazon.co.jp/dp/{ASIN}` phía server, **không fetch trực tiếp URL đầu vào** (SSRF, redirect sang host khác).
 - Giới hạn nhập/chạy job, có nhật ký thay đổi, error state rõ; không bypass Amazon 403/429/CAPTCHA.
 - Môi trường local loopback; trước khi mở internet cần HTTPS, backup DB, xử lý quyền dữ liệu Amazon, rà soát bảo mật và chính sách riêng tư.
 
@@ -130,7 +131,7 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 | --- | --- | --- |
 | **A. Đăng nhập + khung Admin** | Login owner, session, middleware API, sidebar 4 mục, logout | Không đăng nhập mở `/admin`/`/api/admin` bị từ chối; thử sai password rate-limited |
 | **B. Xem dữ liệu thật** | Dashboard + danh sách/chi tiết đơn mô phỏng và danh sách sản phẩm chỉ đọc | Số liệu khớp SQL; không hiển thị doanh thu thật; thông tin đơn chỉ admin xem |
-| **C. Quản lý catalog** | Ẩn/hiện bền qua sync, thêm ASIN Amazon bằng job riêng (nếu owner chốt), nhật ký lỗi | Hidden không lọt catalog/checkout; cập nhật tự động không bật lại; lỗi import không tạo hàng giả |
+| **C. Quản lý catalog** | Ẩn/hiện bền qua sync, thêm ASIN Amazon bằng job riêng (Q1 đã chốt), nhật ký lỗi | Hidden không lọt catalog/checkout; cập nhật tự động không bật lại; trùng ASIN không tạo job trùng; lỗi import không tạo hàng giả |
 | **D. Chính sách giá** | Tỷ giá/phụ phí PostgreSQL, preview, audit, checkout snapshot nhất quán | Đổi tỷ giá đổi giá mới, không đổi đơn cũ; input sai bị chặn; checkout vẫn khóa giá stale |
 | **E. Hoàn thiện** | Tests tích hợp, accessibility cơ bản, backup/restore dev, hướng dẫn sử dụng một trang | Build/lint/test pass; thao tác nghiệp vụ tối thiểu; kiểm tra localhost sau restart |
 
@@ -142,9 +143,10 @@ Không dashboard nhiều biểu đồ, CRM, tồn kho Nhật, thanh toán/refund
 
 ## 8. Điều kiện quyết định / câu hỏi Grill
 
-- **Q1 — Cách “Thêm hàng” (cần owner trả lời):** A. Dán link/ASIN Amazon để hệ thống nhập (khuyến nghị), hay B. Nhập thủ công tên/ảnh/giá như sản phẩm không thuộc Amazon? Nếu B thì phải thiết kế nguồn giá, quyền ảnh, tồn kho và quy tắc cập nhật riêng; không nên gộp vào MVP một cách tùy tiện.
+- **Q1 — ĐÃ CHỐT ngày 27/10/2026:** **A — Dán link/ASIN Amazon để hệ thống nhập tự động**. Không triển khai form tự nhập tên/ảnh/giá trong Admin MVP. Lưu ý: đây là quyết định thiết kế, không phải xác nhận tính năng đã chạy.
+- **Q2 — Đang hỏi owner:** Khi xem đơn hàng, muốn **A. chỉ xem đơn mô phỏng** (ít nút, khuyến nghị khi chưa có thanh toán thật) hay **B. thêm ghi chú/trạng thái xử lý nội bộ thủ công** (ví dụ `Chưa xem`/`Đã liên hệ`, tuyệt đối không `Đã thanh toán`)? Nếu chọn B, cần bảng trạng thái nội bộ và audit tối giản, không tự thay đổi bằng chứng thanh toán.
 - **Giả định có thể thay đổi:** một owner duy nhất, không nhân viên; tỷ giá tự điền thủ công, không lấy live; đơn hàng chỉ xem ở giai đoạn mô phỏng.
-- **Để vòng Grill tiếp theo:** chốt Q1 trước; sau đó nếu cần mới hỏi việc cập nhật trạng thái đơn và nhu cầu nhiều người quản trị. Không cần 15–20 câu hỏi một lần.
+- **Để vòng Grill tiếp theo:** chốt Q2 trước; nếu cần mới hỏi nhu cầu nhiều người quản trị. Không cần 15–20 câu hỏi một lần.
 
 ## 9. Tiêu chí “đủ tốt để sử dụng”
 
