@@ -19,6 +19,10 @@ export async function collectCategory(
     return { observations: await neo(seed.categorySlug, seed.url), issues: [] };
   }
 
+  // A later HTTP page can be blocked while earlier pages were valid. The
+  // retained ASINs must not trigger another browser after that denial.
+  if (result.issues.some(issue => issue.state === 'blocked' || issue.state === 'needs_human')) return result;
+
   const missing = result.observations.filter(o => o.priceJpy == null);
   if (!missing.length) return result;
   const observations = new Map(result.observations.map(o => [o.asin, o]));

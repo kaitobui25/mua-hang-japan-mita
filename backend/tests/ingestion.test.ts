@@ -82,6 +82,20 @@ test('a late Amazon block retains the first page and flags human review without 
   assert.equal(result.issues[0].page, 2);
 });
 
+test('HTTP access denial on a later page prevents Neo fallback even when saved ASINs lack prices', async () => {
+  let neoCalls = 0;
+  const result = await collectCategory(seed, async () => ({
+    observations: [obs(asinA, null)],
+    issues: [{ state: 'blocked', adapter: 'http', page: 2, message: 'Amazon HTTP 403' }]
+  }), async () => {
+    neoCalls++;
+    return [obs(asinA, 900, 'browseros-neo')];
+  });
+  assert.equal(neoCalls, 0);
+  assert.equal(result.observations[0]?.priceJpy, null);
+  assert.equal(result.issues[0]?.state, 'blocked');
+});
+
 test('HTTP parses source-supplied family ID but never guesses it from similar names', () => {
   const html = card(asinA, '¥500').replace(`data-asin="${asinA}"`, `data-asin="${asinA}" data-parent-asin="B0ABCDEF12"`) + card(asinB, '¥600');
   const products = parseListing(html, seed.categorySlug);
