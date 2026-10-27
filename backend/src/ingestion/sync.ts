@@ -1,9 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { db } from '../db/pool.js';
-import { discoverHttp, seeds, SourceError, type DiscoveryResult, type DiscoveryIssue, type Observation } from './source.js';
+import { discoverHttp, seeds, SourceError, isAmazonCaptcha, type DiscoveryResult, type DiscoveryIssue, type Observation } from './source.js';
 import { ingestObservations } from './store.js';
-import { discoverNeo, collectDetailNeo } from './neo.js';
+import { discoverNeo, collectDetailNeo, openNeoManualVerification } from './neo.js';
 import { collectDetail } from './detail.js';
 import { config } from '../config.js';
 import type { PoolClient } from 'pg';
@@ -172,7 +172,7 @@ export async function processCategoryDetails(category: string, options: {
 
 export async function syncCatalog(options: {
   discover?: typeof collectCategory; collect?: DetailCollector; limit?: number; connection?: PoolClient;
-  categories?: string[];
+  categories?: string[]; onCaptcha?: (url: string) => Promise<void>;
 } = {}) {
   // A manual run must not overlap the scheduled worker and double the category budget.
   const lock = options.connection ?? await db.connect();
@@ -182,7 +182,10 @@ export async function syncCatalog(options: {
     if (!locked.rows[0].acquired) { release(); return { state: 'already_running' }; }
   } catch (error) { release(); throw error; }
   let id: number | undefined;
-  let discovered = 0, saved = 0, errors = 0, blocked = false;
+  let discovered = 0, saved = 0, errors = 0, blocked = false, openedCaptcha = false;
+  // Test injectors do not open real browser tabs. Manual backfill explicitly
+  // enables the callback even though it supplies a listing-discovery stub.
+  const onCaptcha = options.onCaptcha ?? (options.discover || options.collect ? undefined : openNeoManualVerification);
   const deferred: Record<string, number> = {};
   try {
     const runResult = await lock.query<{ id: string }>('INSERT INTO sync_runs DEFAULT VALUES RETURNING id');
@@ -216,6 +219,23 @@ export async function syncCatalog(options: {
         }
         await lock.query('INSERT INTO sync_errors(sync_run_id,category_slug,asin,adapter,state,message) VALUES($1,$2,$3,$4,$5,$6)',
           [id, seed.categorySlug, issue.asin ?? null, issue.adapter, issue.state, issue.page ? `Page ${issue.page}: ${issue.message}` : issue.message]);
+        if (onCaptcha && !openedCaptcha && isAmazonCaptcha(issue)) {
+          openedCaptcha = true;
+          // Browser-only, human-in-the-loop. Never extract a CAPTCHA answer or
+          // requeue here; the persistent source gate remains locked.
+          const url = issue.asin ? `https://www.amazon.co.jp/dp/${issue.asin}` : (() => {
+            const target = new URL(seed.url);
+            if (issue.page && issue.page > 1)
+              target.searchParams.set(seed.categorySlug === 'thuc-pham-bo-sung' ? 'pg' : 'page', String(issue.page));
+            return target.href;
+          })();
+          try {
+            await onCaptcha(url);
+            console.warn(`Amazon CAPTCHA: BrowserOS Neo opened ${url}; owner must verify manually, then explicitly acknowledge.`);
+          } catch {
+            console.warn('Amazon CAPTCHA: BrowserOS Neo unavailable; source remains blocked pending manual verification.');
+          }
+        }
       };
       try {
         // Every existing ASIN is eligible daily, including ones no longer on listings.

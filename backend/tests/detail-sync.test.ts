@@ -84,6 +84,21 @@ test('daily sync refreshes existing ASINs on discovery errors, records backlog a
     await assert.rejects(acknowledgeSourceAccess(child, false, isolated), /manually verified/);
     assert.equal(await acknowledgeSourceAccess(child, true, isolated), 1);
     assert.equal((await isolated.query('SELECT state FROM product_detail_queue WHERE asin=$1', [child])).rows[0].state, 'pending');
+    // CAPTCHA opens a human verification tab, but does not solve it or clear
+    // the source-wide gate. No other products or categories are fetched.
+    const opened: string[] = [];
+    const captcha = await syncCatalog({ connection: isolated, categories: [category],
+      discover: async () => ({ observations: [], issues: [] }),
+      collect: async () => { throw new SourceError('needs_human', 'Amazon CAPTCHA requires manual verification'); },
+      onCaptcha: async url => { opened.push(url); }
+    });
+    assert.equal(captcha.state, 'needs_human');
+    assert.deepEqual(opened, [`https://www.amazon.co.jp/dp/${child}`]);
+    assert.equal((await isolated.query('SELECT state FROM product_detail_queue WHERE asin=$1', [child])).rows[0].state, 'needs_human');
+    const stillBlocked = await syncCatalog({ connection: isolated, categories: [category],
+      discover: async () => { assert.fail('opening Neo must not authorize scraping'); } });
+    assert.equal(stillBlocked.state, 'needs_human');
+    assert.equal(await acknowledgeSourceAccess(child, true, isolated), 1);
     // A listing may be blocked before an ASIN can be identified. The global
     // source marker must protect later categories and future worker restarts.
     const denied = await syncCatalog({ connection: isolated, categories: [category],
@@ -96,6 +111,19 @@ test('daily sync refreshes existing ASINs on discovery errors, records backlog a
     assert.equal(listingPaused.state, 'needs_human');
     assert.equal(await acknowledgeSourceAccess('ALL', true, isolated), 0);
     assert.equal((await isolated.query('SELECT count(*)::int AS n FROM source_access_blocks')).rows[0].n, 0);
+    // A CAPTCHA on a later listing page must open exactly that page, not the
+    // first page and not an unverified arbitrary URL.
+    const listingOpened: string[] = [];
+    const listingCaptcha = await syncCatalog({ connection: isolated, categories: [category],
+      discover: async () => ({ observations: [],
+        issues: [{ state: 'blocked', adapter: 'http', message: 'Amazon CAPTCHA requires verification', page: 2 }] }),
+      collect: async () => { assert.fail('blocked listing cannot collect details'); },
+      onCaptcha: async url => { listingOpened.push(url); }
+    });
+    assert.equal(listingCaptcha.state, 'needs_human');
+    assert.deepEqual(listingOpened, ['https://www.amazon.co.jp/gp/bestsellers/hpc/3457072051?pg=2']);
+    assert.equal((await isolated.query('SELECT count(*)::int AS n FROM source_access_blocks')).rows[0].n, 1);
+    await acknowledgeSourceAccess('ALL', true, isolated);
   } finally {
     await isolated.query('RESET search_path');
     await isolated.query(`DROP SCHEMA ${namespace} CASCADE`);

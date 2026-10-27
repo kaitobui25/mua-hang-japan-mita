@@ -33,6 +33,11 @@ export class SourceError extends Error {
   constructor(public state: 'blocked' | 'needs_human' | 'temporary' | 'parse_error', message: string, public adapter: 'http' | 'browseros-neo' = 'http') { super(message); }
 }
 
+/** Only CAPTCHA is presented in Neo. A 403/429 is a source-wide denial, not a CAPTCHA to retry. */
+export function isAmazonCaptcha(error: Pick<SourceError, 'state' | 'message'>): boolean {
+  return (error.state === 'blocked' || error.state === 'needs_human') && /\bcaptcha\b/i.test(error.message);
+}
+
 export type DiscoveryIssue = { state: SourceError['state']; adapter: SourceError['adapter']; message: string; page?: number };
 export type DiscoveryResult = { observations: Observation[]; issues: DiscoveryIssue[] };
 
@@ -71,7 +76,7 @@ export async function getHtml(url: string): Promise<string> {
   if (!response.ok) throw new SourceError('temporary', `Unexpected source HTTP ${response.status}`);
   const html = await response.text();
   if (/captcha|enter the characters you see below|ロボットではない/i.test(html)) {
-    throw new SourceError('blocked', 'Amazon requested human verification');
+    throw new SourceError('blocked', 'Amazon CAPTCHA requested human verification');
   }
   return html;
 }

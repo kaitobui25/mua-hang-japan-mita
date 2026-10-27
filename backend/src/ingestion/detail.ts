@@ -15,7 +15,7 @@ export function normalizeAmazonInput(input: unknown) {
 }
 
 export function parseDetail(html: string, asin: string, categorySlug: string): Observation {
-  if (/captcha|enter the characters you see below|ロボットではない/i.test(html)) throw new SourceError('needs_human', 'Amazon yêu cầu xác minh thủ công.');
+  if (/captcha|enter the characters you see below|ロボットではない/i.test(html)) throw new SourceError('needs_human', 'Amazon CAPTCHA yêu cầu xác minh thủ công.');
   const $ = load(html);
   const actualAsin = $('input#ASIN').attr('value')?.trim().toUpperCase();
   const canonical = $('link[rel="canonical"]').attr('href');

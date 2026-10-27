@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { discoverHttp, parseListing, SourceError } from '../src/ingestion/source.js';
+import { discoverHttp, parseListing, SourceError, isAmazonCaptcha, seeds } from '../src/ingestion/source.js';
 import { collectCategory } from '../src/ingestion/sync.js';
-import { parseNeoOutcome } from '../src/ingestion/neo.js';
+import { parseNeoOutcome, validateNeoVerificationUrl } from '../src/ingestion/neo.js';
 
 const asinA = 'B000000001';
 const asinB = 'B000000002';
@@ -69,6 +69,32 @@ test('Neo unavailability preserves HTTP data and requires human attention', asyn
 
 test('Neo reports human verification instead of treating CAPTCHA as parsing error', () => {
   assert.throws(() => parseNeoOutcome({ blocked: true, items: [] }, seed.categorySlug), (error: unknown) => error instanceof SourceError && error.state === 'blocked' && error.adapter === 'browseros-neo');
+});
+
+test('CAPTCHA triggers manual verification only; HTTP 403/429 do not bypass via Neo', () => {
+  assert.equal(isAmazonCaptcha(new SourceError('blocked', 'Amazon CAPTCHA requires verification')), true);
+  assert.equal(isAmazonCaptcha(new SourceError('needs_human', 'Amazon CAPTCHA requires verification')), true);
+  assert.equal(isAmazonCaptcha(new SourceError('blocked', 'Amazon HTTP 403')), false);
+  assert.equal(isAmazonCaptcha(new SourceError('blocked', 'Amazon HTTP 429')), false);
+  assert.equal(isAmazonCaptcha(new SourceError('temporary', 'CAPTCHA unrelated temporary error')), false);
+});
+
+test('human verification can open only canonical Amazon Japan detail or seed pages', () => {
+  for (const url of [
+    'https://www.amazon.co.jp/dp/B0FD9C1FD9',
+    'https://www.amazon.co.jp/gp/bestsellers/hpc/3457072051?pg=2',
+    seeds[1].url
+  ]) {
+    assert.equal(validateNeoVerificationUrl(url), new URL(url).href);
+  }
+  for (const url of [
+    'http://www.amazon.co.jp/dp/B0FD9C1FD9',
+    'https://amazon.co.jp/dp/B0FD9C1FD9',
+    'https://www.amazon.co.jp.evil.test/dp/B0FD9C1FD9',
+    'https://user@www.amazon.co.jp/dp/B0FD9C1FD9',
+    'https://www.amazon.co.jp/dp/B0FD9C1FD9?redirect=https://evil.test',
+    'https://www.amazon.co.jp/s?k=other&i=food-beverage'
+  ]) assert.throws(() => validateNeoVerificationUrl(url));
 });
 
 test('a late Amazon block retains the first page and flags human review without bypass', async () => {

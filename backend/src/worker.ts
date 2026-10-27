@@ -5,6 +5,8 @@ import { importObservedSnapshot, syncCatalog, seedExistingDetails, acknowledgeSo
 import { processNextImport } from './admin/imports.js';
 import { dailyCron, dailyTimezone, shouldRunDaily } from './ingestion/schedule.js';
 import { translatePendingProducts } from './translation/jobs.js';
+import { openNeoManualVerification } from './ingestion/neo.js';
+import { seeds } from './ingestion/source.js';
 
 // Prevent the scheduled scan, import queue and translation timer from spending the
 // same free daily model quota concurrently in this Windows worker process.
@@ -56,6 +58,22 @@ if (command === 'once') {
     const confirmed = process.env.BACKFILL_ACCESS_CONFIRMED === '1';
     console.log('Manually verified ASINs requeued:', await acknowledgeSourceAccess(asin, confirmed));
   } finally { await db.end(); }
+} else if (command === 'captcha:open') {
+  try {
+    // Explicit owner action to open a previously blocked page; no scraping,
+    // challenge submission, status reset, or source request from the worker.
+    const asin = process.env.BACKFILL_CAPTCHA_ASIN?.trim().toUpperCase() ?? '';
+    if (asin && !/^[A-Z0-9]{10}$/.test(asin)) throw Error('Invalid BACKFILL_CAPTCHA_ASIN');
+    const { rows } = await db.query<{ asin: string; category_slug: string }>(
+      `SELECT asin,category_slug FROM product_detail_queue WHERE state='needs_human'
+       AND ($1::text='' OR asin=$1) ORDER BY category_slug,asin LIMIT 1`, [asin]);
+    const blocked = await db.query(`SELECT 1 FROM source_access_blocks WHERE source='amazon.co.jp'`);
+    if (!rows[0] && !blocked.rowCount) throw Error('No blocked Amazon page awaits manual verification');
+    if (asin && !rows[0]) throw Error('Selected ASIN is not waiting for human verification');
+    const url = rows[0] ? `https://www.amazon.co.jp/dp/${rows[0].asin}` : seeds[0].url;
+    await openNeoManualVerification(url);
+    console.log(`BrowserOS Neo opened ${url}. Solve CAPTCHA in the visible browser; source remains blocked until explicit manual ACK.`);
+  } finally { await db.end(); }
 } else if (command === 'backfill') {
   const parsed = Number(process.env.BACKFILL_LIMIT_PER_CATEGORY ?? '15');
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 200) throw Error('BACKFILL_LIMIT_PER_CATEGORY must be 1..200');
@@ -66,7 +84,8 @@ if (command === 'once') {
     // Deliberately no listing discovery; do not exceed category budget or bypass source denial.
     console.log('Manual backfill result:', await syncCatalog({
       limit: parsed, categories: category ? [category] : undefined,
-      discover: async () => ({ observations: [], issues: [] })
+      discover: async () => ({ observations: [], issues: [] }),
+      onCaptcha: openNeoManualVerification
     }));
   } finally { await db.end(); }
 } else if (command === 'daily') {
@@ -118,7 +137,7 @@ if (command === 'once') {
     process.once('SIGTERM', () => void halt());
   } catch (error) { await boss.stop(); await db.end(); throw error; }
 } else {
-  console.error('Usage: tsx src/worker.ts once|import|translate|backfill:seed|backfill:status|backfill:ack|backfill|daily');
+  console.error('Usage: tsx src/worker.ts once|import|translate|backfill:seed|backfill:status|backfill:ack|captcha:open|backfill|daily');
   process.exitCode = 1;
   await db.end();
 }
