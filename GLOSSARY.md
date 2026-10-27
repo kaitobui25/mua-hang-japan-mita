@@ -145,7 +145,7 @@ _Tránh_: Dán mật khẩu vào command line, ghi vào log/source hoặc xây t
 
 ## Thuật ngữ mở rộng nội dung sản phẩm (Grill 07 — đã chốt Q1–Q9)
 
-Các khái niệm được owner xác nhận tại `.agents/plan/07_mita_product_detail_enrichment_grill_plan.md` và `docs/adr/0011-product-detail-enrichment.md`. Đây là quyết định thiết kế, chưa phải xác nhận đã triển khai tính năng.
+Các khái niệm được owner xác nhận tại `.agents/plan/07_mita_product_detail_enrichment_grill_plan.md` và `docs/adr/0011-product-detail-enrichment.md`. Đã triển khai và kiểm thử local; production vẫn chờ migration và deploy riêng.
 
 **Bộ ảnh của một ASIN**:
 Danh sách tối đa **5 ảnh nguồn khác nhau** gắn với chính ASIN đó, có thứ tự hiển thị; có thể ít hơn 5 nếu nguồn chỉ cung cấp ít ảnh hợp lệ. **Chỉ lưu URL ảnh nguồn**, không tải/cache file ảnh trên VPS.
