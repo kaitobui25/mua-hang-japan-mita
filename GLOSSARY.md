@@ -112,11 +112,11 @@ Hệ số nội bộ quy đổi JPY sang VND để tạo giá tham khảo tại 
 _Tránh_: Tỷ giá thời gian thực
 
 **Phụ phí dịch vụ (%)**:
-Tỷ lệ cộng thêm vào tiền hàng đã quy đổi, được tính trong cùng chính sách giá và có snapshot theo đơn.
+Tỷ lệ cộng thêm vào tiền hàng đã quy đổi. **Q5 đã chốt: chủ cửa hàng có thể chỉnh (%) trên cùng màn với tỷ giá JPY/VND; hai giá trị dùng một nút `Lưu thay đổi` và cùng version chính sách giá.** Phụ phí có snapshot theo đơn, không thay đổi những đơn đã tạo.
 _Tránh_: Phí vận chuyển quốc tế đã chốt
 
 **Chính sách giá (PricingPolicy)**:
-Một phiên bản tỷ giá và phụ phí dùng để tính giá catalog/checkout mới. Đơn đã tạo lưu tiền hàng, tỷ giá và phụ phí tại thời điểm đó, không bị thay đổi ngược.
+Một phiên bản **đồng thời** của tỷ giá và phụ phí, dùng để tính giá catalog/checkout mới. Mỗi lần chủ cửa hàng nhấn một nút `Lưu thay đổi`, cả hai được kiểm tra và lưu nguyên tử. Đơn đã tạo lưu tiền hàng, tỷ giá và phụ phí tại thời điểm đó, không bị thay đổi ngược.
 _Tránh_: Sửa cấu hình là sửa luôn giá của mọi đơn cũ
 
 **Lần đồng bộ được xác nhận**:

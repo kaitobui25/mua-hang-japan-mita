@@ -1,7 +1,7 @@
 # Mita Japan — Grill with Docs: Admin tối giản
 
 **Ngày:** 27/10/2026 (JST)
-**Trạng thái:** `draft / Q1–Q4 accepted / awaiting Q5` — bốn câu hỏi đầu đã được owner chốt; phần phụ phí và các quyết định còn lại vẫn là đề xuất, chưa triển khai code.
+**Trạng thái:** `draft / Q1–Q5 accepted / awaiting Q6` — năm câu hỏi đầu đã được owner chốt; cách xử lý việc xóa/ẩn sản phẩm đang chờ Q6, chưa triển khai code.
 **Ưu tiên:** chủ cửa hàng chưa quen quản trị website, cần giao diện dễ hiểu, ít thao tác, không thêm tính năng chỉ vì các website khác có.
 **Căn cứ:** `GLOSSARY.md`, ADR 0001–0008, `docs/adr/0009-minimal-owner-admin.md`, `docs/adr/0010-admin-catalog-and-pricing-rules.md`, code backend/frontend hiện tại. Không dùng Docker.
 
@@ -19,7 +19,7 @@
 1. **Q3 — ĐÃ CHỐT: một tài khoản chủ cửa hàng duy nhất trong Admin MVP**; không tạo tính năng thêm nhân viên, quản lý nhiều tài khoản hoặc màn phân quyền.
 2. **Bốn mục menu cố định:** `Tổng quan`, `Sản phẩm`, `Đơn hàng`, `Cấu hình`.
 3. **Một việc chính trên mỗi màn**; nút `Lưu`, `Thêm`, `Ẩn/Hiện` chỉ xuất hiện ở vị trí cần thiết. Tránh bảng nhiều cột, popup liên tiếp, biểu đồ không phục vụ quyết định.
-4. **Không xóa vật lý sản phẩm** vì sẽ bị scraper nhập lại, và còn liên quan lịch sử đơn. “Xóa khỏi cửa hàng” = **Ẩn** (có thể khôi phục); ingestion không được tự bật lại.
+4. **Đề xuất cho Q6:** không xóa vật lý sản phẩm vì scraper có thể nhập lại và dữ liệu có liên quan lịch sử đơn. “Xóa khỏi cửa hàng” = **Ẩn** (có thể khôi phục); ingestion không được tự bật lại. **Chưa chốt với owner.**
 5. **Không sửa giá Amazon bằng tay** như thể giá nguồn đã được xác minh. Chỉ quản lý tỷ giá/phụ phí, còn giá JPY/timestamp đến từ observation hợp lệ.
 6. **Không gọi thống kê đơn mô phỏng là doanh thu thực thu**; không hiển thị trạng thái “đã thanh toán” nếu chưa có cổng thanh toán và xác nhận giao dịch.
 7. Không đưa Admin ra internet, không public quyền hình ảnh/nội dung Amazon trước khi xác minh quyền sử dụng và điều kiện bán/nhập khẩu.
@@ -82,10 +82,11 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 ### Màn D — Cấu hình (`/admin/cau-hinh`)
 
 - **Q4 — ĐÃ CHỐT (A):** chủ cửa hàng nhập **tỷ giá tính giá bán (VND/JPY)** thủ công và nhấn `Lưu`; mặc định khi khởi tạo cấu hình từ giá trị hiện có là `190`. Không tích hợp dịch vụ tỷ giá bên ngoài, tự cập nhật hoặc lịch làm mới tỷ giá trong Admin MVP.
-- **Q5 đang chờ owner:** phụ phí dịch vụ `12%` sẽ **giữ cố định, chỉ hiển thị để biết** (A, đơn giản nhất) hay **được phép chỉnh trong Admin** (B, thêm một trường số trong cùng màn Cấu hình)? Không mặc định cho phép sửa khi chưa chốt.
+- **Q5 — ĐÃ CHỐT (B):** chủ cửa hàng được chỉnh **phụ phí dịch vụ (%)** ngay bên dưới tỷ giá JPY/VND, trong cùng màn Cấu hình. Hai trường được lưu bằng **một nút `Lưu thay đổi`**, không có nút lưu riêng.
 - Hiển thị phép tính thử từ 1.000 JPY: `round(1000 × 190 × 1.12 / 1000) × 1000 = 213.000 VND` với cấu hình mặc định.
-- `Lưu tỷ giá` yêu cầu xác nhận ảnh hưởng **đến giá catalog/checkout mới**, không thay số tiền đơn đã tạo; lưu thời điểm/người sửa, tỷ giá cũ/mới và phiên bản giá. Phụ phí chỉ là dữ liệu hiển thị hoặc có thể sửa tùy Q5.
-- Dữ liệu cấu hình chuyển từ env mặc định sang bản ghi PostgreSQL duy nhất, dùng **cùng một hàm pricing** cho API catalog, sản phẩm và checkout. Lấy snapshot cùng chính sách tại checkout (không trộn giá từ hai phiên bản).
+- `Lưu thay đổi` kiểm tra cả hai số hợp lệ (tỷ giá VND/JPY > 0, phụ phí là tỷ lệ phần trăm hợp lệ không âm, có giới hạn an toàn phía server); hiển thị xác nhận **cả tỷ giá và phụ phí trước/sau** cùng giá thử. Lưu **đồng thời** hai giá trị và tăng version `PricingPolicy` trong một transaction, không được lưu nửa chừng.
+- Chỉ áp dụng policy mới cho **giá catalog và checkout mới**; không tính lại đơn đã tạo. Ghi audit thời gian/người sửa và giá trị cũ/mới của cả hai trường.
+- Dữ liệu cấu hình chuyển từ env mặc định sang bản ghi PostgreSQL duy nhất, dùng **cùng một hàm pricing** cho API catalog, sản phẩm và checkout. Lấy snapshot **cùng một version** của cả hai tham số lúc checkout, không trộn tỷ giá mới với phụ phí cũ.
 - Không có tích hợp tỷ giá thời gian thực, đổi tỷ giá tự động hoặc thay đổi phí vận chuyển theo từng mặt hàng.
 
 ## 4. Domain modeling: danh từ, trạng thái, quan hệ
@@ -107,7 +108,7 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 | `AdminAccount` / `AdminSession` | **Q3 đã chốt: một tài khoản owner duy nhất**, mật khẩu hash và phiên đăng nhập có hạn | Không tạo thêm tài khoản qua Admin MVP, không lưu mật khẩu dạng rõ; mọi admin mutation xác thực phía backend |
 | `ProductVisibility` | `products.admin_hidden_at` nullable (+ lý do nếu cần) | Worker không bỏ ẩn; checkout không chấp nhận sản phẩm đang ẩn |
 | `CatalogImportRequest` | ID, category, ASIN, state, created_at, error | Q1 đã chốt: chỉ nhập từ Amazon URL/ASIN; một ASIN hợp lệ, trạng thái pending/running/succeeded/failed/needs_human; không xác nhận thành công trước khi nguồn đủ dữ liệu |
-| `PricingPolicy` | Bản ghi cấu hình đang hoạt động, version, **tỷ giá VND/JPY nhập thủ công theo Q4**, phụ phí dịch vụ (chờ Q5), updated_at | Tỷ giá phải là số hợp lệ > 0; thay đổi giá chỉ cho đơn mới, snapshot đơn giữ nguyên; không có cập nhật tự động |
+| `PricingPolicy` | Bản ghi cấu hình đang hoạt động, version, **tỷ giá VND/JPY theo Q4 và phụ phí dịch vụ theo Q5, cả hai sửa được**, updated_at | Một lần bấm `Lưu` tạo một version nguyên tử cho cả hai thông số; thay đổi giá chỉ cho đơn mới, snapshot đơn giữ nguyên; không tự lấy tỷ giá |
 | `AdminAuditEvent` | Actor, action, object, before/after hữu ích, timestamp | Ghi thay đổi giá, ẩn/hiện và yêu cầu nhập; không lưu password/secret |
 
 **Các chuyển trạng thái cần có:**
@@ -116,7 +117,7 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 - Yêu cầu thêm ASIN: `pending → running → succeeded | failed | needs_human`; trùng ASIN thì thông báo đã tồn tại/đang xử lý, không tạo bản nhân đôi.
 - Đồng bộ: chỉ đọc trạng thái thật từ `sync_runs`; chưa thêm nút điều khiển lịch/chạy thủ công trong MVP để tránh thao tác rủi ro.
 - Đơn (Q2 đã chốt): `simulation_created` **chỉ đọc toàn bộ**; không tạo API cập nhật ghi chú/trạng thái và không dựng trạng thái đã trả tiền.
-- Chính sách giá: `v1 → v2` khi owner lưu; `Order` giữ snapshot giá/tỷ giá/phụ phí của thời điểm tạo.
+- Chính sách giá (Q4 + Q5): owner chỉnh một hoặc cả hai giá trị rồi bấm `Lưu thay đổi`, `v1 → v2` một lần; `Order` giữ snapshot giá/tỷ giá/phụ phí thuộc cùng policy version tại thời điểm tạo.
 
 ## 5. Bảo mật tối thiểu nhưng bắt buộc
 
@@ -135,7 +136,7 @@ Số trong mockup **chỉ minh họa bố cục**, tuyệt đối không hardcod
 | **A. Đăng nhập + khung Admin** | Login duy nhất một owner theo Q3, session, middleware API, sidebar 4 mục, logout | Không đăng nhập mở `/admin`/`/api/admin` bị từ chối; thử sai password rate-limited; không có màn quản lý user |
 | **B. Xem dữ liệu thật** | Dashboard + danh sách/chi tiết đơn mô phỏng **chỉ đọc theo Q2** và danh sách sản phẩm chỉ đọc | Số liệu khớp SQL; API đơn hàng không có mutation; không hiển thị doanh thu thật; thông tin đơn chỉ admin xem |
 | **C. Quản lý catalog** | Ẩn/hiện bền qua sync, thêm ASIN Amazon bằng job riêng (Q1 đã chốt), nhật ký lỗi | Hidden không lọt catalog/checkout; cập nhật tự động không bật lại; trùng ASIN không tạo job trùng; lỗi import không tạo hàng giả |
-| **D. Chính sách giá** | Tỷ giá JPY/VND tự nhập theo Q4 lưu trong PostgreSQL, preview, audit, checkout snapshot nhất quán; quyền sửa phụ phí chờ Q5 | Đổi tỷ giá đổi giá mới, không đổi đơn cũ; input sai bị chặn; checkout vẫn khóa giá stale |
+| **D. Chính sách giá** | **Hai trường tỷ giá VND/JPY và phụ phí (%) đều chỉnh được theo Q4 + Q5**, một nút `Lưu thay đổi`, một policy version PostgreSQL, preview và audit | Một lần lưu cập nhật đồng thời cả hai; dữ liệu sai bị từ chối; checkout lấy cùng version; đơn cũ giữ nguyên; giá stale vẫn bị khóa |
 | **E. Hoàn thiện** | Tests tích hợp, accessibility cơ bản, backup/restore dev, hướng dẫn sử dụng một trang | Build/lint/test pass; thao tác nghiệp vụ tối thiểu; kiểm tra localhost sau restart |
 
 **Điều kiện ngoài phạm vi:** xác minh pg-boss chạy 04:00 và khởi động lại cùng Windows là luồng vận hành riêng, phải làm trước khi coi Admin là công cụ giám sát tự động đáng tin cậy. Không ngầm coi scheduler đã xong.
@@ -150,8 +151,9 @@ Không dashboard nhiều biểu đồ, CRM, tồn kho Nhật, thanh toán/refund
 - **Q2 — ĐÃ CHỐT ngày 27/10/2026:** **A — chỉ xem danh sách và chi tiết đơn mô phỏng**, không cập nhật trạng thái/ghi chú. Đơn không thể được đánh dấu đã thanh toán trong Admin MVP.
 - **Q3 — ĐÃ CHỐT ngày 27/10/2026:** **A — một tài khoản chủ cửa hàng duy nhất**; không có tài khoản nhân viên, không có quản lý user hay RBAC trong Admin MVP. Việc thay đổi mật khẩu/khôi phục quyền truy cập cần quy trình thiết lập an toàn, không hardcode credentials.
 - **Q4 — ĐÃ CHỐT ngày 27/10/2026:** **A — owner tự nhập tỷ giá VND/JPY và nhấn Lưu trong Admin**; không tự đồng bộ qua API. Giá sản phẩm/đơn mới dùng tỷ giá vừa lưu; đơn cũ giữ nguyên snapshot. Đây là tỷ giá tính giá bán Mita, không phải tỷ giá ngân hàng bắt buộc.
-- **Q5 — Đang hỏi owner:** **A. Giữ cố định phụ phí dịch vụ 12% trong Admin MVP** (chỉ hiển thị, không chỉnh) hay **B. Có thêm ô chỉnh phụ phí dịch vụ (%)** cùng tỷ giá, vẫn chỉ một nút `Lưu`? Cả hai không bao gồm phí vận chuyển ước tính thu sau.
-- **Để vòng Grill tiếp theo:** chốt Q5, sau đó mới quyết định hành vi ẩn/xóa hàng. Không hỏi dồn nhiều câu một lúc.
+- **Q5 — ĐÃ CHỐT ngày 27/10/2026:** **B — cho phép sửa phụ phí dịch vụ (%) cùng tỷ giá JPY/VND, chỉ một nút `Lưu thay đổi`**. Mặc định hiện tại là 12%; các đơn cũ không thay đổi. Phụ phí dịch vụ **khác** phí vận chuyển ước tính thu sau.
+- **Q6 — Đang hỏi owner:** Khi bấm “xóa” sản phẩm, **A. Ẩn khỏi cửa hàng và có thể hiện lại** (khuyến nghị; giữ lịch sử và tránh scraper nhập lại ngay) hay **B. Xóa vĩnh viễn bản ghi sản phẩm** (phức tạp do dữ liệu giá/đơn và đồng bộ)? Chưa coi đề xuất A là quyết định đã chốt.
+- **Để vòng Grill tiếp theo:** chốt Q6 trước, sau đó mới xem còn quyết định nào thật sự cần thiết; không hỏi dồn nhiều câu một lúc.
 
 ## 9. Tiêu chí “đủ tốt để sử dụng”
 
