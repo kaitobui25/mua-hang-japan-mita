@@ -142,3 +142,31 @@ _Tránh_: Cài lịch cron đồng nghĩa máy tắt hoặc worker tắt vẫn q
 **Khởi tạo owner bằng lệnh local (Q11 đã chốt)**:
 Một tài khoản chủ cửa hàng được thiết lập từ công cụ dòng lệnh chạy trực tiếp trên máy dự án, nhập mật khẩu kín để backend hash và lưu an toàn. Không có trang web setup/đăng ký Admin, mật khẩu mặc định hay mật khẩu lưu trong Git; lệnh không tự tạo tài khoản thứ hai.
 _Tránh_: Dán mật khẩu vào command line, ghi vào log/source hoặc xây trang đăng ký Admin công khai
+
+## Thuật ngữ mở rộng nội dung sản phẩm (Grill 07 — đã chốt Q1–Q9)
+
+Các khái niệm được owner xác nhận tại `.agents/plan/07_mita_product_detail_enrichment_grill_plan.md` và `docs/adr/0011-product-detail-enrichment.md`. Đây là quyết định thiết kế, chưa phải xác nhận đã triển khai tính năng.
+
+**Bộ ảnh của một ASIN**:
+Danh sách tối đa **5 ảnh nguồn khác nhau** gắn với chính ASIN đó, có thứ tự hiển thị; có thể ít hơn 5 nếu nguồn chỉ cung cấp ít ảnh hợp lệ. **Chỉ lưu URL ảnh nguồn**, không tải/cache file ảnh trên VPS.
+_Tránh_: 5 ảnh tự tạo hoặc ảnh của biến thể khác chỉ để đủ số lượng
+
+**Tên gốc / tên tiếng Việt**:
+Tên sản phẩm quan sát từ nguồn và tên được dịch sang tiếng Việt lưu riêng trong DB. **Khách chỉ nhìn thấy một tên**, ưu tiên thuật ngữ tiếng Việt; nếu không có từ tương đương Việt thì dùng tiếng Anh; nếu tiếng Anh cũng không có thì giữ tiếng Nhật. **Không hiển thị dòng tên Nhật phụ**. Dịch không được thay đổi thương hiệu, mã ASIN, định lượng, đơn vị và thuộc tính sản phẩm. Không cần người duyệt bản dịch hoặc chỉnh bản dịch qua Admin.
+_Tránh_: Ghi đè mất tên nguồn hoặc tự bổ sung công dụng chưa được xác nhận
+
+**Thông tin sản phẩm quan sát được**:
+Các nhóm nội dung có bằng chứng từ nguồn như đặc điểm, thành phần, cách sử dụng, thông số và cảnh báo; trường không có dữ liệu phải để trống/không xác minh. Bản dịch là cách thể hiện ngôn ngữ khác, không phải bằng chứng mới về tính đúng đắn của nội dung.
+_Tránh_: AI tự viết thành phần, liều dùng hoặc lời khuyên y tế
+
+**Thuộc tính của biến thể**:
+Cặp thuộc tính/giá trị thực tế (ví dụ `hương vị: socola`, `quy cách: 980 g`) được gắn với **ASIN con cụ thể**. Nhóm sản phẩm chỉ hình thành khi có mã nhóm quan sát và xác minh được từ nguồn.
+_Tránh_: Tạo tổ hợp style/size không có ASIN thực hoặc suy đoán nhóm từ tên gần giống
+
+**Dịch nền sau thu thập**:
+Công việc chuyển văn bản sản phẩm gốc sang bản dịch tiếng Việt sau khi snapshot nguồn được lưu, chạy riêng được với job đồng bộ. **Worker trên PC gọi OpenRouter API lần lượt 5 model `:free` theo thứ tự ở plan 07**, tự chuyển model khi giới hạn/lỗi và chỉ công bố bản dịch qua kiểm tra kỹ thuật **không có duyệt thủ công**; chỉ dịch lại khi nguồn đổi. Không dùng model trả phí, không gửi dữ liệu khách hàng lên model. `OPENROUTER_API_KEY` chỉ lưu trong môi trường PC, không đưa vào Git hoặc VPS.
+_Tránh_: Dịch thất bại khiến mất dữ liệu gốc hoặc chặn khách xem catalog
+
+**Làm mới thông tin chi tiết hằng ngày**:
+Khi worker PC đang bật xuyên giờ quét 04:00 JST, thu thập lại ảnh, mô tả, thuộc tính và giá thực đọc được cho tối đa **200 ASIN độc nhất trên mỗi danh mục mỗi lượt, tính cả ASIN con**. Nếu vượt cap, xếp phần chưa làm vào lần quét sau; nếu PC tắt thì không tự quét bù. Lỗi nguồn giữ lại snapshot đã lưu và có trạng thái lỗi thật.
+_Tránh_: Coi lịch chạy đồng nghĩa mọi sản phẩm đã được cập nhật hoặc tự tăng thời điểm xác minh giá khi không lấy được giá
