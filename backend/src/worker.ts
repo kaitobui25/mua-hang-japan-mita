@@ -104,6 +104,9 @@ if (command === 'once') {
   // OpenRouter inference may occupy the only default DB connection for many
   // seconds. Keep the CAPTCHA deadline observable with DB_POOL_MAX=1.
   const continuationPool = new Pool({ connectionString: config.databaseUrl, max: 1 });
+  // pg.Pool emits idle-connection errors asynchronously. Without a listener,
+  // a temporary DB/tunnel outage would terminate the entire daily worker.
+  continuationPool.on('error', () => console.error('Amazon continuation DB unavailable; retrying on the next polling cycle.'));
   boss.on('error', () => console.error('Catalog scheduler error; check database/tunnel connectivity.'));
   let stopping = false;
   let importWork: Promise<void> = Promise.resolve();
@@ -167,8 +170,12 @@ if (command === 'once') {
     await boss.createQueue('catalog.daily');
     await boss.work('catalog.daily', { includeMetadata: true }, async jobs => {
       for (const job of jobs) {
-        if (shouldRunDaily(job.createdOn, startedAt)) await syncAndTranslate();
-        else console.log('Skipped daily scan from downtime/outside the scheduled window.');
+        if (shouldRunDaily(job.createdOn, startedAt)) {
+          await syncCatalog();
+          // Same adaptive translation scheduler used by the startup timer and
+          // CAPTCHA continuation; a successful daily batch gets its next 30s run.
+          await triggerTranslation();
+        } else console.log('Skipped daily scan from downtime/outside the scheduled window.');
       }
     });
     await boss.schedule('catalog.daily', dailyCron, {}, { tz: dailyTimezone });
