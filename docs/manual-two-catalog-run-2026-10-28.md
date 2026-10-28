@@ -29,7 +29,7 @@ Log paths: `.agents/runtime/manual-amazon-20261028-151958.log`, `.agents/runtime
 - Local Chat On Steroids command session: **70917**. Resume using `write_stdin` with an empty input. The wrapper prints `GGUF_END_JST`, `GGUF_SECONDS`, and `GGUF_EXIT` when complete.
 - Log path: `.agents/runtime/manual-gguf-20261028-161820.log`.
 - At **16:22:22 JST**, DB showed **16 product ASINs touched**, **152 validated atomic translations**, and **36 pending/failed items**. This is a progress checkpoint, **not final totals**.
-- Corpus upper bound from raw detail fields is approximately **13,456 atomic slots** over 816 products; only Japanese-bearing strings are sent for inference, so the final number of requests may be smaller. Detail translation is materially slower than name translation.
+- Corpus upper bound from all raw detail fields is approximately **13,456 atomic slots** over 816 products. A direct read-only count using the production `detailItems()` filter found exactly **1,882 Japanese-bearing atomic strings** eligible for local translation: **1,726** in supplements (468 eligible products) and **156** in baby food (345 eligible products). Existing full legacy translations on 3 ASINs were excluded. Actual inference is limited to these Japanese-bearing strings, not all raw fields. Detail translation remains materially slower than name translation.
 
 The worker preserves specs **values byte-for-byte**, translating Japanese specs **keys only**, with independent validation and retry for `features`, `ingredients`, `usage`, and `cautions`. Already successful strings and legacy detail snapshots remain frozen.
 
