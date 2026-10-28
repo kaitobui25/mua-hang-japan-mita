@@ -68,8 +68,8 @@ function SyncVpsData([string]$mode) {
 function VerifyPublic([string]$sha) {
   $base='https://mitajapanshop.duckdns.org'
   Write-Host '[CHECK] Live HTTPS catalog and product detail...'
-  $home = Invoke-WebRequest -Uri "$base/" -UseBasicParsing -TimeoutSec 20
-  if($home.StatusCode -ne 200) { throw 'Homepage did not return HTTP 200' }
+  $homePage = Invoke-WebRequest -Uri "$base/" -UseBasicParsing -TimeoutSec 20
+  if($homePage.StatusCode -ne 200) { throw 'Homepage did not return HTTP 200' }
   $catalog = Invoke-RestMethod -Uri "$base/api/catalog?page=1&limit=1" -TimeoutSec 20
   if(!($catalog.items -is [array]) -or $catalog.items.Count -ne 1 -or
       [int]$catalog.total -lt $script:expectedPublicTotal) {
