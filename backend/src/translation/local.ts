@@ -15,11 +15,29 @@ export const hasJapanese = (text: string) => /[\p{Script=Han}\p{Script=Hiragana}
 export function validateAtomicTranslation(source: string, value: unknown): string {
   if (typeof value !== 'string' || !value.trim() || value.length > 6000 || hasJapanese(value) ||
       /```|<\/?think>|^\s*[{[]/i.test(value)) throw new LocalTranslationError(false, 'invalid_output');
-  const numbers = (s: string) => s.normalize('NFKC').match(/\d+(?:[.,]\d+)*/g)?.sort() ?? [];
+  // Vietnamese commonly writes a decimal comma where Japanese uses a dot.
+  // Only normalize one/two-digit fractional parts to avoid treating 1,000
+  // (possible thousands grouping) as interchangeable with 1.000.
+  const decimal = (text: string) => text.replace(/(\d),([0-9]{1,2})(?![0-9])/g, '$1.$2');
+  const numbers = (s: string) => decimal(s.normalize('NFKC')).match(/\d+(?:[.,]\d+)*/g)?.sort() ?? [];
   const units = (s: string) => [...s.normalize('NFKC').toLowerCase().matchAll(/\d+(?:[.,]\d+)?\s*(mcg|μg|µg|mg|kg|ml|mm|cm|kcal|kj|iu|g|l|m|%)(?!\p{L})/gu)]
-    .map(m => m[0].replace(/\s/g, '')).sort();
+    .map(m => decimal(m[0].replace(/\s/g, ''))).sort();
   const codes = (s: string) => [...s.normalize('NFKC').matchAll(/\b(?=[a-z0-9-]*[a-z])(?=[a-z0-9-]*\d)[a-z0-9-]{4,}\b/gi)].map(m => m[0]).sort();
-  for (const extract of [numbers, units, codes]) {
+  // For count-one expressions such as 1本, Vietnamese may say "một thanh"
+  // or "mỗi thanh". Do not relax any other quantity, measurement, or code.
+  const sourceNumbers = numbers(source);
+  const outputNumbers = numbers(value);
+  const missing = [...sourceNumbers];
+  for (const number of outputNumbers) {
+    const at = missing.indexOf(number);
+    if (at < 0) throw new LocalTranslationError(false, 'facts_changed');
+    missing.splice(at, 1);
+  }
+  const countOneWords = value.match(/\b(một|mỗi)\b/giu)?.length ?? 0;
+  if (missing.some(number => number !== '1') || missing.length > countOneWords) {
+    throw new LocalTranslationError(false, 'facts_changed');
+  }
+  for (const extract of [units, codes]) {
     if (JSON.stringify(extract(source)) !== JSON.stringify(extract(value))) throw new LocalTranslationError(false, 'facts_changed');
   }
   return value.trim();

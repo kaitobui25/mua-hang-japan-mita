@@ -84,6 +84,18 @@ test('facts, unprocessed Japanese, empty, JSON and reasoning output are rejected
   assert.equal(validateAtomicTranslation('成分 300mg', ' Thành phần 300mg '), 'Thành phần 300mg');
 });
 
+test('Vietnamese decimal commas and counted-one words pass without relaxing dosages or codes', () => {
+  assert.equal(validateAtomicTranslation('1本(約4.5g) 1回分', 'Mỗi thanh (khoảng 4,5g), một liều'),
+    'Mỗi thanh (khoảng 4,5g), một liều');
+  assert.equal(validateAtomicTranslation('1本 20g', 'một thanh 20g'), 'một thanh 20g');
+  assert.equal(validateAtomicTranslation('1本あたり18kcal', 'Mỗi thanh có 18kcal'), 'Mỗi thanh có 18kcal');
+  assert.throws(() => validateAtomicTranslation('1本 20g', 'một thanh 21g'), /facts_changed/);
+  assert.throws(() => validateAtomicTranslation('1本 18kcal', 'một thanh 18g'), /facts_changed/);
+  assert.throws(() => validateAtomicTranslation('2本 20g', 'một thanh 20g'), /facts_changed/);
+  assert.throws(() => validateAtomicTranslation('容量 1,000mg', 'Dung lượng 1.000mg'), /facts_changed/);
+  assert.throws(() => validateAtomicTranslation('型番 AB-1234', 'Mã CD-1234'), /facts_changed/);
+});
+
 test('truncated replies, malformed payloads, oversized sources and HTTP failures do not publish', async () => {
   for (const payload of [{ choices: [{ finish_reason: 'length', message: { content: 'Đặc điểm' } }] }, {}, null]) {
     await assert.rejects(translateLocalString('特長', { fetcher: async () => Response.json(payload) }));
