@@ -30,7 +30,7 @@ export type Observation = {
 };
 
 export class SourceError extends Error {
-  constructor(public state: 'blocked' | 'needs_human' | 'temporary' | 'parse_error', message: string, public adapter: 'http' | 'browseros-neo' = 'http') { super(message); }
+  constructor(public state: 'blocked' | 'needs_human' | 'temporary' | 'parse_error', message: string, public adapter: 'http' | 'browseros-neo' | 'scrapling' = 'http') { super(message); }
 }
 
 /** Only CAPTCHA is presented in Neo. A 403/429 is a source-wide denial, not a CAPTCHA to retry. */

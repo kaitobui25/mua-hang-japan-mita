@@ -146,3 +146,22 @@ test('store preserves real gallery and its timestamp on partial refresh, but rep
     assert.equal((await client.query('SELECT image_url FROM products WHERE asin=$1', [asin])).rows[0].image_url, url('new-single'));
   } finally { await client.query('ROLLBACK'); client.release(); }
 });
+
+test('Scrapling gallery respects five-photo catalog limit and keeps source provenance', async () => {
+  const item = JSON.parse(await readFile(new URL('./fixtures/scrapling-detail.json', import.meta.url), 'utf8'));
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    item.asin = 'G000000005';
+    item.sourceUrl = `https://www.amazon.co.jp/dp/${item.asin}`;
+    item.detail.provenance.sourceUrl = item.sourceUrl;
+    await ingestObservations([item], undefined, client);
+    const rows = (await client.query('SELECT source_url,source_observed_at FROM product_images WHERE asin=$1 ORDER BY position', [item.asin])).rows;
+    assert.equal(rows.length, 5);
+    assert.deepEqual(rows.map(row => row.source_url), item.imageUrls.slice(0, 5));
+    assert.equal(rows[4].source_observed_at.toISOString(), '2025-01-01T00:00:00.000Z');
+    const stored = (await client.query('SELECT provenance FROM product_details WHERE asin=$1', [item.asin])).rows[0];
+    assert.equal(stored.provenance.adapter, 'scrapling-detail');
+    assert.ok(stored.provenance.sections.includes('gallery:complete'));
+  } finally { await client.query('ROLLBACK'); client.release(); }
+});

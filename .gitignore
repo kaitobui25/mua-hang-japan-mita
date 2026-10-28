@@ -18,3 +18,7 @@ backend/.test-build/
 .backups/
 .env
 .agents/runtime/
+
+backend/.venv-scrapling/
+__pycache__/
+backend/.scrapling-tmp/

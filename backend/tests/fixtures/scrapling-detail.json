@@ -1,0 +1,75 @@
+{
+  "asin": "B000000001",
+  "name": "Source Brand Whey 1kg Vanilla",
+  "categorySlug": "thuc-pham-bo-sung",
+  "sourceUrl": "https://www.amazon.co.jp/dp/B000000001",
+  "imageUrl": "https://m.media-amazon.com/images/I/cover._SL1500_.jpg",
+  "imageUrls": [
+    "https://m.media-amazon.com/images/I/cover._SL1500_.jpg",
+    "https://m.media-amazon.com/images/I/back._SL1200_.jpg",
+    "https://m.media-amazon.com/images/I/side.jpg",
+    "https://m.media-amazon.com/images/I/nutrition._SL1500_.jpg",
+    "https://m.media-amazon.com/images/I/scoop.jpg",
+    "https://m.media-amazon.com/images/I/sixth.jpg"
+  ],
+  "priceJpy": 2980,
+  "observedAt": "2025-01-01T00:00:00+00:00",
+  "sourceAdapter": "scrapling-detail",
+  "parentAsin": "B000000099",
+  "detail": {
+    "features": [
+      "Protein 24 g per serving",
+      "Made in Japan"
+    ],
+    "ingredients": [
+      "乳清たんぱく、バニラ香料"
+    ],
+    "usage": [
+      "水200mlに溶かす"
+    ],
+    "specs": {
+      "内容量": "1 kg",
+      "ブランド": "Source Brand"
+    },
+    "cautions": [
+      "乳成分を含む"
+    ],
+    "variantAttributes": {
+      "Size": "1 kg",
+      "Flavor": "Vanilla",
+      "flavor_name": "Vanilla"
+    },
+    "childAsins": [
+      "B000000002"
+    ],
+    "sourceObservedAt": "2025-01-01T00:00:00+00:00",
+    "provenance": {
+      "sourceUrl": "https://www.amazon.co.jp/dp/B000000001",
+      "adapter": "scrapling-detail",
+      "sections": [
+        "colorImages.initial",
+        "gallery:complete",
+        "landingImage",
+        "feature-bullets",
+        "productDetails",
+        "important-information",
+        "twister"
+      ],
+      "fieldObservedAt": {
+        "features": "2025-01-01T00:00:00+00:00",
+        "ingredients": "2025-01-01T00:00:00+00:00",
+        "usage": "2025-01-01T00:00:00+00:00",
+        "specs": "2025-01-01T00:00:00+00:00",
+        "cautions": "2025-01-01T00:00:00+00:00",
+        "variantAttributes": "2025-01-01T00:00:00+00:00",
+        "childAsins": "2025-01-01T00:00:00+00:00",
+        "images": "2025-01-01T00:00:00+00:00"
+      },
+      "variantGroup": {
+        "parentAsin": "B000000099",
+        "sourceUrl": "https://www.amazon.co.jp/dp/B000000001"
+      }
+    }
+  },
+  "availability": "in_stock"
+}

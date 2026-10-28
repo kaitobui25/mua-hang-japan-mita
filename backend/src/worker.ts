@@ -1,3 +1,4 @@
+import { stopScraplingSessions } from './ingestion/scrapling.js';
 import { PgBoss } from 'pg-boss';
 import { Pool } from 'pg';
 import { config } from './config.js';
@@ -129,9 +130,10 @@ if (command === 'once') {
     await boss.schedule('catalog.daily', dailyCron, {}, { tz: dailyTimezone });
     pollContinuation();
     pollImports();
-    console.log('Mita catalog worker active, 04:00 Asia/Tokyo daily');
+    console.log('Mita catalog worker active, Scrapling FetcherSession + BeautifulSoup, 04:00 Asia/Tokyo daily');
     const halt = async () => {
       stopping = true;
+      stopScraplingSessions();
       if (timer) clearTimeout(timer);
       if (continuationTimer) clearTimeout(continuationTimer);
       await continuationWork;

@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $backend = Join-Path $root 'backend'
+& (Join-Path $PSScriptRoot 'check-scrapling.ps1')
 $runtime = Join-Path $root '.agents/runtime'
 $pgbin = 'C:\Program Files\PostgreSQL\18\bin'
 $pgdata = Join-Path $backend '.local-db'

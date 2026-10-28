@@ -3,8 +3,8 @@ import { db } from '../db/pool.js';
 import { AdminError, audit, pagination, transaction } from './data.js';
 import { normalizeAmazonInput, collectDetail } from '../ingestion/detail.js';
 import { ingestObservations } from '../ingestion/store.js';
-import { SourceError, isAmazonCaptcha, type Observation } from '../ingestion/source.js';
-import { openNeoManualVerification } from '../ingestion/neo.js';
+import { SourceError, type Observation } from '../ingestion/source.js';
+import { enqueueDetails } from '../ingestion/sync.js';
 import { AMAZON_ACCESS_LOCK, recordAmazonPause } from '../ingestion/source-access.js';
 
 export async function enqueueImport(input: unknown, category: unknown, actor: number) {
@@ -63,6 +63,7 @@ export async function processNextImport(collector: (asin: string, category: stri
           const current = await client.query("SELECT id FROM catalog_import_requests WHERE id=$1 AND state='running' FOR UPDATE", [job.id]);
           if (current.rowCount) {
             await ingestObservations([observation], undefined, client);
+            await enqueueDetails(job.category_slug, (observation.detail?.childAsins ?? []).map(asin => ({ asin, parentAsin: observation.parentAsin, sourceUrl: observation.sourceUrl })), client);
             await client.query("UPDATE catalog_import_requests SET state='succeeded',finished_at=now() WHERE id=$1", [job.id]);
             await audit(client, job.actor_id, 'catalog.import_succeeded', job.asin, null, { id: job.id });
           }
@@ -76,14 +77,6 @@ export async function processNextImport(collector: (asin: string, category: stri
         // Store a source message, never arbitrary SQL/connection errors or secrets.
         const message = error instanceof SourceError ? error.message.slice(0, 1000) : 'Không thể lưu sản phẩm; kiểm tra worker và cơ sở dữ liệu.';
         await client.query("UPDATE catalog_import_requests SET state=$2,error=$3,finished_at=now() WHERE id=$1 AND state='running'", [job.id, state, message]);
-        if (collector === collectDetail && error instanceof SourceError && isAmazonCaptcha(error)) {
-          try {
-            await openNeoManualVerification(`https://www.amazon.co.jp/dp/${job.asin}`);
-            console.warn('Amazon CAPTCHA: BrowserOS Neo tab opened for owner verification. Import and source access remain blocked.');
-          } catch {
-            console.warn('Amazon CAPTCHA: BrowserOS Neo unavailable; import remains blocked pending owner verification.');
-          }
-        }
       }
       return true;
     } finally {

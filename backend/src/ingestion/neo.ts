@@ -1,4 +1,3 @@
-import { parseDetail, normalizeAmazonInput } from './detail.js';
 import { config } from '../config.js';
 import { parseJpy, SourceError, type Observation } from './source.js';
 
@@ -72,15 +71,6 @@ async function callNeoTool(name: string, args: Record<string, unknown>): Promise
   return response;
 }
 
-async function runNeo(script: string): Promise<unknown> {
-  const response = await callNeoTool('run', { code: script, timeout: 30000 });
-  const payload = response.result?.structuredContent;
-  if (!payload?.ok) throw new SourceError('parse_error', 'BrowserOS Neo could not read rendered page', 'browseros-neo');
-  const nested = payload.value as { value?: unknown } | unknown[] | undefined;
-  const value = nested && !Array.isArray(nested) && typeof nested === 'object' && 'value' in nested ? nested.value : nested;
-  return value;
-}
-
 /** Leave a normal BrowserOS Neo tab open for the owner to solve Amazon CAPTCHA.
  * This is NOT a fallback for collecting blocked pages, and does not clear the DB gate.
  */
@@ -106,55 +96,4 @@ export function validateNeoVerificationUrl(url: string): string {
 
 export async function openNeoManualVerification(url: string): Promise<void> {
   await callNeoTool('tabs', { action: 'new', url: validateNeoVerificationUrl(url) });
-}
-
-export async function discoverNeo(categorySlug: string, url: string): Promise<Observation[]> {
-  const script = `
-    const page = await browser.open(${JSON.stringify(url)});
-    try {
-      // A missing selector can be a CAPTCHA/login page. Inspect the rendered
-      // document before deciding whether this is a parsing failure.
-      try { await page.waitForSelector('div[data-asin]', {timeout:10000}); } catch {}
-      return await page.evaluate(() => {
-        const content = ((document.title || '') + ' ' + (document.body?.innerText || '').slice(0, 1200));
-        const blocked = !!document.querySelector('form[action*="validateCaptcha"], #captchacharacters, input[name="email"][type="email"]')
-          || /enter the characters you see below|ロボットではない|captcha|verify you are a human|sign in to continue/i.test(content);
-        if (blocked) return { blocked: true, items: [] };
-        const items = Array.from(document.querySelectorAll('div[data-asin]'))
-          .filter(el => /^[A-Z0-9]{10}$/.test(el.getAttribute('data-asin') || ''))
-          .map(el => ({
-            asin: el.getAttribute('data-asin'),
-            name: el.querySelector('h2')?.textContent?.trim() || el.querySelector('img[alt]')?.getAttribute('alt')?.trim() || '',
-            imageUrl: el.querySelector('img[alt]')?.getAttribute('src') || '',
-            rawPrice: el.querySelector('.p13n-sc-price, .a-price .a-offscreen')?.textContent?.trim() || '',
-            parentAsin: el.getAttribute('data-parent-asin') || '',
-            sourceProductId: el.getAttribute('data-product-family-id') || ''
-          }));
-        return { blocked: false, items };
-      });
-    } finally { await page.close(); }
-  `;
-  return parseNeoOutcome(await runNeo(script), categorySlug);
-}
-
-export async function collectDetailNeo(asin: string, categorySlug: string): Promise<Observation> {
-  asin = normalizeAmazonInput(asin);
-  const url = `https://www.amazon.co.jp/dp/${asin}`;
-  const html = await runNeo(`
-    const page = await browser.open(${JSON.stringify(url)});
-    try {
-      try { await page.waitForSelector('#productTitle', {timeout:10000}); } catch {}
-      return await page.evaluate(() => document.documentElement.outerHTML);
-    } finally { await page.close(); }
-  `);
-  if (typeof html !== 'string') throw new SourceError('parse_error', 'Neo returned no detail markup', 'browseros-neo');
-  try {
-    const observation = parseDetail(html, asin, categorySlug);
-    observation.sourceAdapter = 'browseros-neo-detail';
-    if (observation.detail) observation.detail.provenance.adapter = observation.sourceAdapter;
-    return observation;
-  } catch (error) {
-    if (error instanceof SourceError) error.adapter = 'browseros-neo';
-    throw error;
-  }
 }

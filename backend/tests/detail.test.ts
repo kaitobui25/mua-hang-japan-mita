@@ -1,4 +1,5 @@
-﻿import test from 'node:test';
+import { fetchPageWithRetry } from '../src/ingestion/source.js';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { parseDetail } from '../src/ingestion/detail.js';
@@ -67,16 +68,15 @@ test('script JSON extraction is bounded to actual data and never evaluates JavaS
   assert.equal(jsonProperty(`{'initial': [{broken}]}`, 'initial'), undefined);
 });
 
-test('detail browser fallback is exclusive to parse errors; denial, CAPTCHA and network failures stop', async () => {
+test('detail collection never falls back to browser on parse or access failures', async () => {
   let neoCalls = 0;
   const fallback = async () => { neoCalls++; return parseDetail(html, asin, category); };
   for (const state of ['blocked', 'needs_human', 'temporary'] as const) {
     await assert.rejects(collectEnrichedDetail(asin, category, async () => { throw new SourceError(state, state); }, fallback));
   }
   assert.equal(neoCalls, 0);
-  const result = await collectEnrichedDetail(asin, category, async () => { throw new SourceError('parse_error', 'markup changed'); }, fallback);
-  assert.equal(result.asin, asin);
-  assert.equal(neoCalls, 1);
+  await assert.rejects(collectEnrichedDetail(asin, category, async () => { throw new SourceError('parse_error', 'markup changed'); }, fallback));
+  assert.equal(neoCalls, 0);
   assert.throws(() => parseDetail('captcha' + html, asin, category), (e: unknown) => e instanceof SourceError && e.state === 'needs_human');
 });
 
@@ -103,7 +103,7 @@ test('real HTTP 403/429 and late CAPTCHA responses stop immediately without invo
     for (const status of [403, 429, 200]) {
       calls = 0;
       globalThis.fetch = async () => { calls++; return new Response(' '.repeat(12000) + 'captcha', { status }); };
-      await assert.rejects(collectEnrichedDetail(asin, category, undefined, async () => {
+      await assert.rejects(collectEnrichedDetail(asin, category, async () => parseDetail(await fetchPageWithRetry(`https://www.amazon.co.jp/dp/${asin}`), asin, category), async () => {
         neoCalls++; return parseDetail(html, asin, category);
       }), (e: unknown) => e instanceof SourceError && e.state === 'blocked');
       assert.equal(calls, 1);

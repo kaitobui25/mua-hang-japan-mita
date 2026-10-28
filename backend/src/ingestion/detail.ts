@@ -1,6 +1,7 @@
+import { ScraplingSession } from './scrapling.js';
 import { load } from 'cheerio';
 import { extractEnrichment } from './enrichment.js';
-import { fetchPageWithRetry, parseJpy, SourceError, type Observation } from './source.js';
+import { parseJpy, SourceError, type Observation } from './source.js';
 
 export function normalizeAmazonInput(input: unknown) {
   if (typeof input !== 'string' || input.length > 2048) throw new Error('Nhập ASIN hoặc URL sản phẩm HTTPS Amazon.co.jp.');
@@ -39,5 +40,7 @@ export function parseDetail(html: string, asin: string, categorySlug: string): O
 }
 export async function collectDetail(asin: string, categorySlug: string) {
   asin = normalizeAmazonInput(asin);
-  return parseDetail(await fetchPageWithRetry(`https://www.amazon.co.jp/dp/${asin}`), asin, categorySlug);
+  const session = new ScraplingSession();
+  try { return await session.detail(asin, categorySlug); }
+  finally { session.close(); }
 }

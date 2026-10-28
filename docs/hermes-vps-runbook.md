@@ -12,7 +12,7 @@ Khách internet
   → PostgreSQL 16               127.0.0.1:5432 (database mita)
 
 PC Windows (chỉ khi owner khởi động thủ công)
-  → worker Node/TypeScript + BrowserOS Neo 127.0.0.1:9010
+  → worker Node/TypeScript + Python Scrapling/BeautifulSoup
   → SSH outbound 22             127.0.0.1:15432 → VPS:127.0.0.1:5432
 
 E-KAIWA giữ nguyên: ekaiwa.duckdns.org → Caddy → 127.0.0.1:7860
@@ -109,3 +109,7 @@ Ngày 27/10/2026: thử GitHub Actions build-only thành công trên Ubuntu và 
 Theo quyết định owner: **không lập lịch hoặc tạo backup**; không có khả năng khôi phục dữ liệu mới nếu VPS/đĩa/DB hỏng. Thư mục dữ liệu local cũ vẫn còn sau migration nhưng **không đồng bộ** và **không phải backup** của production. Không chạy `migrate-vps.ps1 -Apply` lần thứ hai: đây chỉ là tiện ích chuyển ban đầu và từ chối bảng target đã có dữ liệu.
 
 Checkout vẫn đóng. Catalog hiện có 122 sản phẩm công khai do owner chủ động chọn OFF; trạng thái quyền vẫn `local_test_only`. Lịch scrape chỉ chạy khi worker PC và SSH tunnel đang được bật thủ công; lần quét lúc 04:00 JST tiếp theo **chưa được chứng minh thành công**, phải kiểm tra `sync_runs` sau thời điểm đó. Việc chạy tải 19 người trong vài vòng không chứng minh chắc chắn độ ổn định 24/7; cần theo dõi lâu dài RAM/swap/OOM, PostgreSQL connection và E-KAIWA.
+
+### Scrapling adapter prerequisite
+
+Before starting the PC tunnel worker, run `scripts/setup-scrapling.ps1`, then `scripts/check-scrapling.ps1`. Collection uses the repo virtualenv (Scrapling 0.5 + BeautifulSoup 4.15.0), with no Python DB credentials. BrowserOS Neo is no longer a collection dependency; the owner can explicitly open a blocked page for manual verification. Existing Amazon blocks are never cleared by setup/startup. See `backend-architecture.md` for limits, offline tests and the full-gallery schema upgrade. This collector remains Windows PC only; no VPS collector deployment.

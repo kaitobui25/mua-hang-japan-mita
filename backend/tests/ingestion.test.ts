@@ -46,25 +46,24 @@ test('page two failure keeps page one products but explicitly marks partial', as
   assert.equal(result.issues[0].page, 2);
 });
 
-test('valid ASIN with missing price triggers fallback and does not lose HTTP catalog', async () => {
+test('missing listing price remains unobserved without browser fallback', async () => {
   let called = 0;
   const result = await collectCategory(seed, async () => ({ observations: [obs(asinA, null), obs(asinB, 300)], issues: [] }), async () => {
     called++;
     return [obs(asinA, 450, 'browseros-neo')];
   });
-  assert.equal(called, 1);
+  assert.equal(called, 0);
   assert.equal(result.observations.length, 2);
-  assert.equal(result.observations.find(x => x.asin === asinA)?.priceJpy, 450);
+  assert.equal(result.observations.find(x => x.asin === asinA)?.priceJpy, null);
   assert.deepEqual(result.issues, []);
 });
 
-test('Neo unavailability preserves HTTP data and requires human attention', async () => {
+test('listing collection never invokes legacy Neo collector', async () => {
   const result = await collectCategory(seed, async () => ({ observations: [obs(asinA, null)], issues: [] }), async () => {
     throw new SourceError('needs_human', 'BrowserOS Neo offline', 'browseros-neo');
   });
   assert.equal(result.observations.length, 1);
-  assert.equal(result.issues[0]?.state, 'needs_human');
-  assert.equal(result.issues[0]?.adapter, 'browseros-neo');
+  assert.deepEqual(result.issues, []);
 });
 
 test('Neo reports human verification instead of treating CAPTCHA as parsing error', () => {

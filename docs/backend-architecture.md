@@ -153,3 +153,28 @@ Chưa cần quyết định ở cấp sơ đồ: framework HTTP cụ thể, cổ
 - pg-boss Scheduling: https://pgboss.io/api/scheduling
 - Docker Compose production: https://docs.docker.com/compose/how-tos/production/
 - Amazon Associates policies (JP): https://affiliate.amazon.co.jp/help/operating/policies/
+
+## Scrapling collection (Windows PC)
+
+Live daily collection and Admin Import use a persistent Python `FetcherSession` with BeautifulSoup. HTTP/Cheerio functions remain only for old offline fixtures; there is no automatic HTTP or BrowserOS fallback. Neo is available only via the explicit `worker:captcha:open` owner command.
+
+Run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-scrapling.ps1` from the repo root. This creates `backend/.venv-scrapling` and installs pinned Scrapling 0.5 and BeautifulSoup 4.15.0. No global Python installs or browser downloads are required. `scripts/check-scrapling.ps1` checks exact versions and the session API without fetching a page. Both Windows launchers run this preflight. An absolute `MITA_SCRAPLING_PYTHON` can select another dedicated environment with those versions. Python 3.12 was used for verification.
+
+Node owns the source-wide advisory lock, persistent source block, existing queue and all DB writes. Python receives an environment allowlist with no DB credentials. One lazy Python process lasts for a sync; each Admin Import has a bounded session. Requests are sequential JSONL, capped at 4 KiB outbound and 2 MiB inbound, with a 110-second request deadline. Page bodies are rejected above 8 MiB after receipt. EOF, cancellation, worker signals, protocol failure and timeout close/kill the process. Hard Windows stops use the existing recursive process-tree stop scripts. A failed subprocess has no alternate source engine.
+
+Python paces requests at least 1.2 seconds after the previous completion. It makes at most three total attempts for network/timeouts/408/5xx, with internal Scrapling retries disabled. 403/429, actual CAPTCHA/login/verification forms latch the session and are persisted as the existing `needs_human` source block before another request can be issued. Redirect following is disabled, including same-domain redirects: redirect-only pages need review instead of an implicit second request. Canonical/input ASIN contradictions, off-domain identities and unverified galleries are rejected. The current DB block must remain unchanged until a separately authorized manual verification/ACK.
+
+Both seed listings feed the existing detail queue. HTML swatches and product-bound JSON variation maps reveal child ASINs; Python never fetches them recursively. Node enqueues them through the normal queue, and all attempted unique detail ASINs share the existing ceiling of 200 per category/run. A run caches both successful and failed ASIN reads across categories (maximum 400 keys); overflow remains queued. Child title, price, images and attributes come only from that child's separate detail page.
+
+Gallery photos retain observed Amazon URLs, deduplicate resize identities using the highest observed resolution, and exclude recommendations and other child galleries. Full gallery persistence removes the old five-position constraint with an idempotent schema upgrade; partial galleries do not replace prior valid complete galleries. Run the normal migration only when separately authorized for the target DB. No migration of the current DB is performed by this code change. Rights, hidden status, valid snapshots and price freshness remain under the existing store rules. The independent 04:00 JST Amazon and 05:00 JST name translation schedules are unchanged.
+
+Offline checks:
+
+```powershell
+backend/.venv-scrapling/Scripts/python.exe -B -m unittest discover -s backend/python -p 'test_*.py' -v
+npm --prefix backend run typecheck
+npm --prefix backend run build
+npm --prefix backend test
+```
+
+`backend/tests/scrapling.test.ts` uses a local JSONL fixture subprocess; it never calls Amazon. `MITA_SCRAPLING_TEST_PYTHON` can specify an absolute Python interpreter for those IPC tests. The DB suite uses disposable test databases.

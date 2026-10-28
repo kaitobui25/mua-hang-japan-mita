@@ -1,9 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { db } from '../db/pool.js';
-import { discoverHttp, seeds, SourceError, isAmazonCaptcha, type DiscoveryResult, type DiscoveryIssue, type Observation } from './source.js';
+import { seeds, SourceError, isAmazonCaptcha, type DiscoveryResult, type DiscoveryIssue, type Observation } from './source.js';
 import { ingestObservations } from './store.js';
-import { discoverNeo, collectDetailNeo, openNeoManualVerification } from './neo.js';
+import { ScraplingSession, isScraplingStopping } from './scrapling.js';
 import { collectDetail } from './detail.js';
 import { config } from '../config.js';
 import type { PoolClient } from 'pg';
@@ -11,64 +11,21 @@ import { AMAZON_ACCESS_LOCK, recordAmazonPause } from './source-access.js';
 
 export async function collectCategory(
   seed: { categorySlug: string; url: string },
-  http: (category: string, url: string) => Promise<DiscoveryResult> = discoverHttp,
-  neo: (category: string, url: string) => Promise<Observation[]> = discoverNeo
+  discover?: (category: string, url: string) => Promise<DiscoveryResult>,
+  _legacyNeo?: (category: string, url: string) => Promise<Observation[]>
 ): Promise<DiscoveryResult> {
-  let result: DiscoveryResult;
-  try {
-    result = await http(seed.categorySlug, seed.url);
-  } catch (error) {
-    // Only source markup/JS failures permit browser fallback, not access denial.
-    if (!(error instanceof SourceError) || error.state !== 'parse_error') throw error;
-    return { observations: await neo(seed.categorySlug, seed.url), issues: [] };
-  }
-
-  // A later HTTP page can be blocked while earlier pages were valid. The
-  // retained ASINs must not trigger another browser after that denial.
-  if (result.issues.some(issue => issue.state === 'blocked' || issue.state === 'needs_human')) return result;
-
-  const missing = result.observations.filter(o => o.priceJpy == null);
-  if (!missing.length) return result;
-  const observations = new Map(result.observations.map(o => [o.asin, o]));
-  const issues = [...result.issues];
-  try {
-    // Preserve the full HTTP discovery. Neo can supplement verified prices and
-    // explicit family identifiers without replacing otherwise-valid HTTP data.
-    for (const item of await neo(seed.categorySlug, seed.url)) {
-      const previous = observations.get(item.asin);
-      if (previous && (
-        (previous.priceJpy == null && item.priceJpy != null) ||
-        (item.parentAsin != null && item.parentAsin !== previous.parentAsin) ||
-        (item.sourceProductId != null && item.sourceProductId !== previous.sourceProductId)
-      )) {
-        const refreshPrice = previous.priceJpy == null && item.priceJpy != null;
-        observations.set(item.asin, {
-          ...previous,
-          ...(refreshPrice ? { priceJpy: item.priceJpy, observedAt: item.observedAt, sourceAdapter: item.sourceAdapter } : {}),
-          parentAsin: item.parentAsin ?? previous.parentAsin,
-          sourceProductId: item.sourceProductId ?? previous.sourceProductId
-        });
-      }
-    }
-    const unresolved = [...observations.values()].filter(o => o.priceJpy == null).length;
-    if (unresolved) issues.push({ adapter: 'browseros-neo', state: 'parse_error', message: `${unresolved} discovered ASINs have no observed price after Neo fallback` });
-  } catch (error) {
-    const failure = error instanceof SourceError ? error : new SourceError('needs_human', String(error), 'browseros-neo');
-    issues.push({ adapter: failure.adapter, state: failure.state, message: failure.message });
-  }
-  return { observations: [...observations.values()], issues };
+  if (discover) return discover(seed.categorySlug, seed.url);
+  const session = new ScraplingSession();
+  try { return await session.discover(seed.categorySlug, seed.url); }
+  finally { session.close(); }
 }
 
 type Connection = Pick<PoolClient, 'query'>;
 type DetailCollector = (asin: string, categorySlug: string) => Promise<Observation>;
 
 export async function collectEnrichedDetail(asin: string, categorySlug: string,
-  http: DetailCollector = collectDetail, neo: DetailCollector = collectDetailNeo): Promise<Observation> {
-  try { return await http(asin, categorySlug); }
-  catch (error) {
-    if (!(error instanceof SourceError) || error.state !== 'parse_error') throw error;
-    return neo(asin, categorySlug);
-  }
+  collector: DetailCollector = collectDetail, _legacyNeo?: DetailCollector): Promise<Observation> {
+  return collector(asin, categorySlug);
 }
 
 export async function enqueueDetails(category: string, observations: Pick<Observation, 'asin' | 'parentAsin' | 'sourceUrl'>[], connection: Connection = db) {
@@ -133,7 +90,7 @@ export async function processCategoryDetails(category: string, options: {
   const limit = Number.isFinite(requested) ? Math.max(0, Math.min(200, Math.floor(requested))) : 200;
   const attempted: string[] = [];
   let saved = 0, blocked = false;
-  while (attempted.length < limit) {
+  while (attempted.length < limit && !isScraplingStopping()) {
     const next = await connection.query<{ asin: string; parent_asin: string | null; provenance: { sourceUrl?: string } }>(`SELECT asin,parent_asin,provenance FROM product_detail_queue
       WHERE category_slug=$1 AND state <> 'needs_human' AND NOT (asin=ANY($2::varchar(10)[]))
       ORDER BY last_attempt_at ASC NULLS FIRST,enqueued_at ASC,asin ASC LIMIT 1`, [category, attempted]);
@@ -156,12 +113,15 @@ export async function processCategoryDetails(category: string, options: {
       if (saved % 25 === 0) console.log(`Detail backfill ${category}: ${saved} saved, ${attempted.length}/${limit} ASINs attempted`);
       await enqueueDetails(category, (item.detail?.childAsins ?? []).map(asin => ({ asin, parentAsin: item.parentAsin, sourceUrl: item.sourceUrl })), connection);
       await connection.query(`UPDATE product_detail_queue SET state='success',last_success_at=now() WHERE category_slug=$1 AND asin=$2`, [category, candidate.asin]);
-      if (item.priceJpy == null) await options.onIssue?.({ asin: candidate.asin, adapter: item.sourceAdapter.startsWith('browseros-neo') ? 'browseros-neo' : 'http', state: 'parse_error', message: 'Detail read without a current price; previous price observation retained' });
+      if (item.priceJpy == null) await options.onIssue?.({ asin: candidate.asin, adapter: item.sourceAdapter.startsWith('scrapling') ? 'scrapling' : item.sourceAdapter.startsWith('browseros-neo') ? 'browseros-neo' : 'http', state: 'parse_error', message: 'Detail read without a current price; previous price observation retained' });
     } catch (error) {
       const failure = error instanceof SourceError ? error : new SourceError('temporary', String(error));
       blocked = failure.state === 'blocked' || failure.state === 'needs_human';
+      // The source pause must survive a later queue-write failure.
+      const issue = { asin: candidate.asin, adapter: failure.adapter, state: failure.state, message: failure.message };
+      if (blocked) await options.onIssue?.(issue);
       await connection.query('UPDATE product_detail_queue SET state=$3 WHERE category_slug=$1 AND asin=$2', [category, candidate.asin, blocked ? 'needs_human' : 'failed']);
-      await options.onIssue?.({ asin: candidate.asin, adapter: failure.adapter, state: failure.state, message: failure.message });
+      if (!blocked) await options.onIssue?.(issue);
       if (blocked) break;
     }
   }
@@ -185,7 +145,8 @@ export async function syncCatalog(options: {
   let discovered = 0, saved = 0, errors = 0, blocked = false, openedCaptcha = false;
   // Test injectors do not open real browser tabs. Manual backfill explicitly
   // enables the callback even though it supplies a listing-discovery stub.
-  const onCaptcha = options.onCaptcha ?? (options.discover || options.collect ? undefined : openNeoManualVerification);
+  const onCaptcha = options.onCaptcha;
+  const session = new ScraplingSession();
   const deferred: Record<string, number> = {};
   try {
     const runResult = await lock.query<{ id: string }>('INSERT INTO sync_runs DEFAULT VALUES RETURNING id');
@@ -208,6 +169,7 @@ export async function syncCatalog(options: {
       return { id, state: 'needs_human', discovered: 0, saved: 0, errors: 1, deferred };
     }
     for (const seed of seeds) {
+      if (isScraplingStopping()) { errors++; break; }
       if (options.categories && !options.categories.includes(seed.categorySlug)) continue;
       const report = async (issue: DiscoveryIssue & { asin?: string }) => {
         errors++;
@@ -238,17 +200,18 @@ export async function syncCatalog(options: {
       try {
         // Every existing ASIN is eligible daily, including ones no longer on listings.
         try {
-          const result = await (options.discover ?? collectCategory)(seed);
+          const result = await (options.discover ? options.discover(seed) : session.discover(seed.categorySlug, seed.url));
           discovered += new Set(result.observations.map(o => o.asin)).size;
-          await enqueueDetails(seed.categorySlug, result.observations, lock);
+          // Persist access denial before any downstream queue work can fail.
           for (const issue of result.issues) await report(issue);
+          await enqueueDetails(seed.categorySlug, result.observations, lock);
         } catch (error) {
           const failure = error instanceof SourceError ? error : new SourceError('temporary', String(error));
           await report({ adapter: failure.adapter, state: failure.state, message: failure.message });
         }
         if (blocked) break;
         const result = await processCategoryDetails(seed.categorySlug, {
-          connection: lock, collect: options.collect, limit: options.limit, onIssue: report,
+          connection: lock, collect: options.collect ?? ((asin, category) => session.detail(asin, category)), limit: options.limit, onIssue: report,
           save: async items => {
             await lock.query('BEGIN');
             try {
@@ -276,6 +239,7 @@ export async function syncCatalog(options: {
     if (id) await lock.query('UPDATE sync_runs SET finished_at=now(),state=$2,note=$3 WHERE id=$1', [id, 'failed', String(error)]);
     throw error;
   } finally {
+    session.close();
     try { await lock.query('SELECT pg_advisory_unlock($1)', [AMAZON_ACCESS_LOCK]); }
     finally { release(); }
   }

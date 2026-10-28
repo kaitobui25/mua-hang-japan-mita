@@ -6,6 +6,7 @@ param()
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $backend = Join-Path $root 'backend'
+& (Join-Path $PSScriptRoot 'check-scrapling.ps1')
 $runtime = Join-Path $root '.agents/runtime'
 $recordPath = Join-Path $runtime 'vps-worker.pid.json'
 $ssh = $null
