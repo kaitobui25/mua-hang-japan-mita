@@ -49,5 +49,6 @@ export type CheckoutResponse = {
   subtotalVnd: number;
   shippingEstimatedVnd: number;
   payableNowVnd: number;
-  status: "simulation_created";
+  status: "pending_confirmation";
+  paymentStatus?: "unpaid" | "pending" | "paid" | "refunded";
 };

@@ -106,29 +106,37 @@ test('name warning survives source change and failed retry, improves once, then 
 
 test('warned detail retries at most three times, retains latest usable text and exact spec values', async () => {
   const f = await fixture();
-  let calls = 0;
+  const calls = new Map<string, number>();
   try {
     const translate = async (source: string) => {
-      calls++;
+      const attempt = (calls.get(source) ?? 0) + 1;
+      calls.set(source, attempt);
       if (source === '容量') return { text: 'Label', model: 'fixture' }; // collision must retain both values
-      return { text: `Thành phần ${300 + calls}g`, model: 'fixture' };
+      if (source === 'Label') return { text: 'Nhãn', model: 'fixture' }; // English spec keys are also translated once
+      assert.equal(source, '成分 300mg', 'unexpected detail field sent for translation');
+      return { text: `Thành phần ${300 + attempt}g`, model: 'fixture' };
     };
     for (let attempt = 1; attempt <= 3; attempt++) {
       await translatePendingDetails({ ...f, translate });
       await f.client.query('UPDATE local_detail_translation_items SET retry_after=NULL WHERE asin=$1', [f.asin]);
     }
-    assert.equal(calls, 4, 'one approved key plus three warned feature attempts');
+    assert.deepEqual(Object.fromEntries(calls), { '成分 300mg': 3, '容量': 1, Label: 1 },
+      'only the warned feature retries; both Japanese and English spec keys complete once');
     const row = (await f.client.query("SELECT * FROM local_detail_translation_items WHERE asin=$1 AND slot='features:0'", [f.asin])).rows[0];
-    assert.equal(row.attempts, 3); assert.equal(row.warning, true); assert.equal(row.translated, 'Thành phần 304g');
+    assert.equal(row.attempts, 3); assert.equal(row.warning, true); assert.equal(row.translated, 'Thành phần 303g');
     await f.client.query(`UPDATE product_details SET features='["Changed source"]',specs='{}' WHERE asin=$1`, [f.asin]);
-    await translatePendingDetails({ ...f, translate }); assert.equal(calls, 4);
+    await translatePendingDetails({ ...f, translate });
+    assert.deepEqual(Object.fromEntries(calls), { '成分 300mg': 3, '容量': 1, Label: 1 },
+      'completed and capped slots stay frozen after the scraped source changes');
     const products = [{ asin: f.asin, name: 'Source', brand: null, detail: {
-      features: [], ingredients: [], usage: [], cautions: [], specs: {}, variantAttributes: {}, childAsins: [],
+      features: [], ingredients: [], usage: [], cautions: [], specs: {} as Record<string, string>, variantAttributes: {}, childAsins: [],
       sourceObservedAt: '', provenance: { sourceUrl: '', adapter: 'fixture', sections: [] }
     } }];
     await applyTranslations(products, f.client);
     assert.equal(products[0].detail.features[0], row.translated);
     assert.equal(Object.keys(products[0].detail.specs).length, 2);
+    assert.equal((products[0].detail.specs as Record<string, string>)['Label [容量]'], ' ３０錠\r\n日本語 300mg ');
+    assert.equal((products[0].detail.specs as Record<string, string>)['Nhãn'], 'unchanged');
     assert.deepEqual(Object.values(products[0].detail.specs).sort(), [' ３０錠\r\n日本語 300mg ', 'unchanged'].sort());
   } finally { await f.cleanup(); }
 });

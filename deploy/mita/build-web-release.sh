@@ -35,10 +35,10 @@ if [[ -e "$archive" || -e "$archive.sha256" ]]; then
   exit 1
 fi
 
-echo "Building read-only Mita web for Linux/$build_arch (release $release_id, API proxy 127.0.0.1:4100)"
+echo "Building Mita storefront for Linux/$build_arch (release $release_id, API proxy 127.0.0.1:4100)"
 npm ci
 npm run lint
-API_PORT=4100 NEXT_PUBLIC_READ_ONLY=1 PUBLIC_READ_ONLY=1 NEXT_BUILD_DIR=.next NEXT_TELEMETRY_DISABLED=1 npm run build
+API_PORT=4100 NEXT_PUBLIC_READ_ONLY=0 PUBLIC_READ_ONLY=0 NEXT_BUILD_DIR=.next NEXT_TELEMETRY_DISABLED=1 npm run build
 
 if [[ ! -f .next/standalone/server.js || ! -d .next/static ]]; then
   echo 'Next standalone server.js or .next/static is missing.' >&2

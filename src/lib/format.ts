@@ -27,11 +27,10 @@ export function canCheckout(product: CatalogProduct) {
 
 export function productStatus(product: CatalogProduct) {
   if (product.availability === "out_of_stock") return "Tạm hết hàng";
-  if (product.availability === "requires_verification") return "Cần kiểm tra tình trạng";
+  if (product.availability === "requires_verification") return "Liên hệ để kiểm tra";
   if (!product.priceVnd) return "Giá đang cập nhật";
-  if (!isFreshPrice(product)) return "Giá đã quá 24 giờ";
-  if (product.status !== "ready") return "Sản phẩm chưa thể đặt";
-  return "Giá cập nhật gần đây";
+  if (!isFreshPrice(product)) return "Giá đang cập nhật";
+  return "";
 }
 
 export function categoryName(slug: string) {

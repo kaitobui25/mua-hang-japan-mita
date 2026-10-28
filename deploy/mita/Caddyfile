@@ -8,16 +8,24 @@ mitajapanshop.duckdns.org {
     }
 
     route {
-        # Local-only owner administration, including checkout/customer details.
-        @private path /admin /admin/* /api/admin /api/admin/* /thanh-toan /thanh-toan/*
+        # Administration and customer order details remain local-only.
+        @private path /admin /admin/* /api/admin /api/admin/*
         respond @private 404
 
-        # Initial public release is a read-only catalog; never expose arbitrary API routes.
+        # Only expressly allowed public API routes; checkout accepts POST only.
         @catalog {
             path /api/categories /api/catalog /api/catalog/products/*
             method GET HEAD
         }
         handle @catalog {
+            reverse_proxy 127.0.0.1:3100
+        }
+
+        @checkout {
+            path /api/checkout
+            method POST
+        }
+        handle @checkout {
             reverse_proxy 127.0.0.1:3100
         }
 

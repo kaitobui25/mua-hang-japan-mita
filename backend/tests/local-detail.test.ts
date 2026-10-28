@@ -2,9 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import type { PoolClient } from 'pg';
-import { localEndpoint, LocalTranslationError, translateLocalString, validateAtomicTranslation } from '../src/translation/local.js';
-import { detailItems, renderDetail, type DetailText, type DetailItem } from '../src/translation/detail-text.js';
-import { translatePendingDetails } from '../src/translation/detail-jobs.js';
+import { hasEnglish, localEndpoint, LocalTranslationError, translateLocalString, validateAtomicTranslation } from '../src/translation/local.js';
+import { detailItems, needsDetailTranslation, renderDetail, type DetailText, type DetailItem } from '../src/translation/detail-text.js';
+import { backfillFrozenEnglishSlots, translatePendingDetails } from '../src/translation/detail-jobs.js';
 import { shouldRunDetailTranslation, detailTranslationCron, detailTranslationTimezone, parseDetailCommand } from '../src/translation/detail-schedule.js';
 import { applyTranslations } from '../src/translation/catalog.js';
 
@@ -13,12 +13,12 @@ const snapshot: DetailText = {
   specs: { '容量': ' ３０錠\r\n日本語 300mg ', '原産国': '日本', Brand: 'DHC' }
 };
 const output: Record<string, string> = { '成分 300mg': 'Thành phần 300mg', '特長': 'Đặc điểm', '原材料': 'Nguyên liệu',
-  '使用方法': 'Cách dùng', '注意': 'Chú ý', '容量': 'Dung lượng', '原産国': 'Xuất xứ' };
+  '使用方法': 'Cách dùng', '注意': 'Chú ý', '容量': 'Dung lượng', '原産国': 'Xuất xứ', Brand: 'Thương hiệu' };
 
 // SQL boundary fake: no connection to PostgreSQL or model is made by this suite.
-function fixture() {
+function fixture(input: DetailText = snapshot) {
   let frozen: DetailText | undefined;
-  let source = structuredClone(snapshot);
+  let source = structuredClone(input);
   let legacyFull = false, lock = true, released = 0;
   const items = new Map<string, DetailItem & {attempts?: number; warning?: boolean}>();
   const sql: string[] = [];
@@ -30,7 +30,7 @@ function fixture() {
       assert.doesNotMatch(statement, /source_hash/);
       assert.equal(values[0], 3);
       const pending = [...items.values()].some(i => (!i.translated || i.warning) && (i.attempts ?? 0)<3 && !i.retry_after);
-      return { rows: legacyFull || (frozen && !pending) ? [] : [{ asin: 'A000000001', snapshot: frozen ?? structuredClone(source) }] };
+      return { rows: legacyFull || (frozen && !pending) ? [] : [{ asin: 'A000000001', brand: 'DHC', snapshot: frozen ?? structuredClone(source) }] };
     }
     if (statement.includes('INSERT INTO local_detail_translations')) frozen ??= JSON.parse(String(values[1]));
     if (statement.includes('INSERT INTO local_detail_translation_items') && !items.has(String(values[1]))) {
@@ -52,6 +52,123 @@ function fixture() {
     legacy: () => { legacyFull = true; }, denyLock: () => { lock = false; } };
 }
 const translate = async (source: string) => ({ text: output[source], model: 'fixture' });
+
+// Durable checkpoint/transaction fake: exercises the backfill SQL boundary without
+// touching PostgreSQL or calling a translation model.
+function frozenBackfillFixture() {
+  type Frozen = { snapshot: DetailText; approved?: boolean; marked?: boolean };
+  type Saved = { source: string; translated: string | null; attempts: number; warning: boolean };
+  const snapshots = new Map<string, Frozen>([
+    ['A000000001', { snapshot: {
+      features: ['成分 300mg', 'High protein 20g', 'SAVAS'], ingredients: [],
+      usage: ['Take 2 tablets'], cautions: [],
+      specs: { '容量': ' ３０錠\r\n日本語 300mg ', 'Net Weight': ' raw 980g ', Brand: 'DHC' }
+    } }],
+    ['A000000002', { snapshot: {
+      features: ['High protein 20g'], ingredients: [], usage: [], cautions: [], specs: { Brand: 'DHC' }
+    }, approved: true }],
+    ['A000000003', { snapshot: {
+      features: ['SAVAS', 'AB-1234'], ingredients: [], usage: [], cautions: [], specs: { 'AB-1234': ' untouched ' }
+    } }]
+  ]);
+  const items = new Map<string, Saved>([
+    ['A000000001:features:0', { source: '成分 300mg', translated: 'Thành phần 300mg', attempts: 1, warning: false }],
+    ['A000000001:features:1', { source: 'High protein 20g', translated: 'Đạm cao 20g', attempts: 1, warning: false }],
+    ['A000000001:specs:2', { source: 'Brand', translated: 'Bad warning', attempts: 3, warning: true }]
+  ]);
+  const before = structuredClone([...items]);
+  const sourceBefore = structuredClone([...snapshots].map(([asin, data]) => [asin, data.snapshot]));
+  let transaction: { items: Map<string, Saved>; marked: Map<string, boolean | undefined> } | undefined;
+  let failOnSlot: string | undefined;
+  const selected: string[][] = [];
+  let commits = 0, rollbacks = 0;
+  const client = { query: async (statement: string, values: unknown[] = []) => {
+    if (statement === 'BEGIN') {
+      assert.equal(transaction, undefined);
+      transaction = { items: structuredClone(items), marked: new Map([...snapshots].map(([asin, s]) => [asin, s.marked])) };
+      return { rows: [] };
+    }
+    if (statement === 'COMMIT') { commits++; transaction = undefined; return { rows: [] }; }
+    if (statement === 'ROLLBACK') {
+      assert.ok(transaction);
+      rollbacks++;
+      items.clear();
+      for (const [key, item] of transaction.items) items.set(key, item);
+      for (const [asin, marked] of transaction.marked) snapshots.get(asin)!.marked = marked;
+      transaction = undefined;
+      return { rows: [] };
+    }
+    if (statement.includes('SELECT asin FROM local_detail_translations')) {
+      assert.match(statement, /english_slots_backfilled_at IS NULL/);
+      assert.match(statement, /ORDER BY asin LIMIT \$1/);
+      const rows = [...snapshots].filter(([, s]) => !s.marked).map(([asin]) => ({ asin })).slice(0, Number(values[0]));
+      selected.push(rows.map(r => r.asin));
+      return { rows };
+    }
+    if (statement.includes('SELECT l.snapshot')) {
+      assert.ok(transaction);
+      assert.match(statement, /FOR UPDATE OF l/);
+      const row = snapshots.get(String(values[0]));
+      return { rows: row && !row.marked ? [{ snapshot: row.snapshot, full_approved: Boolean(row.approved) }] : [] };
+    }
+    if (statement.includes('INSERT INTO local_detail_translation_items')) {
+      assert.ok(transaction);
+      assert.match(statement, /ON CONFLICT\(asin,slot\) DO NOTHING/);
+      assert.equal(values.length, 3, 'raw spec values must never enter the INSERT');
+      if (values[1] === failOnSlot) { failOnSlot = undefined; throw Error('injected_insert_failure'); }
+      const key = `${values[0]}:${values[1]}`;
+      if (items.has(key)) return { rows: [], rowCount: 0 };
+      items.set(key, { source: String(values[2]), translated: null, attempts: 0, warning: false });
+      return { rows: [{ slot: values[1] }], rowCount: 1 };
+    }
+    if (statement.includes('UPDATE local_detail_translations')) {
+      assert.ok(transaction);
+      assert.match(statement, /english_slots_backfilled_at=now\(\)/);
+      snapshots.get(String(values[0]))!.marked = true;
+      return { rows: [], rowCount: 1 };
+    }
+    assert.fail(`Unexpected backfill SQL: ${statement}`);
+  } };
+  return { client: client as unknown as Pick<PoolClient, 'query'>, items, snapshots, selected, before, sourceBefore,
+    get commits() { return commits; }, get rollbacks() { return rollbacks; },
+    failOnceAt: (slot: string) => { failOnSlot = slot; } };
+}
+
+test('frozen English backfill is bounded, additive and permanently checkpoints scanned snapshots', async () => {
+  const f = frozenBackfillFixture();
+  assert.deepEqual(await backfillFrozenEnglishSlots(f.client, 2), { scanned: 2, inserted: 2, remaining: true });
+  assert.deepEqual(f.selected[0], ['A000000001', 'A000000002', 'A000000003'],
+    'lookahead checks for more work without modifying the third row');
+  assert.deepEqual([...f.items].filter(([key]) => key.startsWith('A000000001:')).map(([key]) => key).sort(),
+    ['A000000001:features:0', 'A000000001:features:1', 'A000000001:specs:1',
+      'A000000001:specs:2', 'A000000001:usage:0']);
+  assert.deepEqual([...f.items].filter(([key]) => f.before.some(([original]) => original === key)), f.before,
+    'successful, warned and exhausted legacy slots are never rewritten');
+  assert.equal(f.items.get('A000000001:usage:0')?.source, 'Take 2 tablets');
+  assert.equal(f.items.get('A000000001:specs:1')?.source, 'Net Weight');
+  assert.equal(f.items.get('A000000001:specs:0'), undefined, 'Japanese slot was not part of the English backfill');
+  assert.deepEqual(await backfillFrozenEnglishSlots(f.client, 2), { scanned: 1, inserted: 0, remaining: false });
+  assert.deepEqual(await backfillFrozenEnglishSlots(f.client, 2), { scanned: 0, inserted: 0, remaining: false });
+  assert.deepEqual(f.selected, [['A000000001', 'A000000002', 'A000000003'], ['A000000003'], []]);
+  assert.equal(f.commits, 3);
+  assert.equal(f.rollbacks, 0);
+  assert.equal(f.items.size, 5, 'approved full detail and non-English snapshots create no jobs');
+  assert.deepEqual([...f.snapshots].map(([asin, row]) => [asin, row.snapshot]), f.sourceBefore);
+});
+
+test('backfill rolls back both inserts and checkpoint on failure, then safely resumes', async () => {
+  const f = frozenBackfillFixture();
+  f.failOnceAt('specs:1');
+  await assert.rejects(backfillFrozenEnglishSlots(f.client, 1), /injected_insert_failure/);
+  assert.equal(f.rollbacks, 1);
+  assert.equal(f.snapshots.get('A000000001')?.marked, undefined);
+  assert.deepEqual([...f.items], f.before, 'no partial writes or attempt resets survive rollback');
+  assert.deepEqual(await backfillFrozenEnglishSlots(f.client, 1), { scanned: 1, inserted: 2, remaining: true });
+  assert.equal(f.items.get('A000000001:specs:1')?.source, 'Net Weight');
+  assert.equal(f.snapshots.get('A000000001')?.marked, true);
+  await assert.rejects(backfillFrozenEnglishSlots(f.client, 0), /DETAIL_TRANSLATION_LIMIT/);
+  await assert.rejects(backfillFrozenEnglishSlots(f.client, 1001), /DETAIL_TRANSLATION_LIMIT/);
+});
 
 test('only numeric loopback endpoints accepted, including no credentials or path overrides', () => {
   assert.equal(localEndpoint('http://[::1]:8080/v1/'), 'http://[::1]:8080/v1/chat/completions');
@@ -75,6 +192,107 @@ test('atomic request uses Chinese prompt, plain output <=1800, no JSON, credenti
   } });
   assert.equal(calls, 1);
   assert.equal(result.text, 'Thành phần 300mg');
+});
+
+test('English feature/ingredient/usage/caution prose and spec KEYS are selected; identity-only strings and raw values are excluded', () => {
+  const english: DetailText = {
+    features: ['High protein 20g', 'SAVAS', 'AB-1234'],
+    ingredients: ['Ingredients: DHC Vitamin C 500mg'],
+    usage: ['Take 2 tablets daily'], cautions: ['Keep away from children'],
+    specs: { 'Net Weight': ' 980g\r\nraw data ', Brand: 'DHC', 'AB-1234': 'source', '原産国': '日本' }
+  };
+  const items = detailItems(english);
+  assert.deepEqual(items.map(i => i.source), [
+    'High protein 20g', 'Ingredients: DHC Vitamin C 500mg', 'Take 2 tablets daily',
+    'Keep away from children', 'Net Weight', 'Brand', '原産国'
+  ]);
+  assert.equal(needsDetailTranslation('DHC'), false);
+  assert.equal(hasEnglish('500mg AB-1234 SAVAS'), false);
+  assert.equal(hasEnglish('ALLERGENS'), true);
+  assert.equal(hasEnglish('NUTRITION FACTS'), true);
+  assert.equal(hasEnglish('Thành phần nguyên liệu'), false);
+  const translations = new Map([
+    ['High protein 20g', 'Đạm cao 20g'], ['Ingredients: DHC Vitamin C 500mg', 'Thành phần: DHC Vitamin C 500mg'],
+    ['Take 2 tablets daily', 'Uống 2 viên mỗi ngày'], ['Keep away from children', 'Tránh xa trẻ em'],
+    ['Net Weight', 'Khối lượng tịnh'], ['Brand', 'Thương hiệu'], ['原産国', 'Xuất xứ']
+  ]);
+  const rendered = renderDetail(english, items.map(i => ({ ...i, translated: translations.get(i.source)! })));
+  assert.equal(rendered.specs['Khối lượng tịnh'], english.specs['Net Weight']);
+  assert.equal(rendered.specs['Thương hiệu'], 'DHC');
+  assert.equal(rendered.specs['Xuất xứ'], '日本');
+  assert.equal(rendered.specs['AB-1234'], 'source');
+  assert.deepEqual(rendered.features, ['Đạm cao 20g', 'SAVAS', 'AB-1234']);
+});
+
+test('English atomic prompt requests Vietnamese and protects quantities, units, codes and brands', async () => {
+  const source = 'Ingredients: DHC AB-1234 500mg, take 2 tablets daily';
+  const translated = 'Thành phần: DHC AB-1234 500mg, uống 2 viên mỗi ngày';
+  const result = await translateLocalString(source, { brand: 'DHC', fetcher: async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    assert.match(body.messages[0].content, /日语和英语到越南语/);
+    assert.equal(body.messages[1].content, source);
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content: translated } }] });
+  } });
+  assert.equal(result.text, translated);
+  assert.equal(validateAtomicTranslation('Take 2 tablets 500mg', 'Uống 2 viên 500mg'), 'Uống 2 viên 500mg');
+  assert.equal(validateAtomicTranslation('KEEP AWAY FROM CHILDREN', 'TRÁNH XA TRẺ EM'), 'TRÁNH XA TRẺ EM');
+  for (const bad of [
+    'Thành phần: DHC AB-1234 500mg, uống 3 viên mỗi ngày',
+    'Thành phần: DHC AB-1234 500g, uống 2 viên mỗi ngày',
+    'Thành phần: DHC XY-1234 500mg, uống 2 viên mỗi ngày',
+    'Thành phần: ABC AB-1234 500mg, uống 2 viên mỗi ngày',
+    source
+  ]) assert.throws(() => validateAtomicTranslation(source, bad, 'DHC'), LocalTranslationError);
+  await assert.rejects(translateLocalString(source, { brand: 'DHC',
+    fetcher: async () => Response.json({ choices: [{ finish_reason: 'stop', message: {
+      content: 'Thành phần: DHC AB-1234 500g, uống 2 viên mỗi ngày'
+    } }] })
+  }), (error: unknown) => error instanceof LocalTranslationError && error.message === 'unsafe_english_output');
+});
+
+test('English detail copy is translated through frozen atomic jobs with no raw spec value inference', async () => {
+  const english: DetailText = { features: ['High protein 20g'], ingredients: ['Ingredients'],
+    usage: ['Take 2 tablets'], cautions: ['Keep away from children'],
+    specs: { 'Net Weight': ' raw 980g ', Brand: 'DHC' } };
+  const translations: Record<string, string> = {
+    'High protein 20g': 'Đạm cao 20g', Ingredients: 'Thành phần', 'Take 2 tablets': 'Uống 2 viên',
+    'Keep away from children': 'Tránh xa trẻ em', 'Net Weight': 'Khối lượng tịnh', Brand: 'Thương hiệu'
+  };
+  const f = fixture(english);
+  const seen: string[] = [];
+  const result = await translatePendingDetails({ limit: 3, connect: f.connect, log: async () => {},
+    translate: async (source, options) => {
+      assert.equal(options?.brand, 'DHC');
+      seen.push(source);
+      return { text: translations[source], model: 'mock' };
+    } });
+  assert.equal(result.translated, 6);
+  assert.equal(result.failed, 0);
+  assert.match(f.sql.find(sql => sql.includes('INSERT INTO local_detail_translations')) ?? '',
+    /english_slots_backfilled_at\) VALUES\(\$1,\$2,now\(\)\)/,
+    'new frozen snapshots are already initialized and cannot be rescanned later');
+  assert.deepEqual(seen, detailItems(english).map(i => i.source));
+  assert.ok(!seen.includes(english.specs['Net Weight']));
+  const rendered = renderDetail(f.frozen!, [...f.items.values()]);
+  assert.equal(rendered.specs['Khối lượng tịnh'], ' raw 980g ');
+  assert.equal(rendered.specs['Thương hiệu'], 'DHC');
+  assert.equal(rendered.usage[0], 'Uống 2 viên');
+});
+
+test('unsafe English mock output never replaces the frozen source', async () => {
+  const english: DetailText = { features: ['DHC Take 2 tablets AB-1234 500mg'],
+    ingredients: [], usage: [], cautions: [], specs: {} };
+  for (const invalid of [
+    'DHC Uống 3 viên AB-1234 500mg', 'DHC Uống 2 viên AB-1234 500g',
+    'DHC Uống 2 viên XY-1234 500mg', 'ABC Uống 2 viên AB-1234 500mg'
+  ]) {
+    const f = fixture(english);
+    const result = await translatePendingDetails({ limit: 3, connect: f.connect, log: async () => {},
+      translate: async () => ({ text: invalid, model: 'mock' }) });
+    assert.equal(result.failed, 1);
+    assert.equal(f.items.get('features:0')?.translated, null);
+    assert.equal(renderDetail(f.frozen!, [...f.items.values()]).features[0], english.features[0]);
+  }
 });
 
 test('facts, unprocessed Japanese, empty, JSON and reasoning output are rejected', () => {
@@ -113,10 +331,11 @@ test('truncated replies, malformed payloads, oversized sources and HTTP failures
 
 test('spec VALUES and names never become atomic jobs; all other sections do', () => {
   const items = detailItems(snapshot);
-  assert.deepEqual(items.map(i => i.source), ['成分 300mg', '特長', '原材料', '使用方法', '注意', '容量', '原産国']);
+  assert.deepEqual(items.map(i => i.source), ['成分 300mg', '特長', '原材料', '使用方法', '注意', '容量', '原産国', 'Brand']);
   const rendered = renderDetail(snapshot, items.map(i => ({ ...i, translated: output[i.source] })));
   assert.equal(rendered.specs['Dung lượng'], snapshot.specs['容量']);
   assert.equal(rendered.specs['Xuất xứ'], '日本');
+  assert.equal(rendered.specs['Thương hiệu'], 'DHC');
   assert.equal(Buffer.from(rendered.specs['Dung lượng']).equals(Buffer.from(snapshot.specs['容量'])), true);
   assert.equal(rendered.features[0], 'Thành phần 300mg');
 });
@@ -144,7 +363,7 @@ test('partial success persists before failure; retries only failed strings again
     }
     return translate(source);
   } });
-  assert.equal(first.translated, 6);
+  assert.equal(first.translated, 7);
   assert.equal(first.failed, 1);
   const partial = renderDetail(f.frozen!, [...f.items.values()]);
   assert.deepEqual(partial.features, ['Thành phần 300mg', '特長']);

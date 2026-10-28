@@ -36,7 +36,7 @@ export async function listProducts(q: Record<string, string | undefined>) {
   if (q.visibility) clauses.push(`admin_hidden_at IS ${q.visibility === 'visible' ? '' : 'NOT '}NULL`);
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   const count = await db.query(`SELECT count(*)::int AS total FROM products ${where}`, params);
-  const rows = await db.query<DbProduct>(`SELECT * FROM products ${where} ORDER BY last_seen_at DESC,asin LIMIT $${params.length + 1} OFFSET $${params.length + 2}`, [...params, limit, offset]);
+  const rows = await db.query<DbProduct>(`SELECT *, (SELECT NOT hide_local_test_only FROM catalog_settings WHERE id=1) AS owner_all_products_enabled FROM products ${where} ORDER BY last_seen_at DESC,asin LIMIT $${params.length + 1} OFFSET $${params.length + 2}`, [...params, limit, offset]);
   const policy = await getPricingPolicy();
   return { items: rows.rows.map(p => ({ ...publicProduct(p, policy), hiddenAt: p.admin_hidden_at })), total: count.rows[0].total, page, limit };
 }
@@ -85,7 +85,7 @@ export async function listOrders(q: Record<string, string | undefined>) {
   const { page, limit, offset } = pagination(q);
   const term = `%${q.q ?? ''}%`;
   const count = await db.query('SELECT count(*)::int AS total FROM orders WHERE id::text ILIKE $1 OR customer_phone ILIKE $1', [term]);
-  const rows = await db.query(`SELECT o.id,o.created_at,o.customer_name,o.status,o.merchandise_vnd,
+  const rows = await db.query(`SELECT o.id,o.created_at,o.customer_name,o.status,o.payment_status,o.merchandise_vnd,
     (SELECT count(*)::int FROM order_items i WHERE i.order_id=o.id) AS item_count
     FROM orders o WHERE o.id::text ILIKE $1 OR o.customer_phone ILIKE $1 ORDER BY o.created_at DESC,o.id LIMIT $2 OFFSET $3`, [term, limit, offset]);
   return { items: rows.rows, total: count.rows[0].total, page, limit };
@@ -96,9 +96,58 @@ export async function orderDetail(id: string) {
   const items = await db.query('SELECT * FROM order_items WHERE order_id=$1 ORDER BY asin', [id]);
   return { ...order.rows[0], items: items.rows };
 }
+
+/** Real order workflow; simulation records are immutable historical data. */
+const orderNext: Record<string, string[]> = {
+  pending_confirmation: ['confirmed', 'cancelled'],
+  confirmed: ['purchasing', 'cancelled'],
+  purchasing: ['purchased', 'cancelled'],
+  purchased: ['shipping'],
+  shipping: ['completed'],
+};
+
+export async function updateOrder(id: string, change: { status?: string; paymentStatus?: string; shippingFinalVnd?: number }, actor: number) {
+  if (!change || [change.status, change.paymentStatus, change.shippingFinalVnd].filter(x => x !== undefined).length !== 1) {
+    throw new AdminError(400, 'Chọn một thay đổi trạng thái cho mỗi lần cập nhật.');
+  }
+  return transaction(async client => {
+    const current = await client.query<{ status: string; payment_status: string; shipping_final_vnd: string | null; paid_at: Date | null }>(
+      'SELECT status,payment_status,shipping_final_vnd,paid_at FROM orders WHERE id=$1 FOR UPDATE', [id]);
+    const old = current.rows[0];
+    if (!old) throw new AdminError(404, 'Không tìm thấy đơn hàng.');
+    if (old.status === 'simulation_created') {
+      throw new AdminError(409, 'Đơn mô phỏng lịch sử không được phép chỉnh sửa.');
+    }
+    if (change.status && !orderNext[old.status]?.includes(change.status)) {
+      throw new AdminError(409, 'Không thể chuyển trạng thái đơn hàng theo thứ tự này.');
+    }
+    if (change.status === 'completed' && old.payment_status !== 'paid') {
+      throw new AdminError(409, 'Cần ghi nhận thanh toán trước khi hoàn tất đơn.');
+    }
+    if (change.shippingFinalVnd !== undefined && (!Number.isSafeInteger(change.shippingFinalVnd) || change.shippingFinalVnd < 0 || change.shippingFinalVnd > 1000000000 || old.status === 'cancelled')) {
+      throw new AdminError(400, 'Phí vận chuyển không hợp lệ hoặc đơn đã hủy.');
+    }
+    if (change.paymentStatus) {
+      if (change.paymentStatus === 'paid' && (old.payment_status !== 'unpaid' || old.status === 'pending_confirmation' || old.status === 'cancelled')) {
+        throw new AdminError(409, 'Chỉ ghi nhận thanh toán sau khi xác nhận đơn.');
+      }
+      if (change.paymentStatus === 'refunded' && old.payment_status !== 'paid') {
+        throw new AdminError(409, 'Chỉ đánh dấu hoàn tiền sau khi đã ghi nhận thanh toán.');
+      }
+      if (!['paid', 'refunded'].includes(change.paymentStatus)) throw new AdminError(400, 'Trạng thái thanh toán không hợp lệ.');
+    }
+    const updated = await client.query<{ status: string; payment_status: string; shipping_final_vnd: string | null; paid_at: Date | null }>(
+      `UPDATE orders SET status=COALESCE($2,status), payment_status=COALESCE($3,payment_status),
+       shipping_final_vnd=COALESCE($4,shipping_final_vnd),
+       paid_at=CASE WHEN $3='paid' THEN now() ELSE paid_at END
+       WHERE id=$1 RETURNING status,payment_status,shipping_final_vnd,paid_at`, [id, change.status ?? null, change.paymentStatus ?? null, change.shippingFinalVnd ?? null]);
+    await audit(client, actor, 'order.status', id, old, updated.rows[0]);
+    return { id, ...updated.rows[0] };
+  });
+}
 export async function overview() {
   const counts = await db.query(`SELECT
-    (SELECT count(*)::int FROM orders WHERE status='simulation_created' AND created_at>=now()-interval '7 days') AS orders_7_days,
+    (SELECT count(*)::int FROM orders WHERE status<>'simulation_created' AND created_at>=now()-interval '7 days') AS orders_7_days,
     (SELECT count(*)::int FROM products WHERE ${publicVisibilitySql}) AS visible_products`);
   const latest = await db.query('SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1');
   const run = latest.rows[0] ?? null;

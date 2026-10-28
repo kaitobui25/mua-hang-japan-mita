@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { CheckoutView } from "@/components/cart/checkout-view";
 
-export const metadata: Metadata = { title: "Thanh toán mô phỏng" };
+export const metadata: Metadata = { title: "Đặt hàng" };
 
 export default function CheckoutPage() {
   if (process.env.NEXT_PUBLIC_READ_ONLY === '1') {

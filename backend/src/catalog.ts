@@ -2,7 +2,7 @@ import { db } from './db/pool.js';
 import { getPricingPolicy, isFresh, toVnd, type PricingPolicy } from './pricing.js';
 import { config } from './config.js';
 import { applyTranslations } from './translation/catalog.js';
-import { uniqueImages } from './ingestion/enrichment.js';
+import { galleryImageUrl, uniqueImages } from './ingestion/enrichment.js';
 import type { DetailSnapshot } from './ingestion/source.js';
 import type { PoolClient } from 'pg';
 
@@ -13,24 +13,30 @@ export type DbProduct = {
   price_jpy: number | null; price_observed_at: Date | null;
   availability: string; sale_status: string; last_seen_at: Date;
   admin_hidden_at: Date | null;
+  /** Admin switch OFF permits all DB entries to be ordered; this is not a copyright verification. */
+  owner_all_products_enabled?: boolean;
   image_urls?: string[]; detail?: DetailSnapshot | null;
 };
 
-// Read the singleton setting in SQL so catalog/detail/overview reflect Admin changes
-// immediately without an API restart. Unverified remains excluded in both modes.
-const publicRightsSql = "(rights_status = 'verified' OR (rights_status = 'local_test_only' AND EXISTS (SELECT 1 FROM catalog_settings WHERE id=1 AND NOT hide_local_test_only)))";
+// Owner policy is independent of image/content rights metadata.
+// Switch OFF: show/order every DB product except explicitly hidden ones.
+// Switch ON: retain verified-only publication/ordering.
+const allProductsEnabledSql = '(SELECT NOT hide_local_test_only FROM catalog_settings WHERE id=1)';
+const publicRightsSql = `(rights_status = 'verified' OR ${allProductsEnabledSql})`;
 export const publicVisibilitySql = `admin_hidden_at IS NULL AND ${publicRightsSql}`;
 export function canCheckoutProduct(p: DbProduct) {
-  return !config.publicReadOnly && !p.admin_hidden_at && ['verified', 'local_test_only'].includes(p.rights_status) &&
+  return !config.publicReadOnly && !p.admin_hidden_at && (p.rights_status === 'verified' || p.owner_all_products_enabled === true) &&
     p.sale_status === 'ready' && !['unavailable', 'out_of_stock'].includes(p.availability) &&
     p.price_jpy !== null && p.price_jpy > 0 && isFresh(p.price_observed_at);
 }
 export function publicProduct(p: DbProduct, policy: PricingPolicy) {
   const canCheckout = canCheckoutProduct(p);
+  const gallery = uniqueImages(p.image_urls?.length ? p.image_urls : [p.image_url]);
+  const cover = galleryImageUrl(p.image_url) ? p.image_url : gallery[0] ?? null;
   return {
     id: p.asin, asin: p.asin, name: p.name, brand: p.brand, categorySlug: p.category_slug,
-    sourceUrl: p.source_url, imageUrl: p.image_url,
-    imageUrls: uniqueImages(p.image_urls?.length ? p.image_urls : [p.image_url]),
+    sourceUrl: p.source_url, imageUrl: cover,
+    imageUrls: gallery,
     detail: p.detail ?? null, variantAttributes: p.detail?.variantAttributes ?? {},
     sourceAdapter: p.source_adapter,
     rightsStatus: p.rights_status, priceJpy: p.price_jpy,
@@ -68,7 +74,7 @@ async function enrichProducts(products: DbProduct[], client: Pick<PoolClient, 'q
 
 export async function getProductDetails(asin: string, connection?: PoolClient) {
   const client = connection ?? db;
-  const result = await client.query<DbProduct>(`SELECT * FROM products WHERE asin = $1 AND ${publicVisibilitySql}`, [asin.toUpperCase()]);
+  const result = await client.query<DbProduct>(`SELECT *, ${allProductsEnabledSql} AS owner_all_products_enabled FROM products WHERE asin = $1 AND ${publicVisibilitySql}`, [asin.toUpperCase()]);
   const product = result.rows[0];
   if (!product) return null;
   await enrichProducts([product], client);
@@ -77,7 +83,7 @@ export async function getProductDetails(asin: string, connection?: PoolClient) {
     return { ...publicProduct(product, policy), variants: [] };
   }
   // Only an exact, observed identifier within the same source category creates siblings.
-  const siblings = await client.query<DbProduct>(`SELECT * FROM products
+  const siblings = await client.query<DbProduct>(`SELECT *, ${allProductsEnabledSql} AS owner_all_products_enabled FROM products
     WHERE category_slug = $1 AND variant_group_basis = $2 AND variant_group_id = $3 AND ${publicVisibilitySql}
     ORDER BY name ASC, asin ASC`, [product.category_slug, product.variant_group_basis, product.variant_group_id]);
   await enrichProducts(siblings.rows, client);
@@ -107,7 +113,8 @@ export async function listCatalog(options: { category?: string; q?: string; page
   const ordering = sorting[sort ?? ''] ?? 'last_seen_at DESC';
   const total = await client.query<{ count: string }>(`SELECT count(DISTINCT ${groupKey})::text AS count FROM products ${clause}`, params);
   const rows = await client.query<DbProduct>(`WITH ranked AS (
-    SELECT *, row_number() OVER (PARTITION BY ${groupKey} ORDER BY ${ordering}, asin ASC) AS variant_rank
+    SELECT *, ${allProductsEnabledSql} AS owner_all_products_enabled,
+      row_number() OVER (PARTITION BY ${groupKey} ORDER BY ${ordering}, asin ASC) AS variant_rank
     FROM products ${clause}
   )
   SELECT * FROM ranked WHERE variant_rank = 1

@@ -91,6 +91,8 @@ test('detail persistence and API retain selected ASIN images, attributes, old qu
     assert.equal((await getProductDetails(item.asin, client))!.priceJpy, 2980);
     assert.equal((await getProductDetails(item.asin, client))!.detail!.sourceObservedAt, missingSections.detail!.sourceObservedAt);
     await client.query("UPDATE products SET rights_status='unverified' WHERE asin=$1", [item.asin]);
+    assert.equal((await getProductDetails(item.asin, client))!.rightsStatus, 'unverified', 'owner OFF permits catalog while preserving rights metadata');
+    await client.query('UPDATE catalog_settings SET hide_local_test_only=true WHERE id=1');
     assert.equal(await getProductDetails(item.asin, client), null);
   } finally { await client.query('ROLLBACK'); client.release(); }
 });

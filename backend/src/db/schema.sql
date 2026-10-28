@@ -208,3 +208,18 @@ ALTER TABLE local_detail_translation_items ADD COLUMN IF NOT EXISTS issues jsonb
 ALTER TABLE product_translations ADD COLUMN IF NOT EXISTS detail_approved boolean NOT NULL DEFAULT false;
 UPDATE product_translations SET detail_approved=true
   WHERE status='success' AND NOT name_only AND detail IS NOT NULL AND NOT detail_approved;
+
+
+-- Real checkout is explicit in application INSERTs. Preserve simulation defaults
+-- and all historical statuses; never reinterpret existing orders as real sales.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_status text NOT NULL DEFAULT 'unpaid';
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_method text NOT NULL DEFAULT 'manual';
+-- Provider-neutral identifiers only: no payment secrets or card data.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_provider text;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_reference text;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_final_vnd bigint
+  CHECK (shipping_final_vnd IS NULL OR shipping_final_vnd >= 0);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_at timestamptz;
+-- Once-only English detail backfill checkpoint for frozen GGUF snapshots.
+-- NULL on legacy rows intentionally queues a bounded scan; no translated items are reset.
+ALTER TABLE local_detail_translations ADD COLUMN IF NOT EXISTS english_slots_backfilled_at timestamptz;

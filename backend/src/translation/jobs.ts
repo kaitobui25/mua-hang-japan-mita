@@ -1,7 +1,8 @@
 import { logTranslationEvent } from './warnings.js';
 import { createHash } from 'node:crypto';
 import { db } from '../db/pool.js';
-import { translateNamesBatch, packNameBatches, readFreeQuota, TranslationUnavailable, type ProductText } from './openrouter.js';
+import { translateNamesBatch, packNameBatches, readFreeQuota, assertTranslation, TranslationUnavailable, type ProductText } from './openrouter.js';
+import { hasEnglish, hasJapanese } from './local.js';
 import type { PoolClient } from 'pg';
 
 type SourceRow = {
@@ -28,6 +29,82 @@ export function sourceHash(text: ProductText): string {
 export function nameHash(row: { name: string; brand?: string | null }): string {
   return sourceHash({ name: row.name, brand: row.brand ?? null,
     features: [], ingredients: [], usage: [], specs: {}, cautions: [] });
+}
+
+export type EnglishTitleCandidate = {
+  asin: string; sourceName: string; brand: string | null; translatedName: string;
+  sourceHash: string; sourceNameHash: string;
+};
+
+type AuditedTitleRow = {
+  asin: string; source_name: string; brand: string | null;
+  translated_name: string; source_hash: string; status: string;
+  name_source: { name: string; brand: string | null } | null;
+};
+
+function titleCandidate(row: AuditedTitleRow): EnglishTitleCandidate {
+  const source = row.name_source ?? { name: row.source_name, brand: row.brand };
+  return { asin: row.asin, sourceName: source.name, brand: source.brand,
+    translatedName: row.translated_name, sourceHash: row.source_hash, sourceNameHash: nameHash(source) };
+}
+
+/** Read-only, page-by-page audit of approved titles that still contain English. */
+export async function auditEnglishSuccessTitles(
+  connection: Pick<PoolClient, 'query'>, options: { afterAsin?: string; limit?: number } = {}
+): Promise<{ candidates: EnglishTitleCandidate[]; nextAfterAsin: string | null }> {
+  const limit = options.limit ?? 100;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500 ||
+      (options.afterAsin && !/^[A-Z0-9]{10}$/.test(options.afterAsin))) throw new Error('invalid_audit_page');
+  const { rows } = await connection.query<AuditedTitleRow>(`SELECT p.asin,p.name AS source_name,p.brand,
+      t.name AS translated_name,t.source_hash,t.status,t.name_source
+    FROM product_translations t JOIN products p ON p.asin=t.asin
+    WHERE t.locale='vi' AND t.status='success' AND t.name IS NOT NULL AND p.asin>$1
+    ORDER BY p.asin LIMIT $2`, [options.afterAsin ?? '', limit]);
+  return {
+    candidates: rows.filter(row => hasEnglish(row.translated_name) && !hasJapanese(row.translated_name))
+      .map(titleCandidate),
+    nextAfterAsin: rows.length === limit ? rows.at(-1)!.asin : null
+  };
+}
+
+/** Only an explicitly reviewed replacement can change an already successful title.
+ * Locks the source and uses compare-and-swap; full approved detail stays intact. */
+export async function saveReviewedEnglishTitle(
+  review: { candidate: EnglishTitleCandidate; replacement: string; approved: true },
+  connection: Pick<PoolClient, 'query'>
+): Promise<boolean> {
+  if (review.approved !== true) throw new Error('review_required');
+  const { candidate, replacement } = review;
+  if (!candidate || !/^[A-Z0-9]{10}$/.test(candidate.asin) ||
+      replacement.trim() === candidate.translatedName.trim() || hasJapanese(replacement)) {
+    throw new Error('invalid_review');
+  }
+  await connection.query('BEGIN');
+  try {
+    const { rows } = await connection.query<AuditedTitleRow>(`SELECT p.asin,p.name AS source_name,p.brand,
+        t.name AS translated_name,t.source_hash,t.status,t.name_source
+      FROM products p JOIN product_translations t ON t.asin=p.asin AND t.locale='vi'
+      WHERE p.asin=$1 FOR UPDATE OF p,t`, [candidate.asin]);
+    const row = rows[0];
+    const current = row && titleCandidate(row);
+    if (!row || row.status !== 'success' || !hasEnglish(row.translated_name) ||
+        !current || current.sourceName !== candidate.sourceName || current.brand !== candidate.brand ||
+        current.translatedName !== candidate.translatedName || current.sourceHash !== candidate.sourceHash ||
+        current.sourceNameHash !== candidate.sourceNameHash) {
+      await connection.query('ROLLBACK');
+      return false;
+    }
+    // Same checks as an ordinary title translation: numbers, units, codes, brand.
+    assertTranslation({ name: current.sourceName, brand: current.brand,
+      features: [], ingredients: [], usage: [], cautions: [], specs: {} },
+    { name: replacement, features: [], ingredients: [], usage: [], cautions: [], specs: {} });
+    const saved = await connection.query(`UPDATE product_translations
+      SET name=$2,name_issues='[]'::jsonb,translated_at=now(),updated_at=now()
+      WHERE asin=$1 AND locale='vi' AND status='success' AND name=$3 AND source_hash=$4
+      RETURNING asin`, [candidate.asin, replacement.trim(), candidate.translatedName, candidate.sourceHash]);
+    await connection.query('COMMIT');
+    return Boolean(saved.rowCount);
+  } catch (error) { await connection.query('ROLLBACK'); throw error; }
 }
 
 const currentTextSql = `SELECT p.asin,p.name,p.brand,d.features,d.ingredients,d.usage,d.specs,d.cautions

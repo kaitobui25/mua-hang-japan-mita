@@ -1,5 +1,5 @@
 import { db } from '../db/pool.js';
-import { uniqueImages } from './enrichment.js';
+import { galleryImageUrl, uniqueImages } from './enrichment.js';
 import type { Observation } from './source.js';
 import type { PoolClient } from 'pg';
 
@@ -54,8 +54,11 @@ export async function ingestObservations(observations: VariantObservation[], run
         if (!previous.rows[0] || previous.rows[0].source_observed_at <= detailAt) {
           const images = uniqueImages(o.imageUrls ?? []);
           const d = o.detail;
-          // A landing/thumbnail fallback does not prove that the old gallery was removed.
-          const existingGallery = images.length && !d.provenance.sections.includes('gallery:complete')
+          // An upstream "complete" label cannot authorize replacing a good
+          // gallery when some of its observed URLs are thumbnail sized.
+          const completeGallery = d.provenance.sections.includes('gallery:complete') &&
+            (o.imageUrls ?? []).every(url => galleryImageUrl(url));
+          const existingGallery = images.length && !completeGallery
             ? await connection.query('SELECT 1 FROM product_images WHERE asin=$1 LIMIT 1', [o.asin]) : null;
           const replaceGallery = images.length > 0 && !existingGallery?.rows.length;
           if (replaceGallery) {

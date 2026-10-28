@@ -46,8 +46,8 @@ export async function submitCheckout(items: CartItem[], customer: Customer): Pro
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ items, customer }),
   });
-  if (!data || data.status !== "simulation_created" || !data.orderId) {
-    throw new Error("Máy chủ chưa xác nhận đơn mô phỏng. Vui lòng thử lại.");
+  if (!data || data.status !== "pending_confirmation" || !data.orderId) {
+    throw new Error("Máy chủ chưa ghi nhận đơn hàng. Vui lòng thử lại.");
   }
   return data;
 }

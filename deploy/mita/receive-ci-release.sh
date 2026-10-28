@@ -104,7 +104,7 @@ ready() {
   http_status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 https://mitajapanshop.duckdns.org/api/admin/session)"
   [[ "$http_status" == 404 ]] || return 1
   http_status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 https://mitajapanshop.duckdns.org/thanh-toan)"
-  [[ "$http_status" == 404 ]] || return 1
+  [[ "$http_status" == 200 ]] || return 1
   systemctl is-active --quiet ekaiwa.service || return 1
   curl -fsS --max-time 4 http://127.0.0.1:7860/health >/dev/null || return 1
 }

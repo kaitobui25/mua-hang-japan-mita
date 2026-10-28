@@ -1,15 +1,17 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { load } from 'cheerio';
 import { db } from '../src/db/pool.js';
 import { parseDetail } from '../src/ingestion/detail.js';
-import { uniqueImages } from '../src/ingestion/enrichment.js';
+import { extractEnrichment, galleryImageUrl, uniqueImages } from '../src/ingestion/enrichment.js';
 import { ingestObservations } from '../src/ingestion/store.js';
 
 const asin = 'G000000003';
 const url = (id: string, size = 'SL1500') => `https://m.media-amazon.com/images/I/${id}._${size}_.jpg`;
 const page = (body: string) => `<input id="ASIN" value="${asin}"><span id="productTitle">Amazon gallery fixture</span>${body}`;
 const parse = (body: string) => parseDetail(page(body), asin, 'thuc-pham-bo-sung');
+const extract = (body: string) => extractEnrichment(load(page(body)), asin, new Date().toISOString(), `https://www.amazon.co.jp/dp/${asin}`);
 const initial = (images: unknown[], currentAsin = asin) => `<script>${JSON.stringify({ currentAsin, colorImages: { initial: images, blue: [{ hiRes: url('other-color') }] } })}</script>`;
 after(async () => { await db.end(); });
 
@@ -21,9 +23,50 @@ test('dynamic dictionary retains distinct gallery identities and highest observe
   assert.equal(item.detail!.provenance.fieldObservedAt!.images, item.detail!.sourceObservedAt);
 });
 
-test('deduplication upgrades later resolutions before applying the five-image cap', () => {
+test('deduplication upgrades later resolutions and omits thumbnail-only images', () => {
   const low = ['front', 'back', 'side', 'label', 'top', 'sixth'].map(id => url(id, 'SX300'));
-  assert.deepEqual(uniqueImages([...low, url('front'), url('back')]), [url('front'), url('back'), ...low.slice(2, 5)]);
+  assert.deepEqual(uniqueImages([...low, url('front'), url('back')]), [url('front'), url('back')]);
+});
+
+test('known Amazon thumbnail transformations never enter gallery, including legacy DB entries', () => {
+  const low = [
+    url('first', 'AC_SR38,50'), url('second', 'AC_US40'),
+    url('third', 'AC_UY218'), url('fourth', 'SX300'),
+    url('fifth', 'AC_SX679'), url('sixth', 'SL75')
+  ];
+  const high = [url('seventh', 'AC_SL1500'), url('eighth', 'AC_SX1200'), url('ninth')];
+  assert.deepEqual(low.map(value => galleryImageUrl(value)), low.map(() => false));
+  assert.deepEqual(high.map(value => galleryImageUrl(value)), high.map(() => true));
+  assert.deepEqual(uniqueImages([...low, ...high]), high);
+  assert.deepEqual(uniqueImages([url('first', 'AC_SR38,50'), url('first')]), [url('first')]);
+});
+
+test('source main dictionary dimensions reject tiny images even with unmodified URLs', () => {
+  const tiny = 'https://m.media-amazon.com/images/I/tiny.jpg';
+  const large = 'https://m.media-amazon.com/images/I/full.jpg';
+  const item = parse(`<img id="landingImage" data-a-dynamic-image='${JSON.stringify({ [tiny]: [38, 50], [large]: [900, 1200] })}'>`);
+  assert.deepEqual(item.imageUrls, [large]);
+});
+
+test('observed hiRes takes priority over resized main and large URLs of the same photo', () => {
+  const original = url('front').replace('._SL1500_', '');
+  const selected = initial([{ thumb: url('front', 'AC_SR38,50'), hiRes: original,
+    main: { [url('front', 'SL1500')]: [1500, 1500] }, large: url('front', 'SL1200') }]);
+  for (const body of [
+    selected,
+    `<img id="landingImage" data-a-dynamic-image='${JSON.stringify({ [url('front', 'SL1500')]: [1500, 1500] })}'>${selected}`
+  ]) {
+    const item = parse(body);
+    assert.deepEqual(item.imageUrls, [original]);
+    assert.ok(item.detail!.provenance.sections.includes('gallery:complete'));
+  }
+});
+
+test('thumbnail-only selected gallery cannot claim complete high-resolution provenance', () => {
+  const item = extract(initial([{ hiRes: url('front') }, { large: url('back', 'AC_US40') }]));
+  assert.deepEqual(item.imageUrls, [url('front')]);
+  assert.ok(item.detail.provenance.sections.includes('gallery:partial'));
+  assert.ok(!item.detail.provenance.sections.includes('gallery:complete'));
 });
 
 test('dynamic dimensions choose the largest actual URL even without URL size modifiers', () => {
@@ -33,13 +76,13 @@ test('dynamic dimensions choose the largest actual URL even without URL size mod
   assert.deepEqual(item.imageUrls, [large]);
 });
 
-test('altImages src is read without collecting variation or recommendation images', () => {
+test('altImages src is read only when large enough and excludes variation/recommendation images', () => {
   const item = parse(`<img id="landingImage" src="${url('front', 'SX300')}">
     <div id="altImages"><img src="${url('front')}"><img src="${url('back', 'SX38')}"><img src="https://evil.test/fake.jpg"></div>
     <div id="variation_color_name"><img src="${url('other-color')}"></div>
     <div id="recommendations"><img src="${url('recommended')}"></div>
     ${initial([{ hiRes: url('other-asin') }], 'G000000004')}`);
-  assert.deepEqual(item.imageUrls, [url('front'), url('back', 'SX38')]);
+  assert.deepEqual(item.imageUrls, [url('front')]);
   assert.ok(item.detail!.provenance.sections.includes('gallery:partial'));
 });
 
@@ -65,11 +108,11 @@ test('single-quoted source keys remain supported and initial is bounded to color
 });
 
 test('unbound scripts cannot supply images or complete a partial product gallery', () => {
-  const item = parse(`<img id="landingImage" src="${url('front', 'SX300')}">
+  const item = extract(`<img id="landingImage" src="${url('front', 'SX300')}">
     <script>${JSON.stringify({ colorImages: { initial: [{ hiRes: url('unrelated') }] } })}</script>`);
-  assert.deepEqual(item.imageUrls, [url('front', 'SX300')]);
-  assert.ok(item.detail!.provenance.sections.includes('gallery:partial'));
-  assert.ok(!item.detail!.provenance.sections.includes('colorImages.initial'));
+  assert.deepEqual(item.imageUrls, []);
+  assert.ok(!item.detail.provenance.sections.includes('gallery:complete'));
+  assert.ok(!item.detail.provenance.sections.includes('colorImages.initial'));
 });
 
 test('scripts without currentAsin require selected ownership or an exact known product image identity', () => {
@@ -92,8 +135,8 @@ test('scripts without currentAsin require selected ownership or an exact known p
     `<div data-asin="G000000004"><div data-asin="${asin}">${gallery('front')}</div></div>`,
     `${initial([{ hiRes: url('bridge') }])}${gallery('bridge')}`
   ]) {
-    const item = parse(`<img id="landingImage" src="${url('front', 'SX300')}">${body}`);
-    assert.ok(!item.imageUrls!.includes(url('back')), body);
+    const item = extract(`<img id="landingImage" src="${url('front', 'SX300')}">${body}`);
+    assert.ok(!item.imageUrls.includes(url('back')), body);
   }
 });
 
@@ -128,13 +171,17 @@ test('store preserves real gallery and its timestamp on partial refresh, but rep
     await ingestObservations([original], undefined, client);
     const read = async () => (await client.query('SELECT source_url,source_observed_at FROM product_images WHERE asin=$1 ORDER BY position', [asin])).rows;
     const before = await read();
+    const partialObservation = (body: string) => {
+      const found = extract(body);
+      return { ...original, imageUrls: found.imageUrls, detail: found.detail };
+    };
     for (const body of [
       `<img id="landingImage" src="${url('front', 'SX300')}">`,
       `<img id="landingImage" src="${url('front', 'SX300')}"><script>{"colorImages":{"initial":[{"hiRes":"${url('unrelated')}"}]}}</script>`,
       initial([{ hiRes: url('front') }, { hiRes: 'https://evil.test/invalid.jpg' }]),
       `<img id="landingImage" src="${url('front')}">${initial([{ hiRes: url('other-asin') }], 'G000000004')}`
     ]) {
-      await ingestObservations([parse(body)], undefined, client);
+      await ingestObservations([partialObservation(body)], undefined, client);
       assert.deepEqual(await read(), before);
       assert.equal((await client.query('SELECT image_url FROM products WHERE asin=$1', [asin])).rows[0].image_url, original.imageUrls![0]);
       const provenance = (await client.query('SELECT provenance FROM product_details WHERE asin=$1', [asin])).rows[0].provenance;
@@ -144,6 +191,11 @@ test('store preserves real gallery and its timestamp on partial refresh, but rep
     await ingestObservations([replacement], undefined, client);
     assert.deepEqual((await read()).map(row => row.source_url), replacement.imageUrls);
     assert.equal((await client.query('SELECT image_url FROM products WHERE asin=$1', [asin])).rows[0].image_url, url('new-single'));
+    const mixed = { ...replacement, imageUrls: [url('new-front'), url('tiny-second', 'AC_SR38,50')],
+      detail: { ...replacement.detail!, provenance: { ...replacement.detail!.provenance, sections: ['gallery:complete'] } } };
+    await ingestObservations([mixed], undefined, client);
+    assert.deepEqual((await read()).map(row => row.source_url), replacement.imageUrls,
+      'a supposedly complete gallery containing thumbnails must not overwrite verified photos');
   } finally { await client.query('ROLLBACK'); client.release(); }
 });
 

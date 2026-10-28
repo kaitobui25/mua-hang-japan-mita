@@ -141,7 +141,11 @@ test('Admin MVP integration', async t => {
     await assert.rejects(checkout());
     await ingestObservations([observation()]);
     await db.query("UPDATE products SET rights_status='unverified' WHERE asin=$1", [asin]);
-    assert.equal(await getProductDetails(asin), null); await assert.rejects(checkout());
+    // Owner policy OFF permits catalog/checkout for unverified DB rows; it does
+    // not mutate their independently stored rights metadata.
+    assert.ok(await getProductDetails(asin));
+    assert.equal((await getProductDetails(asin))!.rightsStatus, 'unverified');
+    assert.ok((await checkout()).orderId);
     await db.query("UPDATE products SET rights_status='local_test_only',availability='out_of_stock' WHERE asin=$1", [asin]);
     await assert.rejects(checkout());
     await db.query("UPDATE products SET availability='unknown' WHERE asin=$1", [asin]);
@@ -166,9 +170,10 @@ test('Admin MVP integration', async t => {
     const on = await server.inject({ method: 'PUT', url: '/api/admin/catalog-settings', headers, payload: { version: 1, hideLocalTestOnly: true } });
     assert.equal(on.statusCode, 200, on.body);
     assert.deepEqual(on.json(), { version: 2, hideLocalTestOnly: true });
-    assert.equal((await listCatalog({ page: 1, limit: 20 })).total, 0);
+    const strict = await listCatalog({ page: 1, limit: 20 });
+    assert.ok(strict.items.every(item => item.rightsStatus === 'verified'));
     assert.equal(await getProductDetails('A000000002'), null);
-    assert.equal((await overview()).visible_products, 0);
+    assert.equal((await overview()).visible_products >= strict.total, true);
     const stale = await server.inject({ method: 'PUT', url: '/api/admin/catalog-settings', headers, payload: { version: 1, hideLocalTestOnly: false } });
     assert.equal(stale.statusCode, 409);
     assert.equal((await getCatalogSettings()).hideLocalTestOnly, true);
@@ -182,12 +187,13 @@ test('Admin MVP integration', async t => {
     assert.equal(audit.rowCount, 2);
     assert.equal(audit.rows[0].after_value.hideLocalTestOnly, true);
     assert.equal(audit.rows[1].after_value.hideLocalTestOnly, false);
-    // Unverified and manually hidden products are excluded even with switch OFF.
+    // Manually hidden products are excluded even with switch OFF; rights
+    // metadata is preserved but not a sale gate while the owner policy is OFF.
     await setVisibility(asin, true, 1);
     assert.equal(await getProductDetails(asin), null);
     await setVisibility(asin, false, 1);
     await db.query("UPDATE products SET rights_status='unverified' WHERE asin='A000000002'");
-    assert.equal(await getProductDetails('A000000002'), null);
+    assert.equal((await getProductDetails('A000000002'))!.rightsStatus, 'unverified');
     await db.query("UPDATE products SET rights_status='local_test_only' WHERE asin='A000000002'");
   });
   await t.test('policy validation, optimistic conflict, atomic save, and historical order snapshots', async () => {
@@ -216,6 +222,169 @@ test('Admin MVP integration', async t => {
     // Failure to write the audit must roll back the policy as well.
     await assert.rejects(savePolicy({ version: 2, fxJpyToVnd: 210, serviceFeePercent: 16 }, 999));
     assert.deepEqual(await getPricingPolicy(), { version: 2, fxJpyToVnd: 200, serviceFeePercent: 15 });
+  });
+  await t.test('real order follows owner lifecycle, requires payment before completion, and audits each change', async () => {
+    const placed = await server.inject({ method: 'POST', url: '/api/checkout', payload: {
+      customer: { name: 'Order lifecycle fixture', phone: '0901234567', address: 'Fixture delivery address' },
+      items: [{ asin, quantity: 1 }]
+    } });
+    assert.equal(placed.statusCode, 200, placed.body);
+    const order = placed.json();
+    assert.equal(order.status, 'pending_confirmation');
+    assert.equal(order.paymentStatus, 'unpaid');
+    assert.equal(order.paymentMethod, 'manual');
+    assert.equal(order.shippingFinalVnd, null);
+    const id = order.orderId as string;
+    const route = `/api/admin/orders/${id}`;
+    const auth = { ...local, cookie, 'x-csrf-token': csrf };
+    const patch = (payload: Record<string, unknown>, headers: Record<string, string> = auth) =>
+      server.inject({ method: 'PATCH', url: route, headers, payload });
+    const stored = async () => (await db.query(
+      'SELECT status,payment_status,payment_method,shipping_final_vnd,paid_at FROM orders WHERE id=$1', [id]
+    )).rows[0];
+    const audits = async () => (await db.query(
+      "SELECT actor_id,action,object_id,before_value,after_value FROM admin_audit_events WHERE action='order.status' AND object_id=$1 ORDER BY id", [id]
+    )).rows;
+    assert.equal((await stored()).status, 'pending_confirmation');
+    assert.equal((await stored()).payment_status, 'unpaid');
+    assert.equal((await stored()).payment_method, 'manual');
+    const detail = await server.inject({ url: route, headers: { ...local, cookie } });
+    assert.equal(detail.statusCode, 200, detail.body);
+    assert.equal(detail.json().customer_address, 'Fixture delivery address');
+    assert.equal(detail.json().items.length, 1);
+    assert.equal((await server.inject({ url: `/api/admin/orders?q=${id}`, headers: { ...local, cookie } })).json().items[0].id, id);
+
+    const protectedRequests = [
+      { headers: local, status: 401 },
+      { headers: { ...local, cookie }, status: 403 },
+      { headers: { ...local, cookie, 'x-csrf-token': 'incorrect' }, status: 403 },
+      { headers: { ...auth, origin: 'https://evil.test' }, status: 403 },
+      { headers: { ...auth, host: 'evil.test' }, status: 403 }
+    ];
+    for (const { headers, status } of protectedRequests) {
+      const blocked = await patch({ status: 'confirmed' }, headers);
+      assert.equal(blocked.statusCode, status, blocked.body);
+      assert.equal(blocked.headers['cache-control'], 'no-store');
+      assert.equal(blocked.body.includes('Fixture delivery address'), false);
+    }
+    const nonlocal = await server.inject({ method: 'PATCH', url: route, headers: auth,
+      remoteAddress: '192.168.1.2', payload: { status: 'confirmed' } });
+    assert.equal(nonlocal.statusCode, 403, nonlocal.body);
+    assert.equal((await stored()).status, 'pending_confirmation');
+    assert.equal((await audits()).length, 0);
+
+    for (const [payload, status] of [
+      [{ status: 'purchasing' }, 409],
+      [{ status: 'completed' }, 409],
+      [{ status: 'paid' }, 409],
+      [{ paymentStatus: 'paid' }, 409],
+      [{ paymentStatus: 'refunded' }, 409],
+      [{ paymentStatus: 'unknown' }, 400],
+      [{ status: 'confirmed', paymentStatus: 'paid' }, 400],
+      [{}, 400]
+    ] as const) {
+      const denied = await patch(payload);
+      assert.equal(denied.statusCode, status, `${JSON.stringify(payload)}: ${denied.body}`);
+    }
+    assert.equal((await server.inject({ method: 'PATCH', url: '/api/admin/orders/not-a-uuid', headers: auth,
+      payload: { status: 'confirmed' } })).statusCode, 400);
+    assert.equal((await server.inject({ method: 'PATCH', url: '/api/admin/orders/00000000-0000-0000-0000-000000000000',
+      headers: auth, payload: { status: 'confirmed' } })).statusCode, 404);
+    assert.equal((await audits()).length, 0);
+
+    for (const status of ['confirmed', 'purchasing', 'purchased', 'shipping']) {
+      const response = await patch({ status });
+      assert.equal(response.statusCode, 200, `${status}: ${response.body}`);
+      assert.equal(response.json().status, status);
+      assert.equal((await stored()).status, status);
+      assert.equal((await stored()).payment_status, 'unpaid');
+    }
+    assert.equal((await patch({ status: 'completed' })).statusCode, 409,
+      'shipping cannot complete until payment is recorded');
+    assert.equal((await stored()).status, 'shipping');
+
+    for (const amount of [-1, 1.5, 1000000001, '70000', null]) {
+      const denied = await patch({ shippingFinalVnd: amount });
+      assert.equal(denied.statusCode, 400, `${JSON.stringify(amount)}: ${denied.body}`);
+    }
+    assert.equal((await stored()).shipping_final_vnd, null);
+    const finalShipping = await patch({ shippingFinalVnd: 70000 });
+    assert.equal(finalShipping.statusCode, 200, finalShipping.body);
+    assert.equal(Number((await stored()).shipping_final_vnd), 70000);
+    assert.equal((await stored()).payment_status, 'unpaid');
+    assert.equal((await patch({ paymentStatus: 'paid' })).statusCode, 200);
+    assert.equal((await stored()).payment_status, 'paid');
+    assert.ok((await stored()).paid_at instanceof Date);
+    assert.equal((await patch({ paymentStatus: 'paid' })).statusCode, 409);
+    assert.equal((await patch({ status: 'completed' })).statusCode, 200);
+    assert.equal((await stored()).status, 'completed');
+    assert.equal((await patch({ status: 'completed' })).statusCode, 409);
+    assert.equal((await patch({ status: 'cancelled' })).statusCode, 409);
+
+    const events = await audits();
+    assert.equal(events.length, 7, 'only successful owner mutations create audit events');
+    assert.ok(events.every(event => event.actor_id === 1 && event.action === 'order.status' && event.object_id === id));
+    assert.deepEqual(events.map(event => [event.before_value.status, event.after_value.status]), [
+      ['pending_confirmation', 'confirmed'], ['confirmed', 'purchasing'],
+      ['purchasing', 'purchased'], ['purchased', 'shipping'],
+      ['shipping', 'shipping'], ['shipping', 'shipping'], ['shipping', 'completed']
+    ]);
+    assert.equal(events[5].before_value.payment_status, 'unpaid');
+    assert.equal(events[5].after_value.payment_status, 'paid');
+    assert.equal(events[4].before_value.shipping_final_vnd, null);
+    assert.equal(Number(events[4].after_value.shipping_final_vnd), 70000,
+      'shipping fee audit must capture the changed amount');
+  });
+  await t.test('manual paid/refunded transitions are explicit and legacy simulation orders are immutable', async () => {
+    const auth = { ...local, cookie, 'x-csrf-token': csrf };
+    const placed = await server.inject({ method: 'POST', url: '/api/checkout', payload: {
+      customer: { name: 'Payment status fixture', phone: '0901234567', address: 'Fixture delivery address' },
+      items: [{ asin, quantity: 1 }]
+    } });
+    assert.equal(placed.statusCode, 200, placed.body);
+    const id = placed.json().orderId as string;
+    const patch = (orderId: string, payload: Record<string, unknown>) => server.inject({
+      method: 'PATCH', url: `/api/admin/orders/${orderId}`, headers: auth, payload
+    });
+    assert.equal((await patch(id, { paymentStatus: 'refunded' })).statusCode, 409);
+    assert.equal((await patch(id, { status: 'confirmed' })).statusCode, 200);
+    assert.equal((await patch(id, { paymentStatus: 'paid' })).statusCode, 200);
+    const paidAt = (await db.query('SELECT paid_at FROM orders WHERE id=$1', [id])).rows[0].paid_at;
+    assert.ok(paidAt instanceof Date);
+    assert.equal((await patch(id, { paymentStatus: 'paid' })).statusCode, 409);
+    assert.equal((await patch(id, { paymentStatus: 'refunded' })).statusCode, 200);
+    assert.equal((await patch(id, { paymentStatus: 'refunded' })).statusCode, 409);
+    assert.equal((await patch(id, { paymentStatus: 'paid' })).statusCode, 409);
+    const refund = (await db.query('SELECT status,payment_status,paid_at FROM orders WHERE id=$1', [id])).rows[0];
+    assert.equal(refund.status, 'confirmed');
+    assert.equal(refund.payment_status, 'refunded');
+    assert.equal(refund.paid_at.getTime(), paidAt.getTime());
+    const paymentEvents = (await db.query(
+      "SELECT before_value,after_value FROM admin_audit_events WHERE action='order.status' AND object_id=$1 ORDER BY id", [id]
+    )).rows;
+    assert.equal(paymentEvents.length, 3);
+    assert.deepEqual(paymentEvents.map(event => [event.before_value.payment_status, event.after_value.payment_status]),
+      [['unpaid', 'unpaid'], ['unpaid', 'paid'], ['paid', 'refunded']]);
+
+    const simulated = await checkout();
+    const simulatedId = simulated.orderId;
+    const unchanged = (await db.query(
+      'SELECT status,payment_status,shipping_final_vnd FROM orders WHERE id=$1', [simulatedId]
+    )).rows[0];
+    assert.equal(unchanged.status, 'simulation_created');
+    const blockedStatuses = [];
+    for (const payload of [{ status: 'confirmed' }, { paymentStatus: 'paid' }, { shippingFinalVnd: 50000 }]) {
+      blockedStatuses.push((await patch(simulatedId, payload)).statusCode);
+    }
+    assert.deepEqual(blockedStatuses, [409, 409, 409],
+      'historical simulation rows must reject every owner workflow mutation');
+    const after = (await db.query(
+      'SELECT status,payment_status,shipping_final_vnd FROM orders WHERE id=$1', [simulatedId]
+    )).rows[0];
+    assert.deepEqual(after, unchanged);
+    assert.equal((await db.query(
+      "SELECT count(*)::int AS n FROM admin_audit_events WHERE action='order.status' AND object_id=$1", [simulatedId]
+    )).rows[0].n, 0);
   });
   await t.test('queue deduplicates concurrent requests, processes success and records denied/malformed sources', async () => {
     const target = 'A000000003';
@@ -296,7 +465,7 @@ test('Admin MVP integration', async t => {
     assert.equal(orders.json().items.length, 1);
     const detail = await server.inject({ url: `/api/admin/orders/${orders.json().items[0].id}`, headers: { ...local, cookie } });
     assert.equal(detail.json().customer_address, 'Private address');
-    assert.equal((await server.inject({ method: 'PATCH', url: `/api/admin/orders/${orders.json().items[0].id}`, headers: { ...local, cookie, 'x-csrf-token': csrf }, payload: { status: 'paid' } })).statusCode, 404);
+    assert.equal((await server.inject({ method: 'PATCH', url: `/api/admin/orders/${orders.json().items[0].id}`, headers: { ...local, cookie, 'x-csrf-token': csrf }, payload: { status: 'paid' } })).statusCode, 409);
     assert.equal((await server.inject({ url: '/api/admin/products?page=-1', headers: { ...local, cookie } })).statusCode, 400);
   });
   await t.test('expired sessions, logout and local password reset revoke access', async () => {

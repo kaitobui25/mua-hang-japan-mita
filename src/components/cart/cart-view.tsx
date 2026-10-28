@@ -16,7 +16,7 @@ export function CartView() {
 
   return <section className="container shopping-page">
     <nav className="breadcrumb" aria-label="Đường dẫn"><Link href="/">Trang chủ</Link><span>/</span><span>Giỏ hàng</span></nav>
-    <div className="shopping-heading"><div><h1>Giỏ hàng.</h1></div>{count > 0 && <span className="cart-heading-count">{count} sản phẩm</span>}</div>
+    <div className="shopping-heading"><div><h1>Giỏ hàng</h1></div>{count > 0 && <span className="cart-heading-count">{count} sản phẩm</span>}</div>
     {loading ? <div className="shopping-loading" aria-live="polite">Đang kiểm tra giá và tình trạng sản phẩm...</div>
       : !items.length ? <div className="state-panel empty-cart"><Icon name="bag" size={40}/><h2>Giỏ hàng đang trống</h2><p>Khám phá những sản phẩm phù hợp với gia đình bạn.</p><Link href="/san-pham" className="button button-primary">Khám phá sản phẩm <Icon name="arrow"/></Link></div>
       : <div className="shopping-grid"><div className="cart-items"><div className="cart-section-heading"><h2>Sản phẩm đã chọn</h2><button type="button" className="text-button" onClick={retry}>Cập nhật thông tin <Icon name="arrow" size={16}/></button></div>
@@ -30,10 +30,10 @@ export function CartView() {
           {failed.length > 0 && <div className="inline-alert" role="alert">Không tải được {failed.length} sản phẩm. <button type="button" onClick={retry}>Thử lại</button></div>}
           <Link href="/san-pham" className="back-to-shopping"><Icon name="arrow-left" size={17}/> Tiếp tục khám phá</Link>
         </div>
-        <aside className="order-summary"><h2>Tóm tắt giỏ hàng</h2><div className="summary-row"><span>Tiền hàng tham khảo ({count})</span><strong>{formatVnd(subtotal)}</strong></div><div className="summary-row"><span>Vận chuyển từ Nhật về Việt Nam</span><span>Thu sau</span></div><div className="summary-total"><span>Tiền hàng dự kiến</span><strong>{formatVnd(subtotal)}</strong></div><p>Giá sẽ được kiểm tra và tính lại trên máy chủ khi tạo đơn. Phí vận chuyển hiển thị riêng ở bước sau.</p>
-          {blocked && <div className="inline-alert" role="status">Có sản phẩm chưa đủ điều kiện thanh toán hoặc giá đã quá 24 giờ. Hãy thử cập nhật lại sau.</div>}
-          {readOnly ? <p className="inline-alert" role="status">Website hiện chỉ để xem sản phẩm. Chưa nhận đơn hàng.</p> : blocked ? <button className="button button-primary checkout-button" disabled>Chưa thể thanh toán <Icon name="arrow"/></button> : <Link className="button button-primary checkout-button" href="/thanh-toan">Tiếp tục thanh toán <Icon name="arrow"/></Link>}
-          <span className="simulation-caption">{readOnly ? 'Chưa nhận thanh toán hoặc thông tin giao hàng.' : 'Thanh toán chỉ là mô phỏng, không thu tiền thật.'}</span>
+        <aside className="order-summary"><h2>Tóm tắt giỏ hàng</h2><div className="summary-row"><span>Tiền hàng ({count})</span><strong>{formatVnd(subtotal)}</strong></div><div className="summary-row"><span>Phí vận chuyển</span><span>Tính riêng</span></div><div className="summary-total"><span>Tạm tính</span><strong>{formatVnd(subtotal)}</strong></div>
+          {blocked && <div className="inline-alert" role="status">Một số sản phẩm chưa thể đặt. Vui lòng kiểm tra lại giỏ hàng.</div>}
+          {readOnly ? <p className="inline-alert" role="status">Cửa hàng hiện chưa tiếp nhận đơn trực tuyến.</p> : blocked ? <button className="button button-primary checkout-button" disabled>Không thể tiếp tục <Icon name="arrow"/></button> : <Link className="button button-primary checkout-button" href="/thanh-toan">Tiến hành đặt hàng <Icon name="arrow"/></Link>}
+          <span className="simulation-caption">Thanh toán sau khi cửa hàng xác nhận đơn.</span>
         </aside>
       </div>}
   </section>;

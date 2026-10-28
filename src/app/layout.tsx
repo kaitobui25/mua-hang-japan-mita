@@ -4,7 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: { default: "mita japan — Chăm chút từng điều nhỏ", template: "%s | mita japan" },
-  description: "Khám phá sản phẩm Nhật Bản cho sức khỏe và bữa ăn của bé. Đặt hàng VND qua quy trình mô phỏng trên Mita Japan.",
+  description: "Sản phẩm Nhật Bản cho sức khỏe và bữa ăn của bé. Đặt hàng tại Mita Japan bằng VND.",
   robots: { index: false, follow: false },
 };
 

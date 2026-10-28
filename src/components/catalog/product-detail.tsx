@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useCart } from "@/context/cart";
 import { fetchProduct } from "@/lib/catalog";
-import { canCheckout, categoryName, formatObservation, formatVnd, productStatus } from "@/lib/format";
+import { canCheckout, categoryName, formatVnd, productStatus } from "@/lib/format";
 import { Icon } from "@/components/ui/icons";
 import { ProductImage } from "@/components/ui/product-image";
 import { QuantitySelector } from "@/components/cart/quantity-selector";
@@ -43,15 +43,14 @@ export function ProductDetail({ asin }: { asin: string }) {
     const next = candidates.find(variant => attributes.every(attr => attr === key || variant.variantAttributes?.[attr] === item.variantAttributes?.[attr])) ?? candidates[0];
     if (next) changeVariant(next.asin);
   };
-  const purchasable = item.status === "ready" && item.availability !== "out_of_stock" && item.availability !== "requires_verification";
-  const observedAt = formatObservation(item.priceObservedAt);
+  const purchasable = canCheckout(item);
   return <><div className="container"><nav className="breadcrumb detail-breadcrumb" aria-label="Đường dẫn"><Link href="/">Trang chủ</Link><span>/</span><Link href="/san-pham">Sản phẩm</Link><span>/</span><Link href={`/danh-muc/${item.categorySlug}`}>{categoryName(item.categorySlug)}</Link></nav></div>
     <section className="container product-detail">
       <div className="detail-image"><ProductImage src={activeImage} name={item.name}/>
         {pictures.length > 1 && <div className="detail-gallery" aria-label="Bộ ảnh sản phẩm">{pictures.map((src, index) => <button type="button" key={src} className={src === activeImage ? "gallery-thumb active" : "gallery-thumb"} onClick={() => setSelectedImage(src)} aria-label={`Xem ảnh ${index + 1}`} aria-pressed={src === activeImage}><img src={src} alt="" loading="lazy"/></button>)}</div>}
-        <p>Ảnh từ dữ liệu catalog khi nguồn cho phép hiển thị.</p></div>
+        </div>
       <div className="detail-content"><p className="product-brand">{item.brand || "Sản phẩm Nhật"}</p><h1>{item.name}</h1><p className="detail-category">{categoryName(item.categorySlug)}</p>
-        <div className="detail-price-block"><div className="detail-price">{item.priceVnd && item.priceVnd > 0 ? formatVnd(item.priceVnd) : "Giá đang cập nhật"}</div><p className={canCheckout(item) ? "status-good" : "status-warning"}><Icon name="clock" size={17}/>{productStatus(item)}</p>{observedAt && <small>Giá ghi nhận: {observedAt} (giờ Việt Nam)</small>}</div>
+        <div className="detail-price-block"><div className="detail-price">{item.priceVnd && item.priceVnd > 0 ? formatVnd(item.priceVnd) : "Giá đang cập nhật"}</div>{productStatus(item) && <p className="status-warning">{productStatus(item)}</p>}</div>
         {variants.length > 1 && <fieldset className="variant-field"><legend>Chọn phiên bản theo sản phẩm nguồn</legend>
           {reliableAttributes ? <div className="variant-selectors">{attributes.map(attribute => <label key={attribute}><span>{attribute}</span><select value={item.variantAttributes?.[attribute] ?? ""} onChange={event => selectAttribute(attribute, event.target.value)}><option value="" disabled>Chọn {attribute}</option>{[...new Set(variants.map(variant => variant.variantAttributes?.[attribute]).filter((value): value is string => !!value))].map(value => <option key={value} value={value}>{value}</option>)}</select></label>)}</div>
             : <div className="variant-list">{variants.map(variant => <label key={variant.asin} className={selected === variant.asin ? "variant selected" : "variant"}><input type="radio" name="variant" value={variant.asin} checked={selected === variant.asin} onChange={() => changeVariant(variant.asin)}/><span>{variant.name} ({variant.asin}) · {variant.priceVnd ? formatVnd(variant.priceVnd) : "Chưa có giá"}</span></label>)}</div>}
@@ -60,9 +59,9 @@ export function ProductDetail({ asin }: { asin: string }) {
         <div className="quantity-field"><span>Số lượng</span><QuantitySelector value={quantity} onChange={setQuantity}/></div>
         <button className="button button-primary detail-cta" type="button" disabled={!purchasable} onClick={() => { add(item.asin, quantity); setAdded(true); }}><Icon name={added ? "check" : "bag"}/>{added ? `Đã thêm ${quantity} sản phẩm` : "Thêm vào giỏ"}<Icon name="arrow"/></button>
         {added && <p className="cart-added" role="status"><Icon name="check" size={18}/> Đã thêm vào giỏ. <Link href="/gio-hang">Xem giỏ hàng</Link></p>}
-        {!canCheckout(item) && <p className="detail-notice">Chưa thể thanh toán sản phẩm này. Hệ thống yêu cầu giá VND được cập nhật trong 24 giờ và sản phẩm đủ điều kiện đặt.</p>}
-        <div className="detail-facts"><p><Icon name="shield"/> Giá được kiểm tra lại ở máy chủ khi tạo đơn.</p><p><Icon name="truck"/> Phí vận chuyển dự tính riêng; phí thực tế sẽ được xác định sau.</p></div>
-        <dl className="detail-metadata"><div><dt>Mã sản phẩm (ASIN)</dt><dd>{item.asin}</dd></div>{item.priceJpy && <div><dt>Giá nguồn tham khảo</dt><dd>{new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY" }).format(item.priceJpy)}</dd></div>}{item.sourceUrl && /^https:\/\//.test(item.sourceUrl) && <div><dt>Nguồn</dt><dd><a href={item.sourceUrl} rel="noopener noreferrer" target="_blank">Xem trang nguồn <Icon name="arrow" size={14}/></a></dd></div>}</dl>
+        {!canCheckout(item) && <p className="detail-notice">Sản phẩm hiện chưa nhận đặt hàng trực tuyến.</p>}
+        <div className="detail-facts"><p><Icon name="truck"/> Phí vận chuyển tính riêng.</p></div>
+        <dl className="detail-metadata"><div><dt>Mã sản phẩm</dt><dd>{item.asin}</dd></div></dl>
       </div>
     </section>{(item.description || item.detail && (item.detail.features.length || item.detail.ingredients.length || item.detail.usage.length || Object.keys(item.detail.specs).length || item.detail.cautions.length)) &&
       <section className="container detail-description"><h2>Thông tin sản phẩm</h2><div className="detail-sections">

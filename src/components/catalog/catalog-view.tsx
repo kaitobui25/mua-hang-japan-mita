@@ -47,7 +47,7 @@ export function CatalogView({ category }: { category?: string }) {
   return <>
     <section className="catalog-intro"><div className="container">
       <nav className="breadcrumb" aria-label="Đường dẫn"><Link href="/">Trang chủ</Link><span>/</span><span>{categoryLabel}</span></nav>
-      <div className="catalog-intro-layout"><div><h1>{category ? categoryLabel : "Từ Nhật, cho những điều gần gũi."}</h1><p className="lead">Khám phá sản phẩm theo nhu cầu của bạn. Giá và khả năng đặt hàng được cập nhật từ dữ liệu nguồn.</p></div><span className="catalog-flower" aria-hidden="true"><Icon name="leaf" size={74}/></span></div>
+      <div className="catalog-intro-layout"><div><h1>{category ? categoryLabel : "Từ Nhật, cho những điều gần gũi."}</h1><p className="lead">Khám phá các sản phẩm dành cho gia đình bạn.</p></div><span className="catalog-flower" aria-hidden="true"><Icon name="leaf" size={74}/></span></div>
     </div></section>
     <section className="container catalog-section" aria-label="Danh sách sản phẩm">
       <aside className={`catalog-sidebar ${filtersOpen ? "sidebar-open" : ""}`} id="catalog-filters">
@@ -56,7 +56,6 @@ export function CatalogView({ category }: { category?: string }) {
           <Link href="/san-pham" onClick={() => setFiltersOpen(false)} className={!category ? "selected" : ""}>Tất cả sản phẩm <Icon name="arrow" size={16}/></Link>
           {CATEGORIES.map(item => <Link key={item.slug} href={`/danh-muc/${item.slug}`} onClick={() => setFiltersOpen(false)} className={category === item.slug ? "selected" : ""}>{item.name}<Icon name="arrow" size={16}/></Link>)}
         </nav>
-        <div className="sidebar-note"><Icon name="clock" size={21}/><p>Giá quá 24 giờ kể từ lần cập nhật sẽ tạm dừng thanh toán.</p></div>
       </aside>
       <div className="catalog-main">
         <form className="catalog-search" role="search" onSubmit={event => { event.preventDefault(); update({ q: term.trim(), page: null }); }}><label htmlFor="catalog-search" className="visually-hidden">Tìm trong sản phẩm</label><Icon name="search" size={19}/><input id="catalog-search" type="search" placeholder="Tìm whey, thực phẩm cho bé, thương hiệu..." value={term} onChange={event => setTerm(event.target.value)}/><button type="submit" className="text-button">Tìm kiếm <Icon name="arrow" size={17}/></button></form>

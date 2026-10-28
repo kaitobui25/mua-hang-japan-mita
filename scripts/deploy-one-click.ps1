@@ -78,10 +78,14 @@ function VerifyPublic([string]$sha) {
   $asin = [string]$catalog.items[0].asin
   $detail=Invoke-RestMethod -Uri "$base/api/catalog/products/$asin" -TimeoutSec 20
   if(!$detail -or (!$detail.asin -and !$detail.id)) { throw "Public detail $asin missing" }
-  foreach($route in @('/admin/login','/api/admin/session','/thanh-toan')) {
+  foreach($route in @('/admin/login','/api/admin/session')) {
     $status = & curl.exe -sS -o NUL -w '%{http_code}' --connect-timeout 8 --max-time 16 ($base+$route)
     if($LASTEXITCODE -ne 0 -or $status -ne '404') { throw "Private route $route exposed or unavailable: HTTP $status" }
   }
+  $checkoutPage = Invoke-WebRequest -Uri "$base/thanh-toan" -UseBasicParsing -TimeoutSec 20
+  if($checkoutPage.StatusCode -ne 200) { throw 'Public checkout page not available' }
+  $invalidCheckout = & curl.exe -sS -o NUL -w '%{http_code}' --connect-timeout 8 --max-time 16 -H 'Content-Type: application/json' -d '{}' "$base/api/checkout"
+  if($LASTEXITCODE -ne 0 -or $invalidCheckout -ne '422') { throw "Public checkout validation not enabled: HTTP $invalidCheckout" }
   $other=Invoke-WebRequest -Uri 'https://ekaiwa.duckdns.org/' -UseBasicParsing -TimeoutSec 20
   if($other.StatusCode -ne 200) { throw 'E-KAIWA regression: not HTTP 200' }
   $releaseInfo = & ssh.exe -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=12 ubuntu@217.142.225.255 cat /opt/mita/current/release-info.json
@@ -89,7 +93,7 @@ function VerifyPublic([string]$sha) {
   $release = ($releaseInfo -join "`n") | ConvertFrom-Json
   if($release.revision -ne $sha) { throw "VPS revision mismatch: $($release.revision) expected $sha" }
   Write-Host "[OK] VPS release $($release.version) @ $sha" -ForegroundColor Green
-  Write-Host "[OK] Public catalog $($catalog.total) cards, detail $asin; E-KAIWA OK; private paths blocked" -ForegroundColor Green
+  Write-Host "[OK] Public catalog $($catalog.total) cards, checkout active and validated; E-KAIWA OK; admin blocked" -ForegroundColor Green
 }
 
 try {

@@ -1,7 +1,7 @@
 import { db } from '../src/db/pool.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { translatePendingNames, sourceHash, sourceText, translationFailureStopsBatch } from '../src/translation/jobs.js';
+import { auditEnglishSuccessTitles, saveReviewedEnglishTitle, translatePendingNames, nameHash, sourceHash, sourceText, translationFailureStopsBatch } from '../src/translation/jobs.js';
 import { TranslationUnavailable } from '../src/translation/openrouter.js';
 import { translationCron, translationTimezone, shouldRunTranslation } from '../src/translation/schedule.js';
 
@@ -24,6 +24,69 @@ test('empty optional detail is normalized for translation', () => {
   });
   assert.deepEqual(text.features, []);
   assert.deepEqual(text.specs, {});
+});
+
+test('read-only audit pages identify English successful titles and retain frozen source identity', async () => {
+  const source = { name: 'DHC Vitamin AB-1234 500mg', brand: 'DHC' };
+  const rows = [
+    { asin: 'A000000001', source_name: 'Changed Amazon name', brand: 'Changed',
+      name_source: source, translated_name: 'DHC Vitamin AB-1234 500mg', source_hash: 'frozen-hash', status: 'success' },
+    { asin: 'A000000002', source_name: 'DHC 商品', brand: 'DHC', name_source: null,
+      translated_name: 'DHC bổ sung 500mg', source_hash: 'unchanged', status: 'success' }
+  ];
+  const statements: string[] = [];
+  const client = { query: async (sql: string, values: unknown[]) => {
+    statements.push(sql);
+    assert.deepEqual(values, ['', 2]);
+    return { rows };
+  } };
+  const audit = await auditEnglishSuccessTitles(client as never, { limit: 2 });
+  assert.equal(audit.nextAfterAsin, 'A000000002');
+  assert.equal(audit.candidates.length, 1);
+  assert.deepEqual(audit.candidates[0], { asin: 'A000000001', sourceName: source.name,
+    brand: 'DHC', translatedName: rows[0].translated_name, sourceHash: 'frozen-hash',
+    sourceNameHash: nameHash(source) });
+  assert.equal(statements.length, 1);
+  assert.match(statements[0], /t\.status='success'/);
+  assert.doesNotMatch(statements[0], /UPDATE|DELETE|INSERT/);
+  await assert.rejects(auditEnglishSuccessTitles(client as never, { limit: 501 }), /invalid_audit_page/);
+});
+
+test('explicit reviewed title replacement validates facts and uses compare-and-swap without changing approved details', async () => {
+  const source = { name: 'DHC Vitamin AB-1234 500mg', brand: 'DHC' };
+  const row = { asin: 'A000000001', source_name: source.name, brand: source.brand, name_source: null,
+    translated_name: source.name, source_hash: 'frozen-hash', status: 'success' };
+  let updates = 0, rolledBack = 0, committed = 0;
+  const client = { query: async (sql: string, values: unknown[] = []) => {
+    if (sql.includes('FOR UPDATE')) return { rows: [row] };
+    if (sql.includes('UPDATE product_translations')) {
+      updates++;
+      assert.match(sql, /name=\$2/);
+      assert.match(sql, /name=\$3 AND source_hash=\$4/);
+      assert.doesNotMatch(sql, /detail\s*=|detail_approved\s*=|name_attempts\s*=/);
+      assert.deepEqual(values, [row.asin, 'DHC bổ sung AB-1234 500mg', row.translated_name, row.source_hash]);
+      return { rowCount: 1 };
+    }
+    if (sql === 'ROLLBACK') rolledBack++;
+    if (sql === 'COMMIT') committed++;
+    return { rows: [] };
+  } };
+  const audit = await auditEnglishSuccessTitles({ query: async () => ({ rows: [row] }) } as never);
+  const candidate = audit.candidates[0];
+  assert.equal(await saveReviewedEnglishTitle({ candidate, replacement: 'DHC bổ sung AB-1234 500mg', approved: true }, client as never), true);
+  assert.equal(updates, 1);
+  assert.equal(committed, 1);
+  for (const replacement of ['DHC bổ sung AB-1234 501mg', 'DHC bổ sung AB-1234 500g',
+    'DHC bổ sung XY-1234 500mg', 'ABC bổ sung AB-1234 500mg']) {
+    await assert.rejects(saveReviewedEnglishTitle({ candidate, replacement, approved: true }, client as never));
+  }
+  assert.equal(updates, 1);
+  assert.equal(rolledBack, 4);
+  await assert.rejects(saveReviewedEnglishTitle({ candidate, replacement: 'DHC bổ sung AB-1234 500mg', approved: false } as never, client as never), /review_required/);
+  assert.equal(updates, 1);
+  assert.equal(await saveReviewedEnglishTitle({ candidate: { ...candidate, translatedName: 'stale' },
+    replacement: 'DHC bổ sung AB-1234 500mg', approved: true }, client as never), false);
+  assert.equal(updates, 1);
 });
 
 test('one bad product does not stop the batch; exhausted shared quota does', () => {

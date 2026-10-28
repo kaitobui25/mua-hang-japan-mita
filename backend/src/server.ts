@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import { db } from './db/pool.js';
 import { config } from './config.js';
 import { getProductDetails, listCatalog } from './catalog.js';
-import { CheckoutError, createSimulationOrder } from './orders.js';
+import { CheckoutError, createOrder } from './orders.js';
 import { adminRoutes } from './admin/routes.js';
 import { pathToFileURL } from 'node:url';
 import { realpathSync } from 'node:fs';
@@ -39,10 +39,11 @@ export function buildServer(logger = false) {
   server.post('/api/checkout', async (request, reply) => {
     if (config.publicReadOnly) return reply.code(404).send({ error: 'Chức năng tạo đơn đang tạm đóng.' });
     try {
-      return await createSimulationOrder(request.body);
+      return await createOrder(request.body);
     } catch (error) {
       if (error instanceof CheckoutError) return reply.code(422).send({ code: error.code, error: error.message });
-      throw error;
+      request.log.error({ code: 'checkout_failed' }, 'Checkout persistence failed');
+      return reply.code(500).send({ code: 'checkout_failed', error: 'Không thể tạo đơn lúc này. Vui lòng thử lại sau.' });
     }
   });
 

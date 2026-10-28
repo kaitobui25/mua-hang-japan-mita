@@ -19,7 +19,6 @@ export function Header() {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
   return <>
-    <div className="announcement"><div className="container">Hàng Nhật chọn lọc. Giá VND. Đang mô phỏng đặt hàng.</div></div>
     <header className="site-header">
       <div className="container header-main">
         <button type="button" className="icon-button mobile-menu-toggle" aria-label={open ? "Đóng menu" : "Mở menu"} aria-expanded={open} aria-controls="mobile-menu" onClick={() => setOpen(value => !value)}><Icon name={open ? "x" : "menu"} size={24}/></button>

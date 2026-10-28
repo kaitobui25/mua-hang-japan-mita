@@ -47,28 +47,50 @@ export function amazonImageUrl(value: unknown): value is string {
       /\.(?:jpe?g|png|webp)(?:$|\?)/i.test(url.pathname + url.search);
   } catch { return false; }
 }
-export function uniqueImages(urls: unknown[], dimensions: ReadonlyMap<string, number> = new Map()): string[] {
-  const found = new Map<string, { url: string; area: number }>();
+// Reject thumbnail-sized URLs observed in Amazon markup/legacy galleries. An
+// unmodified URL has no encoded dimensions, so keep it as observed rather than
+// guessing a larger URL that might not exist.
+export function galleryImageUrl(value: unknown, observedMaxSides: ReadonlyMap<string, number> = new Map()): value is string {
+  if (!amazonImageUrl(value)) return false;
+  const modifier = new URL(value).pathname.match(/\._([^/]+)_\.(?:jpe?g|png|webp)$/i)?.[1] ?? '';
+  const encodedSides = [...modifier.matchAll(/(?:^|_)(?:AC_)?(?:SL|SX|SY|SR|US|UX|UY|UL|SS)(\d+)(?:,(\d+))?(?=_|$)/gi)]
+    .flatMap(match => [Number(match[1]), ...(match[2] ? [Number(match[2])] : [])]);
+  if (encodedSides.length && Math.max(...encodedSides) < 800) return false;
+  const observedSide = observedMaxSides.get(value);
+  return observedSide === undefined || observedSide >= 800;
+}
+export function uniqueImages(
+  urls: unknown[], dimensions: ReadonlyMap<string, number> = new Map(),
+  observedMaxSides: ReadonlyMap<string, number> = new Map()
+): string[] {
+  const found = new Map<string, { url: string; area: number } | null>();
   for (const url of urls.filter(amazonImageUrl)) {
     // Identity ignores Amazon resize modifiers, but the returned URL is always observed.
-    const pathname = new URL(url).pathname;
     const key = imageIdentity(url);
+    // A thumbnail may establish photo order, even though it must not be
+    // displayed. A later large URL fills that position without moving it.
+    if (!found.has(key)) found.set(key, null);
+    if (!galleryImageUrl(url, observedMaxSides)) continue;
+    const pathname = new URL(url).pathname;
     const size = Number(pathname.match(/(?:SL|SX|SY|AC_SL|AC_SX|AC_SY)(\d+)/)?.[1] ?? 0);
     const area = dimensions.get(url) ?? size * size;
-    if (!found.has(key) || area > found.get(key)!.area) found.set(key, { url, area });
+    const previous = found.get(key);
+    if (!previous || area > previous.area) found.set(key, { url, area });
   }
-  return [...found.values()].slice(0, 5).map(image => image.url);
+  return [...found.values()].filter((image): image is { url: string; area: number } => image !== null)
+    .slice(0, 5).map(image => image.url);
 }
 function imageIdentity(url: string): string {
   return new URL(url).pathname.replace(/\._[^/]+_\./, '.');
 }
-function dynamicImage(value: string | undefined, dimensions: Map<string, number>): string[] {
+function dynamicImage(value: string | undefined, dimensions: Map<string, number>, maxSides: Map<string, number>): string[] {
   if (!value) return [];
   try {
     const images = record(JSON.parse(value));
     for (const [url, size] of Object.entries(images)) {
       if (Array.isArray(size) && size.length === 2 && size.every(n => typeof n === 'number' && Number.isFinite(n) && n > 0)) {
         dimensions.set(url, Math.max(dimensions.get(url) ?? 0, size[0] * size[1]));
+        maxSides.set(url, Math.max(maxSides.get(url) ?? 0, size[0], size[1]));
       }
     }
     return Object.keys(images).filter(amazonImageUrl);
@@ -79,6 +101,8 @@ export function extractEnrichment($: CheerioAPI, asin: string, observedAt: strin
   const scripts = $('script').map((_, el) => $(el).html() ?? '').get();
   const images: unknown[] = [];
   const dimensions = new Map<string, number>();
+  const maxSides = new Map<string, number>();
+  const hiResByIdentity = new Map<string, string>();
   const gallerySections: string[] = [];
   let completeGallery = false;
   const selectedNode = (node: ReturnType<CheerioAPI>) =>
@@ -89,16 +113,21 @@ export function extractEnrichment($: CheerioAPI, asin: string, observedAt: strin
     });
   const landing = $('#landingImage, #imgBlkFront').filter((_, el) => selectedNode($(el))).first();
   const altImages = $('#altImages img').filter((_, el) => selectedNode($(el)));
-  const landingImages = [landing.attr('data-old-hires'), ...dynamicImage(landing.attr('data-a-dynamic-image'), dimensions), landing.attr('src')];
+  const landingHiRes = landing.attr('data-old-hires');
+  const landingDynamic = dynamicImage(landing.attr('data-a-dynamic-image'), dimensions, maxSides);
+  const landingImages = [landingHiRes, ...landingDynamic, landing.attr('src')];
   // Only product DOM images can bind an otherwise unowned script. Accepted scripts
   // must not lend their identities to later, unrelated scripts.
   const knownImages = new Set(landingImages.filter(amazonImageUrl).map(imageIdentity));
   altImages.each((_, el) => {
     const node = $(el);
-    const candidates = [node.attr('data-old-hires'), ...dynamicImage(node.attr('data-a-dynamic-image'), dimensions), node.attr('src')];
+    const candidates = [node.attr('data-old-hires'), ...dynamicImage(node.attr('data-a-dynamic-image'), dimensions, maxSides), node.attr('src')];
     for (const url of candidates.filter(amazonImageUrl)) knownImages.add(imageIdentity(url));
   });
-  images.push(landing.attr('data-old-hires'));
+  if (galleryImageUrl(landingHiRes, maxSides)) {
+    images.push(landingHiRes);
+    hiResByIdentity.set(imageIdentity(landingHiRes), landingHiRes);
+  }
   for (const [index, script] of scripts.entries()) {
     // Only the selected product's initial gallery, never other color/child galleries.
     const node = $('script').eq(index);
@@ -116,8 +145,15 @@ export function extractEnrichment($: CheerioAPI, asin: string, observedAt: strin
     let valid = 0;
     for (const image of initial) {
       const item = record(image);
-      const candidates = [item.hiRes, ...dynamicImage(JSON.stringify(item.main), dimensions), item.large];
-      if (candidates.some(amazonImageUrl)) valid++;
+      const main = dynamicImage(JSON.stringify(item.main), dimensions, maxSides);
+      // Amazon explicitly designates hiRes as the source for enlarged display.
+      // Use main/large only where no usable hiRes was supplied.
+      const hiRes = item.hiRes;
+      const hasHiRes = galleryImageUrl(hiRes, maxSides);
+      if (hasHiRes) hiResByIdentity.set(imageIdentity(hiRes), hiRes);
+      const candidates = hasHiRes ? [hiRes]
+        : main.filter(url => galleryImageUrl(url, maxSides)).length ? main : [item.large];
+      if (candidates.some(url => galleryImageUrl(url, maxSides))) valid++;
       images.push(...candidates);
     }
     if (valid) gallerySections.push('colorImages.initial');
@@ -125,13 +161,19 @@ export function extractEnrichment($: CheerioAPI, asin: string, observedAt: strin
   }
   altImages.each((_, el) => {
     const node = $(el);
-    const candidates = [node.attr('data-old-hires'), ...dynamicImage(node.attr('data-a-dynamic-image'), dimensions), node.attr('src')];
+    const hiRes = node.attr('data-old-hires');
+    const dynamic = dynamicImage(node.attr('data-a-dynamic-image'), dimensions, maxSides);
+    if (galleryImageUrl(hiRes, maxSides) && !hiResByIdentity.has(imageIdentity(hiRes))) {
+      hiResByIdentity.set(imageIdentity(hiRes), hiRes);
+    }
+    const candidates = galleryImageUrl(hiRes, maxSides) ? [hiRes] : [...dynamic, node.attr('src')];
     images.push(...candidates);
-    if (candidates.some(amazonImageUrl)) gallerySections.push('altImages');
+    if (candidates.some(url => galleryImageUrl(url, maxSides))) gallerySections.push('altImages');
   });
-  images.push(...landingImages);
-  if (landingImages.some(amazonImageUrl)) gallerySections.push('landingImage');
-  const imageUrls = uniqueImages(images, dimensions);
+  images.push(...(galleryImageUrl(landingHiRes, maxSides) ? [landingHiRes] : [...landingDynamic, landing.attr('src')]));
+  if (landingImages.some(url => galleryImageUrl(url, maxSides))) gallerySections.push('landingImage');
+  const imageUrls = uniqueImages(images, dimensions, maxSides)
+    .map(url => hiResByIdentity.get(imageIdentity(url)) ?? url);
   const detail: DetailSnapshot = {
     features: [], ingredients: [], usage: [], specs: {}, cautions: [], variantAttributes: {}, childAsins: [],
     sourceObservedAt: observedAt, provenance: { sourceUrl, adapter: 'http-detail',

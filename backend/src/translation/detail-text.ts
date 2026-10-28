@@ -1,4 +1,4 @@
-import { hasJapanese } from './local.js';
+import { hasEnglish, hasJapanese } from './local.js';
 
 export type DetailText = {
   features: string[]; ingredients: string[]; usage: string[]; cautions: string[];
@@ -6,15 +6,16 @@ export type DetailText = {
 };
 export type DetailItem = { slot: string; source: string; translated: string | null; retry_after?: Date | string | null };
 export const detailSections = ['features', 'ingredients', 'usage', 'cautions'] as const;
+export const needsDetailTranslation = (source: string) => hasJapanese(source) || hasEnglish(source);
 
 export function detailItems(snapshot: DetailText): DetailItem[] {
   const items: DetailItem[] = [];
   for (const section of detailSections) snapshot[section].forEach((source, index) => {
-    if (hasJapanese(source)) items.push({ slot: `${section}:${index}`, source, translated: null });
+    if (needsDetailTranslation(source)) items.push({ slot: `${section}:${index}`, source, translated: null });
   });
   // Values are never passed to inference, normalized, or trimmed.
   Object.keys(snapshot.specs).forEach((source, index) => {
-    if (hasJapanese(source)) items.push({ slot: `specs:${index}`, source, translated: null });
+    if (needsDetailTranslation(source)) items.push({ slot: `specs:${index}`, source, translated: null });
   });
   return items;
 }

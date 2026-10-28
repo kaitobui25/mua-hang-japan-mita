@@ -19,7 +19,7 @@ test('explicit rights and denied statuses fail closed', () => {
   assert.throws(() => assertVerifiedProduct({ asin: 'B000000001', rightsStatus: 'local_test_only' }), /leaked/);
   assertVerifiedProduct({ asin: 'B000000001', rightsStatus: 'local_test_only' }, true);
   assert.throws(() => assertVerifiedProduct({ asin: 'B000000001', rightsStatus: 'unverified' }), /leaked/);
-  assert.throws(() => assertVerifiedProduct({ asin: 'B000000001', rightsStatus: 'unverified' }, true), /leaked/);
+  assertVerifiedProduct({ asin: 'B000000001', rightsStatus: 'unverified' }, true);
   assertDenied({ status: 404 }, '/admin');
   assert.throws(() => assertDenied({ status: 200 }, '/admin'), /expected/);
   assert.equal(percentile([10, 20, 30, 40], 0.95), 40);
@@ -62,7 +62,7 @@ function fakeTransport({ exposePrivate = false, exposePrivateOnForgedHost = fals
     const method = options.method ?? 'GET';
     const headers = options.headers ?? {};
     const forgedHost = headers.Host && headers.Host !== '127.0.0.1:9999';
-    const isHtml = ['/','/san-pham','/cach-mua-hang','/gio-hang',
+    const isHtml = ['/','/san-pham','/cach-mua-hang','/gio-hang','/thanh-toan',
       '/danh-muc/thuc-pham-bo-sung','/danh-muc/thuc-pham-cho-be','/san-pham/B000000001'].includes(path);
     const approved = { asin: 'B000000001', rightsStatus: leakRights ? 'local_test_only' : 'verified' };
     let status = 404;
@@ -72,6 +72,10 @@ function fakeTransport({ exposePrivate = false, exposePrivateOnForgedHost = fals
       status = 200;
       type = 'text/html';
       body = '<html>Admin login</html>';
+    } else if (path === '/api/checkout' && method === 'POST' && !forgedHost) {
+      status = 422;
+      type = 'application/json';
+      body = JSON.stringify({ code: 'invalid_customer' });
     } else if ((!forgedHost || (wildcardHomepage && path === '/')) && (method === 'GET' || method === 'HEAD')) {
       if (isHtml) {
         status = 200;
@@ -162,7 +166,7 @@ test('suite fails if local_test_only appears in public JSON', async () => {
   assert.equal(report.benchmark.length, 0);
 });
 
-test('explicit preview mode permits local_test_only without permitting unverified', async () => {
+test('explicit owner OFF mode accepts database entries regardless of rights status', async () => {
   const mode = parseOptions(['--local-only', '--base-url', 'http://127.0.0.1:9999',
     '--skip-ekaiwa', '--requests-per-stage', '2', '--allow-local-test-only']);
   const mock = fakeTransport({ leakRights: true });

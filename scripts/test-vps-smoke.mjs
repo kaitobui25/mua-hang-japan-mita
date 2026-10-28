@@ -123,9 +123,9 @@ export function assertDenied(result, label) {
   assert(DENY_STATUSES.has(result.status), label + ': expected 400/403/404/410/421; got ' + result.status);
 }
 
-export function assertVerifiedProduct(product, allowLocalTestOnly = false) {
+export function assertVerifiedProduct(product, allowAllDbProducts = false) {
   assert(product && typeof product === 'object', 'Catalog product must be an object');
-  assert((allowLocalTestOnly ? ['verified', 'local_test_only'] : ['verified']).includes(product.rightsStatus), 'Public catalog leaked non-verified rights status');
+  if (!allowAllDbProducts) assert.equal(product.rightsStatus, 'verified', 'Strict verified-only mode leaked non-verified rights status');
   assert.equal(typeof product.asin, 'string', 'Catalog item missing ASIN');
 }
 
@@ -214,7 +214,7 @@ export async function run(options, transport = request, log = console.log) {
     });
   }
 
-  const front = ['/', '/san-pham', '/cach-mua-hang', '/gio-hang', '/danh-muc/thuc-pham-bo-sung', '/danh-muc/thuc-pham-cho-be'];
+  const front = ['/', '/san-pham', '/cach-mua-hang', '/gio-hang', '/thanh-toan', '/danh-muc/thuc-pham-bo-sung', '/danh-muc/thuc-pham-cho-be'];
   for (const path of front) await check('Public page ' + path, () => expectHtml(path));
 
   await check('Public security headers', async () => {
@@ -272,10 +272,10 @@ export async function run(options, transport = request, log = console.log) {
 
   const forbidden = [
     '/admin', '/admin/login', '/admin/san-pham', '/api/admin', '/api/admin/session',
-    '/api/health', '/api/sync-status', '/thanh-toan', '/thanh-toan/',
+    '/api/health', '/api/sync-status',
     '/api/checkout', '/api', '/api/other',
     '/%61dmin/login', '/admin%2Flogin', '/api/%61dmin/session',
-    '/api/admin%2Fsession', '/%74hanh-toan', '/thanh-toan%2F',
+    '/api/admin%2Fsession',
     '/api/%68ealth'
   ];
   for (const path of forbidden) await check('Private route denied ' + path, () => deny(path));
@@ -284,9 +284,13 @@ export async function run(options, transport = request, log = console.log) {
       method, headers: method === 'OPTIONS' ? { Origin: 'https://evil.invalid', 'Access-Control-Request-Method': 'POST' } : {}
     }));
   }
-  await check('POST checkout denied with empty body', () => deny('/api/checkout', {
-    method: 'POST', body: '{}', headers: { 'content-type': 'application/json', Origin: 'http://localhost:3100' }
-  }));
+  await check('POST checkout validates empty body without writing an order', async () => {
+    const result = await fetchMita('/api/checkout', {
+      method: 'POST', body: '{}', headers: { 'content-type': 'application/json' }
+    });
+    assert.equal(result.status, 422);
+    return result;
+  });
   for (const host of ['localhost:3100', '127.0.0.1:3100', 'evil.invalid']) {
     await check('Forged Host cannot reach admin ' + host, () => deny('/admin/login', { headers: { Host: host } }));
     // A local staging Caddy listener can accept wildcard Host values.

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { db } from '../db/pool.js';
 import { getPricingPolicy, toVnd, validatePolicy } from '../pricing.js';
-import { AdminError, getCatalogSettings, listOrders, listProducts, orderDetail, overview, saveCatalogSettings, savePolicy, setVisibility } from './data.js';
+import { AdminError, getCatalogSettings, listOrders, listProducts, orderDetail, overview, saveCatalogSettings, savePolicy, setVisibility, updateOrder } from './data.js';
 import { enqueueImport, listImports } from './imports.js';
 import { csrfToken, digest, getSession, isLocalRequest, login, readToken, setSessionCookie, validOrigin } from './security.js';
 
@@ -66,6 +66,12 @@ export async function adminRoutes(server: FastifyInstance) {
     const { id } = request.params as { id: string };
     if (!uuid.test(id)) throw new AdminError(400, 'Mã đơn không hợp lệ.');
     return orderDetail(id);
+  });
+  server.patch('/orders/:id', async request => {
+    const { id } = request.params as { id: string };
+    if (!uuid.test(id)) throw new AdminError(400, 'Mã đơn hàng không hợp lệ.');
+    const body = request.body as { status?: string; paymentStatus?: string; shippingFinalVnd?: number } | null;
+    return updateOrder(id, body ?? {}, request.adminSession!.actorId);
   });
   server.get('/pricing', async () => {
     const policy = await getPricingPolicy();

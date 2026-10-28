@@ -21,7 +21,7 @@ export function ProductCard({ product }: { product: CatalogProduct }) {
       <span className="product-brand">{product.brand || "Sản phẩm Nhật"}</span>
       <h3><Link href={href} aria-label={product.name} title={product.name}>{shortName}</Link></h3>
       <div className="product-price">{typeof product.priceVnd === "number" && product.priceVnd > 0 ? formatVnd(product.priceVnd) : "Giá đang cập nhật"}</div>
-      <div className="product-status">{productStatus(product)}</div>
+      {productStatus(product) && <div className="product-status">{productStatus(product)}</div>}
       <button className="product-add" type="button" disabled={!canAdd} onClick={() => { add(product.asin); setAdded(true); window.setTimeout(() => setAdded(false), 1900); }} aria-label={`Thêm ${product.name} vào giỏ`}><Icon name={added ? "check" : "plus"} size={17}/><span>{added ? "Đã thêm" : "Thêm vào giỏ"}</span></button>
     </div>
   </article>;
