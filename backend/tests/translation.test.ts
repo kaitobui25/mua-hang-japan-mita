@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FREE_TRANSLATION_MODELS, TranslationUnavailable, translateProduct, translateNamesBatch, readFreeQuota, type ProductText } from '../src/translation/openrouter.js';
+import { FREE_TRANSLATION_MODELS, TranslationUnavailable, translateProduct, translateNamesBatch, readFreeQuota, type ProductText, type NameInput, packNameBatches, nameBatchFits, nameBatchOutputTokens, NAME_BATCH_LIMITS } from '../src/translation/openrouter.js';
 
 const original: ProductText = {
   name: 'SAVAS ホエイプロテイン ココア味 980g', brand: 'SAVAS', features: ['たんぱく質 20g'],
@@ -130,11 +130,148 @@ test('translate multiple Japanese product names in one free inference request pr
   assert.equal(result.names.get('B000000002'), 'DHC vitamin 60 viên');
 });
 
-test('batch rejects re-ordered ASINs, altered units, or missing names without publishing', async () => {
+test('batch rejects wrong ASINs before publishing any names', async () => {
   const names = [{ asin: 'B000000001', name: 'SAVAS 500mg', brand: 'SAVAS' }];
-  for (const bad of [{ asin: 'B000000009', name: 'SAVAS 500mg' }, { asin: 'B000000001', name: 'SAVAS 500g' }]) {
+  for (const bad of [{ asin: 'B000000009', name: 'SAVAS 500mg' }]) {
     const mock = (async () => Response.json({ choices: [{ message: { content: JSON.stringify({ translations: [bad] }) } }] })) as typeof fetch;
     await assert.rejects(translateNamesBatch(names, { apiKey: 'test-secret', fetcher: mock }),
       (error: unknown) => error instanceof TranslationUnavailable);
   }
+});
+
+test('malformed successful name batch triggers bounded split recovery without trying other models', async () => {
+  const names = [{ asin: 'B000000001', name: 'SAVAS 500mg', brand: 'SAVAS' },
+    { asin: 'B000000002', name: 'DHC 60粒', brand: 'DHC' }];
+  let requests = 0;
+  const fetcher = (async () => { requests++; return Response.json({ choices: [
+    { finish_reason: 'stop', message: { content: '{"translations":[' } }
+  ] }); }) as typeof fetch;
+  await assert.rejects(translateNamesBatch(names, { apiKey: 'test', fetcher }), (error: unknown) =>
+    error instanceof TranslationUnavailable && error.causes.includes('name_batch_truncated'));
+  assert.equal(requests, 1);
+});
+
+
+test('name packing uses request bytes and output budget, preserving source order and content', () => {
+  const make = (name: string, count: number) => Array.from({ length: count }, (_, i) =>
+    Object.freeze({ asin: `B${String(i).padStart(9, '0')}`, name, brand: null }));
+  for (const products of [make('\u5546\u54c1', 150), make('\u3042'.repeat(250), 30),
+    make('title', 40).map(p => ({ ...p, brand: '\u3042\"'.repeat(1000) }))]) {
+    const snapshot = JSON.stringify(products);
+    const batches = [...packNameBatches<NameInput>(products)];
+    assert.deepEqual(batches.flat(), products);
+    assert.equal(JSON.stringify(products), snapshot);
+    for (const [i, batch] of batches.entries()) {
+      assert.ok(nameBatchFits(batch));
+      if (i + 1 < batches.length) assert.equal(nameBatchFits([...batch, batches[i + 1][0]]), false);
+    }
+  }
+  assert.ok([...packNameBatches(make('\u5546\u54c1', 150))][0].length > 5);
+  assert.ok(nameBatchOutputTokens(make('\u3042'.repeat(250), 24)) > NAME_BATCH_LIMITS.outputTokens);
+});
+
+test('100 names fit actual wire and output budgets with time for observed 76.7s inference', async t => {
+  const timeouts: number[] = [];
+  t.mock.method(AbortSignal, 'timeout', (ms: number) => {
+    timeouts.push(ms);
+    return new AbortController().signal;
+  });
+  const products = Array.from({ length: 100 }, (_, i) =>
+    Object.freeze({ asin: `B${String(i).padStart(9, '0')}`, name: '\u5546\u54c1'.repeat(16) + ' 500mg', brand: null }));
+  assert.equal([...packNameBatches(products)][0].length, 100);
+  let calls = 0;
+  const fetcher = (async (_url: unknown, init: RequestInit = {}) => {
+    calls++;
+    assert.ok(Buffer.byteLength(String(init.body), 'utf8') <= NAME_BATCH_LIMITS.requestBytes);
+    const body = JSON.parse(String(init.body));
+    assert.deepEqual(body.reasoning, { enabled: false });
+    assert.ok(body.max_tokens >= nameBatchOutputTokens(products));
+    assert.ok(body.max_tokens <= NAME_BATCH_LIMITS.outputTokens);
+    return Response.json({ choices: [{ message: { content: JSON.stringify({
+      translations: products.map(p => ({ asin: p.asin, name: 'San pham 500mg' }))
+    }) } }] });
+  }) as typeof fetch;
+  const result = await translateNamesBatch(products, { apiKey: 'test', fetcher });
+  assert.equal(calls, 1);
+  assert.equal(result.names.size, 100);
+  assert.deepEqual(timeouts, [120000]);
+  await translateNamesBatch(products, { apiKey: 'test', fetcher, timeoutMs: 90000 });
+  assert.deepEqual(timeouts, [120000, 90000]);
+});
+
+test('oversized singleton stays isolated and is rejected before quota or HTTP use', async () => {
+  const huge = { asin: 'B000000001', name: '\u3042'.repeat(10000), brand: null };
+  const small = { asin: 'B000000002', name: '\u5546\u54c1', brand: null };
+  assert.deepEqual([...packNameBatches([huge, small])], [[huge], [small]]);
+  await assert.rejects(translateNamesBatch([huge], { apiKey: 'test',
+    beforeRequest: async () => { assert.fail('quota consumed'); },
+    fetcher: (async () => { assert.fail('HTTP called'); }) as typeof fetch
+  }), (error: unknown) => error instanceof TranslationUnavailable && error.causes.includes('invalid_name_batch'));
+});
+
+
+test('one invalid name is isolated without refetching or mutating valid siblings', async () => {
+  const products = Array.from({ length: 30 }, (_, i) =>
+    Object.freeze({ asin: `B${String(i).padStart(9, '0')}`, name: 'Vitamin 500mg', brand: null }));
+  const before = JSON.stringify(products);
+  const fetcher = (async () => Response.json({ choices: [{ message: { content: JSON.stringify({
+    translations: products.map((p, i) => ({ asin: p.asin, name: i === 29 ? 'Vitamin 500g' : p.name }))
+  }) } }] })) as typeof fetch;
+  const result = await translateNamesBatch(products, { apiKey: 'test', fetcher });
+  assert.equal(result.names.size, 29);
+  assert.deepEqual(result.rejectedAsins, [products[29].asin]);
+  assert.equal(JSON.stringify(products), before);
+});
+
+
+test('name batch disables reasoning on every fallback and rejects non-stop completions', async () => {
+  const products = [{ asin: 'B000000001', name: 'Vitamin 500mg', brand: null }];
+  const content = JSON.stringify({ translations: [{ asin: products[0].asin, name: 'Vitamin 500mg' }] });
+  const seen: string[] = [];
+  const unavailableModels = new Set<string>();
+  const fetcher = (async (_url: unknown, init: RequestInit = {}) => {
+    const body = JSON.parse(String(init.body));
+    assert.deepEqual(body.reasoning, { enabled: false });
+    seen.push(body.model);
+    if (seen.length === 1) return new Response('{}', { status: 429 });
+    return Response.json({ choices: [{ finish_reason: seen.length === 2 ? 'content_filter' : 'stop',
+      message: { content } }] });
+  }) as typeof fetch;
+  const result = await translateNamesBatch(products, { apiKey: 'test', fetcher, unavailableModels });
+  assert.deepEqual(seen, FREE_TRANSLATION_MODELS.slice(0, 3));
+  assert.equal(result.model, FREE_TRANSLATION_MODELS[2]);
+  assert.equal(result.names.get(products[0].asin), 'Vitamin 500mg');
+  assert.ok(unavailableModels.has(FREE_TRANSLATION_MODELS[1]));
+});
+
+test('truncated name replies cannot produce a publishable translation', async () => {
+  const products = [{ asin: 'B000000001', name: 'Vitamin 500mg', brand: null }];
+  for (const content of ['{"translations":[', JSON.stringify({ translations: products })]) {
+    const fetcher = (async () => Response.json({ choices: [{ finish_reason: 'length', message: { content } }],
+      usage: { completion_tokens: 4960, completion_tokens_details: { reasoning_tokens: 3962 } }
+    })) as typeof fetch;
+    await assert.rejects(translateNamesBatch(products, { apiKey: 'test', fetcher }), TranslationUnavailable);
+  }
+});
+
+
+test('partial name acceptance still rejects changed quantities, units, codes, brands and empty names in one call', async () => {
+  const products = Array.from({ length: 7 }, (_, i) => Object.freeze({
+    asin: `B${String(i).padStart(9, '0')}`, name: 'SAVAS AB1234 500mg', brand: 'SAVAS'
+  }));
+  const outputs = ['SAVAS AB1234 501mg', 'SAVAS AB1234 500g', 'SAVAS XY1234 500mg',
+    'AB1234 500mg', '', null, 'SAVAS AB1234 500mg'];
+  let calls = 0;
+  const unavailableModels = new Set<string>();
+  const fetcher = (async () => {
+    calls++;
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
+      translations: products.map((p, i) => ({ asin: p.asin, name: outputs[i] }))
+    }) } }] });
+  }) as typeof fetch;
+  const result = await translateNamesBatch(products, { apiKey: 'test', fetcher, unavailableModels });
+  assert.equal(calls, 1);
+  assert.deepEqual([...result.names], [[products[6].asin, products[6].name]]);
+  assert.deepEqual(result.rejectedAsins, products.slice(0, 6).map(p => p.asin));
+  assert.equal(unavailableModels.size, 0);
 });

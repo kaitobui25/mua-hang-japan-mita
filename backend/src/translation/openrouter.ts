@@ -104,15 +104,59 @@ export class TranslationUnavailable extends Error {
 
 export type NameInput = { asin: string; name: string; brand: string | null };
 
+// Independent name translator limits; full-description translation keeps its own budget.
+export const NAME_BATCH_LIMITS = { products: 100, requestBytes: 24000, outputTokens: 8192, timeoutMs: 120000 } as const;
+const namePrompt = 'Translate the product names from Japanese into natural Vietnamese. Prefer Vietnamese, then English, then Japanese where no natural equivalent exists. Preserve ASIN, brand, original numbers, units, product codes, and exact product meaning. No marketing or health claims. Respond with ONLY valid JSON object {"translations":[{"asin":"...","name":"..."}]} in the same order and count as input. Never omit a product or add one.';
+
+/** Visible-output estimate with reasoning disabled: allow title expansion and JSON/ASIN
+ * overhead, with an 80-token floor per name (100-name PC probe averaged 52).
+ * This is a conservative heuristic, not a tokenizer or a guarantee of completion. */
+export function nameBatchOutputTokens(products: NameInput[]): number {
+  return 64 + products.reduce((total, product) =>
+    total + Math.max(80, Math.ceil(product.name.length * 1.25) + 32), 0);
+}
+
+function nameRequest(products: NameInput[], model: string) {
+  // Reasoning shares max_tokens with visible JSON on providers such as Nemotron.
+  return JSON.stringify({ model, temperature: 0, reasoning: { enabled: false },
+    max_tokens: Math.max(500, nameBatchOutputTokens(products)),
+    messages: [{ role: 'system', content: namePrompt },
+      { role: 'user', content: JSON.stringify(products.map(({ asin, name, brand }) => ({ asin, name, brand }))) }] });
+}
+
+export function nameBatchFits(products: NameInput[]): boolean {
+  return products.length > 0 && products.length <= NAME_BATCH_LIMITS.products &&
+    nameBatchOutputTokens(products) <= NAME_BATCH_LIMITS.outputTokens &&
+    FREE_TRANSLATION_MODELS.every(model =>
+      Buffer.byteLength(nameRequest(products, model), 'utf8') <= NAME_BATCH_LIMITS.requestBytes);
+}
+
+/** Keep source order and objects intact. Oversized singletons fail locally, without inference. */
+export function* packNameBatches<T extends NameInput>(products: T[]): Generator<T[]> {
+  let batch: T[] = [];
+  for (const product of products) {
+    if (batch.length && !nameBatchFits([...batch, product])) {
+      yield batch;
+      batch = [];
+    }
+    batch.push(product);
+    if (!nameBatchFits(batch)) {
+      yield batch;
+      batch = [];
+    }
+  }
+  if (batch.length) yield batch;
+}
+
 /** Translate several product names with one free provider request. Detail fields are not invented. */
 export async function translateNamesBatch(
   products: NameInput[],
   options: { apiKey?: string; fetcher?: typeof fetch; timeoutMs?: number;
     beforeRequest?: (model: string) => Promise<void>; unavailableModels?: Set<string> } = {}
-): Promise<{ names: Map<string, string>; model: string }> {
+): Promise<{ names: Map<string, string>; rejectedAsins: string[]; model: string }> {
   const apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new TranslationUnavailable(['missing_api_key']);
-  if (!products.length || products.length > 10 || JSON.stringify(products).length > maxInput ||
+  if (!nameBatchFits(products) ||
     new Set(products.map(product => product.asin)).size !== products.length ||
     products.some(product => !/^[A-Z0-9]{10}$/.test(product.asin))) {
     throw new TranslationUnavailable(['invalid_name_batch']);
@@ -122,19 +166,14 @@ export async function translateNamesBatch(
   for (const model of FREE_TRANSLATION_MODELS) {
     // Free Inkling is restricted to agentic harnesses, not this translation worker.
     if (model === 'thinkingmachines/inkling-small:free' || options.unavailableModels?.has(model)) continue;
+    let receivedOk = false;
     try {
       await options.beforeRequest?.(model);
       const response = await fetcher(url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        signal: AbortSignal.timeout(options.timeoutMs ?? 45000),
-        body: JSON.stringify({
-          model, temperature: 0, max_tokens: 2200,
-          messages: [
-            { role: 'system', content: 'Translate the product names from Japanese into natural Vietnamese. Prefer Vietnamese, then English, then Japanese where no natural equivalent exists. Preserve ASIN, brand, original numbers, units, product codes, and exact product meaning. No marketing or health claims. Respond with ONLY valid JSON object {"translations":[{"asin":"...","name":"..."}]} in the same order and count as input. Never omit a product or add one.' },
-            { role: 'user', content: JSON.stringify(products) }
-          ]
-        })
+        signal: AbortSignal.timeout(options.timeoutMs ?? NAME_BATCH_LIMITS.timeoutMs),
+        body: nameRequest(products, model)
       });
       if (response.status === 401) throw new TranslationUnavailable(['unauthorized_api_key']);
       if (response.status === 402) throw new TranslationUnavailable(['account_budget_exhausted']);
@@ -144,24 +183,43 @@ export async function translateNamesBatch(
         causes.push(`${model}:http_${response.status}`);
         continue;
       }
-      const payload = await response.json() as { choices?: { message?: { content?: unknown } }[] };
-      const value = parseContent(payload.choices?.[0]?.message?.content) as { translations?: unknown };
+      receivedOk = true;
+      const payload = await response.json() as { choices?: { finish_reason?: string | null; message?: { content?: unknown } }[] };
+      const choice = payload.choices?.[0];
+      // Even parseable JSON must not be accepted when the provider reports truncation.
+      if (choice?.finish_reason === 'length') throw new TranslationUnavailable(['name_batch_truncated']);
+      if (choice?.finish_reason && choice.finish_reason !== 'stop') throw new Error('provider_finish_reason');
+      const value = parseContent(choice?.message?.content) as { translations?: unknown };
       const translations = value && typeof value === 'object' ? value.translations : null;
       if (!Array.isArray(translations) || translations.length !== products.length) throw new Error('invalid_name_batch');
-      const result = new Map<string, string>();
+      // Check the whole response's identity before accepting any individual title.
       for (const [index, item] of translations.entries()) {
-        const source = products[index];
-        if (!item || typeof item !== 'object' || item.asin !== source.asin || typeof item.name !== 'string') {
+        if (!item || typeof item !== 'object' || item.asin !== products[index].asin) {
           throw new Error('name_identity_changed');
         }
-        const text = assertTranslation({ name: source.name, brand: source.brand,
-          features: [], ingredients: [], usage: [], specs: {}, cautions: [] },
-        { name: item.name, features: [], ingredients: [], usage: [], specs: {}, cautions: [] });
-        result.set(source.asin, text.name);
       }
-      return { names: result, model };
+      const result = new Map<string, string>();
+      const rejectedAsins: string[] = [];
+      for (const [index, item] of translations.entries()) {
+        const source = products[index];
+        try {
+          const text = assertTranslation({ name: source.name, brand: source.brand,
+            features: [], ingredients: [], usage: [], specs: {}, cautions: [] },
+          { name: item.name, features: [], ingredients: [], usage: [], specs: {}, cautions: [] });
+          result.set(source.asin, text.name);
+        } catch {
+          // A complete reply's unsafe title must not cause valid siblings to be fetched again.
+          rejectedAsins.push(source.asin);
+        }
+      }
+      return { names: result, rejectedAsins, model };
     } catch (error) {
       if (error instanceof TranslationUnavailable) throw error;
+      // A malformed or identity-mismatched successful reply may be specific to
+      // the batch size/content; split it instead of wasting quota on other models.
+      if (receivedOk && error instanceof Error && (
+        error instanceof SyntaxError || /^(invalid_|incomplete_name_batch|name_identity_changed)/.test(error.message)
+      )) throw new TranslationUnavailable(['name_batch_truncated']);
       const timeout = error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name);
       // A provider that cannot deliver a valid reply is retried on a later
       // scheduled batch, not for every title in the same limited free quota.

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { db } from '../db/pool.js';
-import { translateNamesBatch, readFreeQuota, TranslationUnavailable, type ProductText } from './openrouter.js';
+import { translateNamesBatch, packNameBatches, readFreeQuota, TranslationUnavailable, type ProductText } from './openrouter.js';
 import type { PoolClient } from 'pg';
 
 type SourceRow = {
@@ -165,30 +165,47 @@ export async function translatePendingNames(): Promise<TranslationRun> {
       ORDER BY CASE WHEN t.status='failed' THEN 1 ELSE 0 END,
         length(p.name) ASC, COALESCE(t.updated_at, '1970-01-01'::timestamptz) ASC, p.asin ASC`);
   let translated = 0, failed = 0, skipped = 0, paused = false;
-  const batchSize = 5;
-  for (let index = 0; index < rows.length; index += batchSize) {
-    const batch = rows.slice(index, index + batchSize);
-    try {
-      const result = await translateNamesBatch(batch.map(row => ({ asin: row.asin, name: row.name, brand: row.brand })),
-        { beforeRequest, unavailableModels });
-      const entries = batch.map(row => ({ asin: row.asin,
-        hash: nameHash(row), name: result.names.get(row.asin)! }));
-      translated += await saveNamesIfCurrent(entries, result.model, lock);
-      console.log(`Translated names: ${translated} in current batch`);
-    } catch (error) {
-      if (error instanceof TranslationUnavailable && error.causes.includes('free_quota_exhausted')) { paused = true; break; }
-      failed += batch.length;
-      console.error(`Title batch unavailable: ${error instanceof TranslationUnavailable ? error.causes.join(', ') : 'unavailable'}`);
-      // Failed names are eligible again at the next scheduled run.
-      for (const row of batch) {
-        await lock.query(`INSERT INTO product_translations(asin,locale,source_hash,status,name_only)
-          VALUES($1,'vi',$2,'failed',true)
-          ON CONFLICT(asin,locale) DO UPDATE SET status='failed',source_hash=EXCLUDED.source_hash,
-          name_only=true,updated_at=now()
-          WHERE product_translations.status <> 'success' OR product_translations.name IS NULL`,
-        [row.asin, nameHash(row)]);
+  const markNamesFailed = async (rejected: SourceRow[]) => {
+    for (const row of rejected) {
+      await lock.query(`INSERT INTO product_translations(asin,locale,source_hash,status,name_only)
+        VALUES($1,'vi',$2,'failed',true)
+        ON CONFLICT(asin,locale) DO UPDATE SET status='failed',source_hash=EXCLUDED.source_hash,
+        name_only=true,updated_at=now()
+        WHERE product_translations.status <> 'success' OR product_translations.name IS NULL`,
+      [row.asin, nameHash(row)]);
+    }
+  };
+  batches: for (const packed of packNameBatches(rows)) {
+    // Bound recovery to two splits: at most seven attempts per packed batch.
+    const pending = [{ batch: packed, depth: 0 }];
+    while (pending.length) {
+      const { batch, depth } = pending.shift()!;
+      try {
+        const result = await translateNamesBatch(batch.map(row => ({ asin: row.asin, name: row.name, brand: row.brand })),
+          { beforeRequest, unavailableModels });
+        const entries = batch.filter(row => result.names.has(row.asin)).map(row => ({ asin: row.asin,
+          hash: nameHash(row), name: result.names.get(row.asin)! }));
+        if (entries.length) translated += await saveNamesIfCurrent(entries, result.model, lock);
+        const rejected = new Set(result.rejectedAsins);
+        await markNamesFailed(batch.filter(row => rejected.has(row.asin)));
+        failed += rejected.size;
+        console.log(`Translated names: ${translated} in current batch`);
+      } catch (error) {
+        if (error instanceof TranslationUnavailable && error.causes.includes('name_batch_truncated') && batch.length > 1 && depth < 2) {
+          // Discard the partial reply. Retry both halves through the same quota gate;
+          // persist each validated half independently so later exhaustion cannot revoke it.
+          const middle = Math.ceil(batch.length / 2);
+          pending.unshift({ batch: batch.slice(0, middle), depth: depth + 1 },
+            { batch: batch.slice(middle), depth: depth + 1 });
+          continue;
+        }
+        if (error instanceof TranslationUnavailable && error.causes.includes('free_quota_exhausted')) { paused = true; break batches; }
+        failed += batch.length;
+        console.error(`Title batch unavailable: ${error instanceof TranslationUnavailable ? error.causes.join(', ') : 'unavailable'}`);
+        // Failed names are eligible again at the next scheduled run.
+        await markNamesFailed(batch);
+        if (translationFailureStopsBatch(error)) { paused = true; break batches; }
       }
-      if (translationFailureStopsBatch(error)) { paused = true; break; }
     }
   }
   console.log(`Name translation: ${translated} updated, ${failed} failed, ${skipped} source-changed`);
