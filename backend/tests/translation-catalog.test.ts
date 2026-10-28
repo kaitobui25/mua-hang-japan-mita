@@ -20,11 +20,11 @@ test('only current translations replace in-memory display text; no source overwr
   assert.deepEqual(products[0].detail.variantAttributes, { Flavor: 'Chocolate' });
 });
 
-test('old translation is skipped after source title changes', async () => {
+test('successful Vietnamese title remains displayed after source title changes', async () => {
   const products = [{ asin: 'A000000001', name: 'SAVAS 500g', brand: 'SAVAS', detail: null }];
   const client = { query: async () => ({ rows: [{ asin: products[0].asin, name: 'Tên cũ', detail: text, source_hash: sourceHash(text) }] }) } as unknown as Pick<PoolClient, 'query'>;
   await applyTranslations(products, client);
-  assert.equal(products[0].name, 'SAVAS 500g');
+  assert.equal(products[0].name, 'Tên cũ');
 });
 
 test('current Vietnamese title remains visible when Amazon changes only product specifications', async () => {

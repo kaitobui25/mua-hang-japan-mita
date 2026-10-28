@@ -5,9 +5,9 @@ export const AMAZON_ACCESS_LOCK = 70400200;
 
 type Connection = Pick<PoolClient, 'query'>;
 
-/** A CAPTCHA/denial stops Amazon, not independent catalog tasks.
- * Persist the first 30-second deadline so restarts cannot keep resetting it.
- * This is not permission to retry blocked source requests.
+/** A CAPTCHA/denial stops Amazon requests.
+ * Persist the first 30-second deadline for operator status across restarts.
+ * It never triggers translation, unblocks Amazon, or retries requests.
  */
 export async function recordAmazonPause(connection: Connection, reason: string) {
   await connection.query(`INSERT INTO source_access_blocks(source,reason,continuation_due_at)
@@ -17,7 +17,7 @@ export async function recordAmazonPause(connection: Connection, reason: string) 
       continuation_due_at=COALESCE(source_access_blocks.continuation_due_at,EXCLUDED.continuation_due_at)`, [reason]);
 }
 
-/** Local upgrade: old human-blocked ASINs also need an unattended fallback
+/** Make older human-blocked ASINs visible to the timeout status monitor
  * without claiming they have been manually verified.
  */
 export async function seedAmazonPause(connection: Connection) {

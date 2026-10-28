@@ -14,7 +14,7 @@ npm run admin:setup
 
 Lệnh setup yêu cầu terminal tương tác, nhập kín và xác nhận mật khẩu 12–128 ký tự. Không truyền mật khẩu trên command line, qua pipe, file hoặc biến môi trường. Lệnh từ chối nếu owner đã tồn tại. Dùng nhất quán `127.0.0.1` hoặc `localhost` khi đăng nhập; cookie không chia sẻ giữa hai host.
 
-`start-local.ps1` khởi động cluster riêng `backend/.local-db` tại **127.0.0.1:5433**, migration, API **127.0.0.1:4000**, worker và web **127.0.0.1:3000**. Log và PID nằm trong `.agents/runtime` (không commit). Đây là thao tác do bạn chạy, không cài Windows service hoặc Task Scheduler.
+`start-local.ps1` khởi động cluster riêng `backend/.local-db` tại **127.0.0.1:5433**, migration, API **127.0.0.1:4000**, Amazon worker **04:00 JST**, translator **05:00 JST** (hai tiến trình tách biệt) và web **127.0.0.1:3000**. Log và PID nằm trong `.agents/runtime` (không commit). Đây là thao tác do bạn chạy, không cài Windows service hoặc Task Scheduler.
 
 ```powershell
 # Từ thư mục gốc; chỉ dừng tiến trình mà script đã khởi chạy và ghi PID.
@@ -25,7 +25,7 @@ Lệnh setup yêu cầu terminal tương tác, nhập kín và xác nhận mật
 
 Nếu các tiến trình đã chạy từ trước bản nâng cấp, dừng chúng bằng terminal đã mở hoặc Task Manager sau khi xác định đúng tiến trình của dự án, rồi chạy lại. Script không dừng tiến trình không do nó ghi nhận. Có thể chạy foreground trong ba terminal riêng: `cd backend; npm run start`, `cd backend; npm run worker:daily`, `npm run dev` ở thư mục gốc. Dừng mỗi terminal bằng Ctrl+C. Bật PostgreSQL/migration trước. Không bind `0.0.0.0`, mở port, hoặc truy cập qua LAN/internet.
 
-Sau restart Windows cần tự chạy lại. Đồng bộ **04:00 Asia/Tokyo** chỉ diễn ra nếu máy/worker đang hoạt động xuyên qua giờ đó. Job cũ từ downtime bị bỏ qua; mở Admin không chạy bù. ASIN đang chờ chỉ được xử lý khi worker bật. `Làm mới kết quả` để xem tiến độ. Không có nút quét lại toàn catalog trong Admin.
+Sau restart Windows cần tự chạy lại. Đồng bộ Amazon **04:00 Asia/Tokyo** và dịch **chỉ tên** **05:00 Asia/Tokyo** mỗi ngày chỉ diễn ra nếu PC và **tiến trình tương ứng** đang hoạt động đúng giờ. Job cũ từ downtime bị bỏ qua; mở Admin không chạy bù. ASIN Amazon đang chờ chỉ xử lý khi worker bật. Tên đã có bản dịch `success` không được dịch lại dù Amazon đổi nội dung; mô tả sẽ có hệ thống dịch khác sau này. `Làm mới kết quả` để xem tiến độ. Không có nút quét lại toàn catalog trong Admin.
 
 ## Bốn mục
 

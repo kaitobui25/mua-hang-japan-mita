@@ -42,6 +42,8 @@ Start-MitaPublic 'public-web' $root @('run','start','--','-p',"$webPort")
 if (!$Preview) {
   $dailyWorker = Get-CimInstance Win32_Process -Filter "name='node.exe'" | Where-Object { $_.CommandLine -match 'src[\\/]worker\.ts daily' } | Select-Object -First 1
   if (!$dailyWorker) { Start-MitaPublic 'public-worker' $backend @('run','worker:daily') }
+  $dailyTranslator = Get-CimInstance Win32_Process -Filter "name='node.exe'" | Where-Object { $_.CommandLine -match 'src[\\/]translator\.ts daily' } | Select-Object -First 1
+  if (!$dailyTranslator) { Start-MitaPublic 'public-translator' $backend @('run','worker:translate:daily') }
   # DuckDNS now targets Hermes VPS. Never start a PC-IP watcher from local preview.
 }
 Write-Host "Read-only storefront: http://127.0.0.1:$webPort"

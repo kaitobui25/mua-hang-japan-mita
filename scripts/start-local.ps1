@@ -46,6 +46,13 @@ if ($dailyWorker) {
 } else {
   Start-MitaService 'worker' $backend 'worker:daily' 0
 }
+$dailyTranslator = Get-CimInstance Win32_Process -Filter "name='node.exe'" | Where-Object { $_.CommandLine -match 'src[\\/]translator\.ts daily' } | Select-Object -First 1
+if ($dailyTranslator) {
+  Write-Host "daily translator already running PID=$($dailyTranslator.ProcessId)"
+} else {
+  Start-MitaService 'translator' $backend 'worker:translate:daily' 0
+}
 Write-Host 'Local Mita: http://127.0.0.1:3000'
 Write-Host 'Daily catalog sync: 04:00 Asia/Tokyo'
+Write-Host 'Daily name translation: 05:00 Asia/Tokyo (no catch-up)'
 Write-Host 'Manual stop: ./scripts/stop-local.ps1 (add -StopDatabase to stop the project PostgreSQL cluster)'

@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sourceHash, sourceText, translationFailureStopsBatch, prioritizeDetailCandidates } from '../src/translation/jobs.js';
+import { sourceHash, sourceText, translationFailureStopsBatch } from '../src/translation/jobs.js';
 import { TranslationUnavailable } from '../src/translation/openrouter.js';
-import { nextTranslationDelayMs, TRANSLATION_ACTIVE_DELAY_MS, TRANSLATION_IDLE_DELAY_MS } from '../src/translation/schedule.js';
+import { translationCron, translationTimezone, shouldRunTranslation } from '../src/translation/schedule.js';
 
 test('source content hash is stable for unchanged text and changes with Japanese source', () => {
   const row = {
@@ -34,21 +34,14 @@ test('one bad product does not stop the batch; exhausted shared quota does', () 
   assert.equal(translationFailureStopsBatch(new TranslationUnavailable(['free_quota_exhausted'])), true);
 });
 
-test('detail translation always tries never-attempted products before repeated failing products', () => {
-  const rows = [
-    { asin: 'A000000001', detail_attempted_at: new Date('2026-10-27T10:00:00Z') },
-    { asin: 'A000000002', detail_attempted_at: null },
-    { asin: 'A000000003', detail_attempted_at: new Date('2026-10-27T09:00:00Z') }
-  ];
-  assert.deepEqual(prioritizeDetailCandidates(rows).map(row => row.asin),
-    ['A000000002', 'A000000003', 'A000000001']);
-});
-
-test('unattended worker continues productive translation after 30s, respects quota failures', () => {
-  assert.equal(TRANSLATION_ACTIVE_DELAY_MS, 30_000);
-  assert.equal(nextTranslationDelayMs({ translated: 12 }), 30_000);
-  assert.equal(nextTranslationDelayMs({ translated: 1 }), 30_000);
-  assert.equal(nextTranslationDelayMs({ translated: 0 }), TRANSLATION_IDLE_DELAY_MS);
-  assert.equal(nextTranslationDelayMs({ translated: 12, paused: true }), TRANSLATION_IDLE_DELAY_MS,
-    'partial progress followed by exhausted quota must back off');
+test('name translation runs at 05:00 JST only when its own scheduler was alive at that time', () => {
+  assert.equal(translationCron, '0 5 * * *');
+  assert.equal(translationTimezone, 'Asia/Tokyo');
+  const due = new Date('2026-10-27T20:00:00.000Z'); // 05:00 JST on 28 October
+  const atDispatch = new Date('2026-10-27T20:00:25.000Z');
+  assert.equal(shouldRunTranslation(due, new Date('2026-10-27T19:50:00Z'), atDispatch), true);
+  assert.equal(shouldRunTranslation(due, new Date('2026-10-27T20:00:05Z'), atDispatch), false,
+    'starting after 05:00 JST must not catch up');
+  assert.equal(shouldRunTranslation(due, new Date('2026-10-27T19:50:00Z'), new Date('2026-10-27T20:06:00Z')), false);
+  assert.equal(shouldRunTranslation(new Date('2026-10-26T20:00:00Z'), new Date('2026-10-27T19:50:00Z'), atDispatch), false);
 });

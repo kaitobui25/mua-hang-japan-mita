@@ -1,9 +1,17 @@
-export const TRANSLATION_ACTIVE_DELAY_MS = 30_000;
-export const TRANSLATION_IDLE_DELAY_MS = 2 * 60 * 60 * 1000;
+export const translationCron = '0 5 * * *';
+export const translationTimezone = 'Asia/Tokyo';
 
-/** Keep filling existing verified-source fields while the PC is running.
- * When requests cannot yield valid translations, wait instead of burning quota.
- */
-export function nextTranslationDelayMs(result: { translated: number; paused?: boolean }): number {
-  return result.translated > 0 && !result.paused ? TRANSLATION_ACTIVE_DELAY_MS : TRANSLATION_IDLE_DELAY_MS;
+/** 05:00 JST is 20:00 UTC on the previous calendar day. */
+export function expectedTranslationAt(now = new Date()): Date {
+  const due = new Date(now);
+  due.setUTCHours(20, 0, 0, 0);
+  if (due > now) due.setUTCDate(due.getUTCDate() - 1);
+  return due;
+}
+
+/** No startup catch-up, even when the machine boots shortly after 05:00. */
+export function shouldRunTranslation(createdAt: Date, startedAt: Date, now = new Date()): boolean {
+  const due = expectedTranslationAt(now).getTime();
+  return startedAt.getTime() <= due && createdAt.getTime() >= due &&
+    createdAt.getTime() <= now.getTime() && now.getTime() - due <= 5 * 60 * 1000;
 }

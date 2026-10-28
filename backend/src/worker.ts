@@ -5,40 +5,16 @@ import { db } from './db/pool.js';
 import { importObservedSnapshot, syncCatalog, seedExistingDetails, acknowledgeSourceAccess } from './ingestion/sync.js';
 import { processNextImport } from './admin/imports.js';
 import { dailyCron, dailyTimezone, shouldRunDaily } from './ingestion/schedule.js';
-import { translatePendingProducts } from './translation/jobs.js';
 import { openNeoManualVerification } from './ingestion/neo.js';
 import { seeds } from './ingestion/source.js';
 import { claimDueAmazonContinuation, seedAmazonPause } from './ingestion/source-access.js';
-import { nextTranslationDelayMs, TRANSLATION_IDLE_DELAY_MS } from './translation/schedule.js';
-
-// Prevent the scheduled scan, import queue and translation timer from spending the
-// same free daily model quota concurrently in this Windows worker process.
-let translationWork: ReturnType<typeof translatePendingProducts> | undefined;
-function runTranslation(limit = 30) {
-  if (!translationWork) {
-    translationWork = translatePendingProducts(limit).finally(() => { translationWork = undefined; });
-  }
-  return translationWork;
-}
-
-async function syncAndTranslate() {
-  const result = await syncCatalog();
-  try { await runTranslation(); }
-  catch { console.error('Translation database job failed; catalog data remains available.'); }
-  return result;
-}
 
 const command = process.argv[2];
 if (command === 'once') {
-  try { await syncAndTranslate(); }
+  try { await syncCatalog(); }
   finally { await db.end(); }
 } else if (command === 'import') {
   try { console.log('Imported observed products:', await importObservedSnapshot()); }
-  finally { await db.end(); }
-} else if (command === 'translate') {
-  const parsed = Number(process.env.TRANSLATION_BATCH_LIMIT ?? '30');
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 30) throw Error('TRANSLATION_BATCH_LIMIT must be 1..30');
-  try { await runTranslation(parsed); }
   finally { await db.end(); }
 } else if (command === 'backfill:seed') {
   try { console.log('Existing catalog ASINs newly queued:', await seedExistingDetails()); }
@@ -101,8 +77,7 @@ if (command === 'once') {
   const startedAt = new Date();
   // pg-boss DatabaseOptions.max controls its own pg.Pool (separate from db).
   const boss = new PgBoss({ connectionString: config.databaseUrl, schema: 'mita_queue', max: config.bossPoolMax, connectionTimeoutMillis: 10000 });
-  // OpenRouter inference may occupy the only default DB connection for many
-  // seconds. Keep the CAPTCHA deadline observable with DB_POOL_MAX=1.
+  // Source-block tracking has an independent connection to survive pool pressure.
   const continuationPool = new Pool({ connectionString: config.databaseUrl, max: 1 });
   // pg.Pool emits idle-connection errors asynchronously. Without a listener,
   // a temporary DB/tunnel outage would terminate the entire daily worker.
@@ -113,37 +88,13 @@ if (command === 'once') {
   let continuationWork: Promise<void> = Promise.resolve();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let continuationTimer: ReturnType<typeof setTimeout> | undefined;
-  let translationTimer: ReturnType<typeof setTimeout> | undefined;
-  // One shared scheduler for startup polling, manual import and CAPTCHA
-  // fallback: an actively progressing batch replaces an old 2-hour timer.
-  const scheduleTranslation = (delayMs: number) => {
-    if (stopping) return;
-    if (translationTimer) clearTimeout(translationTimer);
-    translationTimer = setTimeout(() => void pollTranslations(), delayMs);
-  };
-  const triggerTranslation = async (limit = 30) => {
-    try {
-      const result = await runTranslation(limit);
-      scheduleTranslation(nextTranslationDelayMs(result));
-      return result;
-    } catch {
-      console.error('Background translation unavailable; source catalog retained.');
-      scheduleTranslation(TRANSLATION_IDLE_DELAY_MS);
-      return null;
-    }
-  };
-  const pollTranslations = async () => { await triggerTranslation(); };
   const pollContinuation = () => {
     continuationWork = (async () => {
       try {
-        // A durable 30s deadline turns a source-wide CAPTCHA pause into
-        // independent catalog work. This timer never awaits Admin Import,
-        // which may wait behind translator's occupied DB_POOL_MAX=1 connection.
+        // Persist the source-block timeout for owner visibility. Translation
+        // is a separate 05:00 process and never starts from a CAPTCHA event.
         if (await claimDueAmazonContinuation(continuationPool)) {
-          console.warn('Amazon still blocked after 30s; local translation fallback dispatched. No Amazon retry or auto-ACK.');
-          void triggerTranslation().then(result => {
-            if (result) console.log(`CAPTCHA fallback finished: ${result.translated} translations updated, ${result.failed} unavailable, ${result.skipped} unchanged.`);
-          });
+          console.warn('Amazon still blocked after 30s; awaiting manual verification. No Amazon retry or auto-ACK.');
         }
       } catch {
         console.error('CAPTCHA continuation timer unavailable; retrying without clearing the source block.');
@@ -155,7 +106,7 @@ if (command === 'once') {
   const pollImports = () => {
     importWork = (async () => {
       try {
-        if (await processNextImport()) void triggerTranslation(1);
+        await processNextImport();
       }
       catch { console.error('ASIN import queue error; check database/tunnel connectivity.'); }
       if (!stopping) timer = setTimeout(pollImports, 3000);
@@ -172,34 +123,26 @@ if (command === 'once') {
       for (const job of jobs) {
         if (shouldRunDaily(job.createdOn, startedAt)) {
           await syncCatalog();
-          // Same adaptive translation scheduler used by the startup timer and
-          // CAPTCHA continuation; a successful daily batch gets its next 30s run.
-          await triggerTranslation();
         } else console.log('Skipped daily scan from downtime/outside the scheduled window.');
       }
     });
     await boss.schedule('catalog.daily', dailyCron, {}, { tz: dailyTimezone });
     pollContinuation();
     pollImports();
-    // Translation can catch up while PC is on even when it missed the 04:00
-    // scan; this does NOT perform an off-schedule Amazon scrape.
-    scheduleTranslation(5000);
     console.log('Mita catalog worker active, 04:00 Asia/Tokyo daily');
     const halt = async () => {
       stopping = true;
       if (timer) clearTimeout(timer);
       if (continuationTimer) clearTimeout(continuationTimer);
-      if (translationTimer) clearTimeout(translationTimer);
       await continuationWork;
       await importWork;
-      if (translationWork) await translationWork.catch(() => {});
       await boss.stop(); await continuationPool.end(); await db.end(); process.exit(0);
     };
     process.once('SIGINT', () => void halt());
     process.once('SIGTERM', () => void halt());
   } catch (error) { await boss.stop(); await continuationPool.end(); await db.end(); throw error; }
 } else {
-  console.error('Usage: tsx src/worker.ts once|import|translate|backfill:seed|backfill:status|backfill:ack|captcha:open|backfill|daily');
+  console.error('Usage: tsx src/worker.ts once|import|backfill:seed|backfill:status|backfill:ack|captcha:open|backfill|daily');
   process.exitCode = 1;
   await db.end();
 }

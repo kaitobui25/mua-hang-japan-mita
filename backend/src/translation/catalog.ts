@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 import type { DetailSnapshot } from '../ingestion/source.js';
-import { sourceHash, sourceText, nameHash } from './jobs.js';
+import { sourceHash, sourceText } from './jobs.js';
 import type { ProductText } from './openrouter.js';
 
 type CatalogText = {
@@ -10,7 +10,7 @@ type CatalogText = {
   detail?: DetailSnapshot | null;
 };
 
-/** Apply only current translations to already-visible products; keep original names in PostgreSQL. */
+/** Successful names stay visible forever; only old full descriptions require a matching source. */
 export async function applyTranslations(products: CatalogText[], client: Pick<PoolClient, 'query'>) {
   if (!products.length) return;
   const { rows } = await client.query<{
@@ -28,9 +28,9 @@ export async function applyTranslations(products: CatalogText[], client: Pick<Po
       ingredients: d?.ingredients ?? [], usage: d?.usage ?? [], specs: d?.specs ?? {},
       cautions: d?.cautions ?? []
     });
-    if ((translated.name_only ? nameHash(original) : sourceHash(original)) !== translated.source_hash || !translated.name) continue;
+    if (!translated.name) continue;
     product.name = translated.name;
-    if (d && translated.detail && !translated.name_only) product.detail = {
+    if (d && translated.detail && !translated.name_only && sourceHash(original) === translated.source_hash) product.detail = {
       ...d,
       features: translated.detail.features,
       ingredients: translated.detail.ingredients,

@@ -8,7 +8,7 @@ function Stop-Children([int]$parent) {
     Stop-Process -Id $child.ProcessId -ErrorAction SilentlyContinue
   }
 }
-foreach ($name in @('cloudflared-quick','caddy-tunnel','caddy-public','public-ddns','public-worker','public-web','public-api')) {
+foreach ($name in @('cloudflared-quick','caddy-tunnel','caddy-public','public-ddns','public-translator','public-worker','public-web','public-api')) {
   $recordPath = Join-Path $runtime "$name.pid.json"
   if (!(Test-Path $recordPath)) { continue }
   $record = Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json

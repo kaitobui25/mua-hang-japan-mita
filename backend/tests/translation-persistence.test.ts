@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { db } from '../src/db/pool.js';
 import pg from 'pg';
 import { config } from '../src/config.js';
-import { saveTranslationIfCurrent, saveNamesIfCurrent, markDetailTranslationFailed, sourceHash, nameHash, sourceText, translatePendingProducts } from '../src/translation/jobs.js';
+import { saveTranslationIfCurrent, saveNamesIfCurrent, markDetailTranslationFailed, sourceHash, nameHash, sourceText, translatePendingNames } from '../src/translation/jobs.js';
 
 after(async () => { await db.end(); });
 
@@ -54,6 +54,10 @@ test('verified name-only translation survives a later detail error and never ove
     assert.equal(retained.rows[0].name_only, true);
     assert.equal(retained.rows[0].source_hash, hash, 'retain independent title hash');
     assert.equal(await saveNamesIfCurrent([{ asin, hash, name: 'DHC translation overwritten' }], 'mock:free', client), 0);
+    await client.query('UPDATE products SET name=$2 WHERE asin=$1', [asin, 'DHC 新しいビタミン 120粒']);
+    assert.equal(await saveNamesIfCurrent([{ asin, hash: nameHash({ name: 'DHC 新しいビタミン 120粒' }), name: 'DHC vitamin 120 viên' }], 'mock:free', client), 0,
+      'a successful ASIN must never have its title translated again after Amazon changes it');
+    await client.query('UPDATE products SET name=$2 WHERE asin=$1', [asin, name]);
     assert.equal(await saveTranslationIfCurrent(asin, sourceHash(original), { text: { ...original, name: 'DHC vitamin 60 viên' }, model: 'mock:free' }, client), true);
     const full = await client.query<{ name_only: boolean }>('SELECT name_only FROM product_translations WHERE asin=$1', [asin]);
     assert.equal(full.rows[0].name_only, false);
@@ -71,7 +75,7 @@ test('separate worker cannot spend free translation quota while another process 
   try {
     await owner.query('SELECT pg_advisory_lock(70400300)');
     process.env.OPENROUTER_API_KEY = 'fixture-not-a-real-key';
-    assert.deepEqual(await translatePendingProducts(1), { translated: 0, failed: 0, skipped: 0, paused: true });
+    assert.deepEqual(await translatePendingNames(), { translated: 0, failed: 0, skipped: 0, paused: true });
   } finally {
     if (previous === undefined) delete process.env.OPENROUTER_API_KEY;
     else process.env.OPENROUTER_API_KEY = previous;

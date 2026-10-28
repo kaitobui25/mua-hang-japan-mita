@@ -5,7 +5,7 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $runtime = Join-Path $root '.agents/runtime'
 $stopCmdlet = $PSCmdlet
 
-foreach ($name in @('worker','web','api')) {
+foreach ($name in @('translator','worker','web','api')) {
   $recordPath = Join-Path $runtime "$name.pid.json"
   if (!(Test-Path -LiteralPath $recordPath)) { continue }
   $record = Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json
