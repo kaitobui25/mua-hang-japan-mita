@@ -53,7 +53,9 @@ if ($dailyTranslator) {
 } else {
   Start-MitaService 'translator' $backend 'worker:translate:daily' 0
 }
+& (Join-Path $PSScriptRoot 'start-local-detail.ps1')
 Write-Host 'Local Mita: http://127.0.0.1:3000'
 Write-Host 'Daily catalog sync: 04:00 Asia/Tokyo'
 Write-Host 'Daily name translation: 05:00 Asia/Tokyo (no catch-up)'
+Write-Host 'Daily local detail translation: 05:15 Asia/Tokyo (no catch-up)'
 Write-Host 'Manual stop: ./scripts/stop-local.ps1 (add -StopDatabase to stop the project PostgreSQL cluster)'

@@ -1,7 +1,7 @@
 import type { PoolClient } from 'pg';
 import type { DetailSnapshot } from '../ingestion/source.js';
-import { sourceHash, sourceText } from './jobs.js';
 import type { ProductText } from './openrouter.js';
+import { renderDetail, type DetailText, type DetailItem } from './detail-text.js';
 
 type CatalogText = {
   asin: string;
@@ -10,7 +10,7 @@ type CatalogText = {
   detail?: DetailSnapshot | null;
 };
 
-/** Successful names stay visible forever; only old full descriptions require a matching source. */
+/** Successful names and details remain visible even after the source changes. */
 export async function applyTranslations(products: CatalogText[], client: Pick<PoolClient, 'query'>) {
   if (!products.length) return;
   const { rows } = await client.query<{
@@ -23,14 +23,8 @@ export async function applyTranslations(products: CatalogText[], client: Pick<Po
     const translated = byAsin.get(product.asin);
     if (!translated) continue;
     const d = product.detail;
-    const original = sourceText({
-      name: product.name, brand: product.brand, features: d?.features ?? [],
-      ingredients: d?.ingredients ?? [], usage: d?.usage ?? [], specs: d?.specs ?? {},
-      cautions: d?.cautions ?? []
-    });
-    if (!translated.name) continue;
-    product.name = translated.name;
-    if (d && translated.detail && !translated.name_only && sourceHash(original) === translated.source_hash) product.detail = {
+    if (translated.name) product.name = translated.name;
+    if (d && translated.detail && !translated.name_only) product.detail = {
       ...d,
       features: translated.detail.features,
       ingredients: translated.detail.ingredients,
@@ -38,5 +32,17 @@ export async function applyTranslations(products: CatalogText[], client: Pick<Po
       specs: translated.detail.specs,
       cautions: translated.detail.cautions
     };
+  }
+  const local = await client.query<{ asin: string; snapshot: DetailText; items: DetailItem[] }>(`
+    SELECT l.asin,l.snapshot,COALESCE(jsonb_agg(jsonb_build_object(
+      'slot',i.slot,'source',i.source,'translated',i.translated)) FILTER (WHERE i.slot IS NOT NULL),'[]') AS items
+    FROM local_detail_translations l LEFT JOIN local_detail_translation_items i ON i.asin=l.asin
+    WHERE l.asin=ANY($1::varchar(10)[]) GROUP BY l.asin`, [products.map(p => p.asin)]);
+  const localByAsin = new Map(local.rows.map(row => [row.asin, row]));
+  for (const product of products) {
+    const saved = localByAsin.get(product.asin);
+    const legacy = byAsin.get(product.asin);
+    if (!product.detail || !saved?.snapshot || (legacy?.detail && !legacy.name_only)) continue;
+    product.detail = { ...product.detail, ...renderDetail(saved.snapshot, saved.items) };
   }
 }

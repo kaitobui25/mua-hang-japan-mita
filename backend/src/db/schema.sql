@@ -90,6 +90,24 @@ CREATE TABLE IF NOT EXISTS product_translations (
 -- to fully translated (false) for backward compatibility.
 ALTER TABLE product_translations ADD COLUMN IF NOT EXISTS name_only boolean NOT NULL DEFAULT false;
 ALTER TABLE product_translations ADD COLUMN IF NOT EXISTS detail_attempted_at timestamptz;
+-- Immutable source snapshots and independently durable atomic translations.
+CREATE TABLE IF NOT EXISTS local_detail_translations (
+  asin varchar(10) PRIMARY KEY REFERENCES products(asin) ON DELETE CASCADE,
+  snapshot jsonb NOT NULL CHECK (jsonb_typeof(snapshot) = 'object'),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS local_detail_translation_items (
+  asin varchar(10) NOT NULL REFERENCES local_detail_translations(asin) ON DELETE CASCADE,
+  slot text NOT NULL,
+  source text NOT NULL,
+  translated text,
+  model text,
+  attempts integer NOT NULL DEFAULT 0,
+  retry_after timestamptz,
+  error_code text,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (asin, slot)
+);
 -- Also holds discovered children before they have a valid product snapshot.
 CREATE TABLE IF NOT EXISTS product_detail_queue (
   category_slug text NOT NULL REFERENCES categories(slug),
