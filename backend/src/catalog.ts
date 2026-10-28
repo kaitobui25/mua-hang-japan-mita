@@ -91,7 +91,7 @@ export async function listCatalog(options: { category?: string; q?: string; page
   const params: unknown[] = [];
   if (category) { params.push(category); where.push(`category_slug = $${params.length}`); }
   if (q) { params.push(`%${q}%`); where.push(`(name ILIKE $${params.length} OR brand ILIKE $${params.length} OR asin ILIKE $${params.length}
-    OR EXISTS (SELECT 1 FROM product_translations tr WHERE tr.asin=products.asin AND tr.locale='vi' AND tr.status='success' AND tr.name ILIKE $${params.length}))`); }
+    OR EXISTS (SELECT 1 FROM product_translations tr WHERE tr.asin=products.asin AND tr.locale='vi' AND tr.status IN ('success','warning') AND tr.name ILIKE $${params.length}))`); }
   const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const sorting: Record<string, string> = {
     name: 'name ASC',

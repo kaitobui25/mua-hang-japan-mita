@@ -1,3 +1,4 @@
+import { assessTranslation } from './warnings.js';
 // Runs only on the owner's Windows worker. Never deploy an API key to the web/API VPS.
 export const FREE_TRANSLATION_MODELS = [
   'google/gemma-4-31b-it:free',
@@ -152,8 +153,8 @@ export function* packNameBatches<T extends NameInput>(products: T[]): Generator<
 export async function translateNamesBatch(
   products: NameInput[],
   options: { apiKey?: string; fetcher?: typeof fetch; timeoutMs?: number;
-    beforeRequest?: (model: string) => Promise<void>; unavailableModels?: Set<string> } = {}
-): Promise<{ names: Map<string, string>; rejectedAsins: string[]; model: string }> {
+    beforeRequest?: (model: string) => Promise<void>; onFailure?: (model: string, issues: string[]) => Promise<void>; unavailableModels?: Set<string> } = {}
+): Promise<{ names: Map<string, string>; warnings: Map<string, string[]>; rejectedAsins: string[]; model: string }> {
   const apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new TranslationUnavailable(['missing_api_key']);
   if (!nameBatchFits(products) ||
@@ -166,9 +167,10 @@ export async function translateNamesBatch(
   for (const model of FREE_TRANSLATION_MODELS) {
     // Free Inkling is restricted to agentic harnesses, not this translation worker.
     if (model === 'thinkingmachines/inkling-small:free' || options.unavailableModels?.has(model)) continue;
-    let receivedOk = false;
+    let receivedOk = false, requested = false;
     try {
       await options.beforeRequest?.(model);
+      requested = true;
       const response = await fetcher(url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -181,6 +183,7 @@ export async function translateNamesBatch(
       if (!response.ok) {
         if ([403, 429, 500, 502, 503, 504].includes(response.status)) options.unavailableModels?.add(model);
         causes.push(`${model}:http_${response.status}`);
+        await options.onFailure?.(model, [`http_${response.status}`]);
         continue;
       }
       receivedOk = true;
@@ -200,20 +203,26 @@ export async function translateNamesBatch(
       }
       const result = new Map<string, string>();
       const rejectedAsins: string[] = [];
+      const warnings = new Map<string, string[]>();
       for (const [index, item] of translations.entries()) {
         const source = products[index];
         try {
-          const text = assertTranslation({ name: source.name, brand: source.brand,
-            features: [], ingredients: [], usage: [], specs: {}, cautions: [] },
-          { name: item.name, features: [], ingredients: [], usage: [], specs: {}, cautions: [] });
-          result.set(source.asin, text.name);
+          const assessment = assessTranslation(source.name, item.name, (_original, candidate) => {
+            assertTranslation({ name: source.name, brand: source.brand,
+              features: [], ingredients: [], usage: [], specs: {}, cautions: [] },
+            { name: candidate, features: [], ingredients: [], usage: [], specs: {}, cautions: [] });
+          }, 600);
+          result.set(source.asin, assessment.text);
+          if (assessment.issues.length) warnings.set(source.asin, assessment.issues);
         } catch {
-          // A complete reply's unsafe title must not cause valid siblings to be fetched again.
+          // Unusable titles do not cause valid or warned siblings to be fetched again.
           rejectedAsins.push(source.asin);
         }
       }
-      return { names: result, rejectedAsins, model };
+      return { names: result, warnings, rejectedAsins, model };
     } catch (error) {
+      if (requested) await options.onFailure?.(model, error instanceof TranslationUnavailable ? error.causes :
+        [error instanceof Error && ['TimeoutError','AbortError'].includes(error.name) ? 'timeout' : 'invalid_or_unavailable']);
       if (error instanceof TranslationUnavailable) throw error;
       // A malformed or identity-mismatched successful reply may be specific to
       // the batch size/content; split it instead of wasting quota on other models.

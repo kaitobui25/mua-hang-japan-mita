@@ -1,4 +1,5 @@
 ﻿import type { PoolClient } from 'pg';
+import { assessTranslation, logTranslationEvent } from './warnings.js';
 import { db } from '../db/pool.js';
 import { detailItems, type DetailItem, type DetailText } from './detail-text.js';
 import { LocalTranslationError, translateLocalString, validateAtomicTranslation } from './local.js';
@@ -11,7 +12,7 @@ export function detailLimit(value: unknown): number {
 }
 
 export async function translatePendingDetails(options: {
-  limit?: number; signal?: AbortSignal; translate?: typeof translateLocalString;
+  limit?: number; signal?: AbortSignal; log?: typeof logTranslationEvent; translate?: typeof translateLocalString;
   connect?: () => Promise<Pick<PoolClient, 'query' | 'release'>>;
 } = {}): Promise<Run> {
   const limit = detailLimit(options.limit ?? process.env.DETAIL_TRANSLATION_LIMIT ?? 100);
@@ -30,9 +31,9 @@ export async function translatePendingDetails(options: {
       FROM products p JOIN product_details d ON d.asin=p.asin
       LEFT JOIN local_detail_translations l ON l.asin=p.asin
       WHERE NOT EXISTS (SELECT 1 FROM product_translations t WHERE t.asin=p.asin
-        AND t.locale='vi' AND t.status='success' AND NOT t.name_only AND t.detail IS NOT NULL)
+        AND t.locale='vi' AND (t.detail_approved OR (t.status='success' AND NOT t.name_only AND t.detail IS NOT NULL)))
       AND (l.asin IS NULL OR EXISTS (SELECT 1 FROM local_detail_translation_items i
-        WHERE i.asin=p.asin AND i.translated IS NULL AND (i.retry_after IS NULL OR i.retry_after<=now())))
+        WHERE i.asin=p.asin AND (i.translated IS NULL OR i.warning) AND i.attempts<3 AND (i.retry_after IS NULL OR i.retry_after<=now())))
       ORDER BY l.created_at NULLS FIRST,p.asin LIMIT $1`, [limit]);
     for (const row of rows) {
       if (options.signal?.aborted) { result.paused = true; break; }
@@ -46,26 +47,38 @@ export async function translatePendingDetails(options: {
         }
         await client.query('COMMIT');
       } catch (error) { await client.query('ROLLBACK'); throw error; }
-      const { rows: items } = await client.query<DetailItem>(`SELECT slot,source,translated FROM local_detail_translation_items
-        WHERE asin=$1 AND translated IS NULL AND (retry_after IS NULL OR retry_after<=now()) ORDER BY slot`, [row.asin]);
+      const { rows: items } = await client.query<DetailItem>(`SELECT slot,source,translated,attempts,warning FROM local_detail_translation_items
+        WHERE asin=$1 AND (translated IS NULL OR warning) AND attempts<3 AND (retry_after IS NULL OR retry_after<=now()) ORDER BY slot`, [row.asin]);
       for (const item of items) {
         if (options.signal?.aborted) return { ...result, paused: true };
+        // Reserve before inference so a crash still consumes the attempt.
+        const reserved = await client.query<{ attempts: number }>(`UPDATE local_detail_translation_items
+          SET attempts=attempts+1,updated_at=now() WHERE asin=$1 AND slot=$2
+          AND attempts<3 AND (translated IS NULL OR warning) RETURNING attempts`, [row.asin, item.slot]);
+        if (!reserved.rows.length) continue;
+        const attempt = reserved.rows[0].attempts;
         try {
           const output = await (options.translate ?? translateLocalString)(item.source, { signal: options.signal });
-          const text = validateAtomicTranslation(item.source, output.text);
+          const { text, issues } = assessTranslation(item.source, output.text, validateAtomicTranslation);
           // Each accepted string is committed independently, before the next request.
           await client.query(`UPDATE local_detail_translation_items SET translated=$3,model=$4,
-            attempts=attempts+1,retry_after=NULL,error_code=NULL,updated_at=now()
-            WHERE asin=$1 AND slot=$2 AND translated IS NULL`, [row.asin, item.slot, text, output.model]);
+            warning=$5,issues=$6,retry_after=CASE WHEN $5 THEN now()+interval '12 hours' ELSE NULL END,
+            error_code=NULL,updated_at=now()
+            WHERE asin=$1 AND slot=$2 AND (translated IS NULL OR warning)`,
+          [row.asin, item.slot, text, output.model, issues.length>0, JSON.stringify(issues)]);
+          await (options.log ?? logTranslationEvent)({ asin: row.asin, locale: 'vi', field: item.slot, engine: 'gguf',
+            model: output.model, attempt, original: item.source, candidate: text, issues,
+            result: issues.length ? 'warning' : 'success' });
           result.translated++;
         } catch (error) {
-          if (!(error instanceof LocalTranslationError)) throw error;
+          if (!(error instanceof LocalTranslationError) && !(error instanceof Error && error.message === 'invalid_output')) throw error;
           if (options.signal?.aborted) return { ...result, paused: true };
           result.failed++;
-          await client.query(`UPDATE local_detail_translation_items SET attempts=attempts+1,
-            retry_after=now()+interval '12 hours',error_code=$3,updated_at=now()
-            WHERE asin=$1 AND slot=$2 AND translated IS NULL`, [row.asin, item.slot, error.message]);
-          if (error.retryable) return { ...result, paused: true };
+          await client.query(`UPDATE local_detail_translation_items SET retry_after=now()+interval '12 hours',error_code=$3,updated_at=now()
+            WHERE asin=$1 AND slot=$2 AND (translated IS NULL OR warning)`, [row.asin, item.slot, error.message]);
+          await (options.log ?? logTranslationEvent)({ asin: row.asin, locale: 'vi', field: item.slot, engine: 'gguf', model: null,
+            attempt, original: item.source, issues: [error.message], result: 'failed' });
+          if (error instanceof LocalTranslationError && error.retryable) return { ...result, paused: true };
         }
       }
     }

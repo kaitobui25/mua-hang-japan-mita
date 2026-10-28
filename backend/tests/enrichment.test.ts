@@ -26,7 +26,8 @@ test('additive schema upgrades old products and can be reapplied without data lo
     await client.query('CREATE SCHEMA enrichment_migration_test');
     await client.query('SET LOCAL search_path TO enrichment_migration_test');
     // Exact pre-enrichment schema, with only the additive block omitted.
-    const legacy = schema.slice(0, schema.indexOf('CREATE TABLE IF NOT EXISTS product_images')) + schema.slice(schema.indexOf('CREATE TABLE IF NOT EXISTS sync_runs'));
+    const legacy = (schema.slice(0, schema.indexOf('CREATE TABLE IF NOT EXISTS product_images')) + schema.slice(schema.indexOf('CREATE TABLE IF NOT EXISTS sync_runs')))
+      .split('-- Additive WARNING metadata')[0];
     await client.query(legacy);
     await client.query(`INSERT INTO products(asin,category_slug,name,image_url,source_url,source_adapter) VALUES('M000000001',$1,'Original source name','https://m.media-amazon.com/images/I/legacy.jpg','https://www.amazon.co.jp/dp/M000000001','legacy')`, [category]);
     await client.query(schema);

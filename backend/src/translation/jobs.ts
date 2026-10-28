@@ -1,3 +1,4 @@
+import { logTranslationEvent } from './warnings.js';
 import { createHash } from 'node:crypto';
 import { db } from '../db/pool.js';
 import { translateNamesBatch, packNameBatches, readFreeQuota, TranslationUnavailable, type ProductText } from './openrouter.js';
@@ -8,7 +9,7 @@ type SourceRow = {
   features: string[] | null; ingredients: string[] | null; usage: string[] | null;
   specs: Record<string, string> | null; cautions: string[] | null;
   source_hash: string | null; status: string | null; name_only: boolean | null;
-  detail_attempted_at: Date | null; translated_name?: string | null;
+  name_attempts?: number; name_source?: {name: string; brand: string | null}; detail_attempted_at: Date | null; translated_name?: string | null;
 };
 
 export function sourceText(row: Pick<SourceRow, 'name' | 'brand' | 'features' | 'ingredients' | 'usage' | 'specs' | 'cautions'>): ProductText {
@@ -44,29 +45,31 @@ export async function saveTranslationIfCurrent(
       await connection.query('ROLLBACK');
       return false;
     }
-    await connection.query(`INSERT INTO product_translations(asin,locale,name,detail,source_hash,model,status,translated_at,name_only,detail_attempted_at)
-      VALUES($1,'vi',$2,$3,$4,$5,'success',now(),false,now())
+    const saved = await connection.query(`INSERT INTO product_translations(asin,locale,name,detail,source_hash,model,status,translated_at,name_only,detail_attempted_at,detail_approved)
+      VALUES($1,'vi',$2,$3,$4,$5,'success',now(),false,now(),true)
       ON CONFLICT(asin,locale) DO UPDATE SET
         name=COALESCE(product_translations.name,EXCLUDED.name),detail=EXCLUDED.detail,source_hash=EXCLUDED.source_hash,
-        model=EXCLUDED.model,status='success',name_only=false,translated_at=now(),
-        detail_attempted_at=now(),updated_at=now()`,
+        model=EXCLUDED.model,status='success',name_only=false,detail_approved=true,translated_at=now(),
+        detail_attempted_at=now(),updated_at=now()
+        WHERE NOT product_translations.detail_approved AND NOT (product_translations.status='success' AND NOT product_translations.name_only AND product_translations.detail IS NOT NULL)
+        RETURNING asin`,
       [asin, output.text.name, JSON.stringify(output.text), hash, output.model]);
     await connection.query('COMMIT');
-    return true;
+    return Boolean(saved.rowCount);
   } catch (error) {
     await connection.query('ROLLBACK');
     throw error;
   }
 }
 
-/** Atomically accept the first valid name; never retranslate a successful ASIN. */
+/** Retry warned names; the first approved title is permanent. */
 export async function saveNamesIfCurrent(
-  entries: Array<{ asin: string; hash: string; name: string }>, model: string, connection: PoolClient
+  entries: Array<{ asin: string; hash: string; name: string; issues?: string[] }>, model: string, connection: PoolClient
 ): Promise<number> {
   await connection.query('BEGIN');
   try {
     const { rows } = await connection.query<SourceRow>(`SELECT p.asin,p.name,p.brand,d.features,d.ingredients,d.usage,d.specs,d.cautions,
-        t.source_hash,t.status,t.name_only,t.name AS translated_name FROM products p
+        t.source_hash,t.status,t.name_only,t.name_source,t.name AS translated_name FROM products p
         LEFT JOIN product_details d ON d.asin=p.asin
         LEFT JOIN product_translations t ON t.asin=p.asin AND t.locale='vi'
         WHERE p.asin=ANY($1::varchar(10)[]) ORDER BY p.asin FOR UPDATE OF p`,
@@ -75,15 +78,16 @@ export async function saveNamesIfCurrent(
     let saved = 0;
     for (const entry of entries) {
       const row = latest.get(entry.asin);
-      if (!row || nameHash(row) !== entry.hash) continue;
+      if (!row || nameHash(row.name_source ?? row) !== entry.hash) continue;
       if (row.status === 'success' && row.translated_name) continue;
-      await connection.query(`INSERT INTO product_translations(asin,locale,name,detail,source_hash,model,status,translated_at,name_only)
-        VALUES($1,'vi',$2,NULL,$3,$4,'success',now(),true)
-        ON CONFLICT(asin,locale) DO UPDATE SET name=EXCLUDED.name,detail=NULL,
-          source_hash=EXCLUDED.source_hash,model=EXCLUDED.model,status='success',
-          name_only=true,translated_at=now(),updated_at=now()
+      await connection.query(`INSERT INTO product_translations(asin,locale,name,source_hash,model,status,translated_at,name_only,name_issues)
+        VALUES($1,'vi',$2,$3,$4,$5,now(),true,$6)
+        ON CONFLICT(asin,locale) DO UPDATE SET name=EXCLUDED.name,
+          source_hash=CASE WHEN product_translations.detail IS NULL THEN EXCLUDED.source_hash ELSE product_translations.source_hash END,
+          model=EXCLUDED.model,status=EXCLUDED.status,name_issues=EXCLUDED.name_issues,
+          translated_at=now(),updated_at=now()
           WHERE product_translations.status <> 'success' OR product_translations.name IS NULL`,
-      [entry.asin, entry.name, entry.hash, model]);
+      [entry.asin, entry.name, entry.hash, model, entry.issues?.length ? 'warning' : 'success', JSON.stringify(entry.issues ?? [])]);
       saved++;
     }
     await connection.query('COMMIT');
@@ -96,9 +100,8 @@ export async function markDetailTranslationFailed(asin: string, hash: string, co
   await connection.query(`INSERT INTO product_translations(asin,locale,source_hash,status,detail_attempted_at)
     VALUES($1,'vi',$2,'failed',now())
     ON CONFLICT(asin,locale) DO UPDATE SET
-      status=CASE WHEN product_translations.name_only AND product_translations.name IS NOT NULL
-        THEN 'success' ELSE 'failed' END,
-      source_hash=CASE WHEN product_translations.name_only AND product_translations.name IS NOT NULL
+      status=CASE WHEN product_translations.status IN ('success','warning') THEN product_translations.status ELSE 'failed' END,
+      source_hash=CASE WHEN product_translations.status IN ('success','warning')
         THEN product_translations.source_hash ELSE EXCLUDED.source_hash END,
       detail_attempted_at=now(),updated_at=now()`, [asin, hash]);
 }
@@ -120,14 +123,14 @@ export function translationFailureStopsBatch(error: unknown): boolean {
 export type TranslationRun = { translated: number; failed: number; skipped: number; paused: boolean };
 
 /** Independent 05:00 JST PC worker: names only, until the catalog or free quota runs out. */
-export async function translatePendingNames(): Promise<TranslationRun> {
+export async function translatePendingNames(options: { log?: typeof logTranslationEvent; connect?: () => Promise<PoolClient> } = {}): Promise<TranslationRun> {
   if (!process.env.OPENROUTER_API_KEY) {
     console.log('Name translation deferred: OPENROUTER_API_KEY not configured on PC.');
     return { translated: 0, failed: 0, skipped: 0, paused: true };
   }
   // One translator across manual CLI, scheduled PC workers and remote DB-tunnel
   // connections. Session-scoped PG lock is released even when inference fails.
-  const lock = await db.connect();
+  const lock = await (options.connect ?? (() => db.connect()))();
   let acquired = false;
   try {
     const result = await lock.query<{ acquired: boolean }>('SELECT pg_try_advisory_lock(70400300) AS acquired');
@@ -158,10 +161,11 @@ export async function translatePendingNames(): Promise<TranslationRun> {
     remaining--;
     previousRequestAt = Date.now();
   };
-  const { rows } = await lock.query<SourceRow>(`SELECT p.asin,p.name,p.brand,
-      t.source_hash,t.status,t.name_only,t.name AS translated_name FROM products p
+  const { rows } = await lock.query<SourceRow>(`SELECT p.asin,COALESCE(t.name_source->>'name',p.name) AS name,
+      CASE WHEN t.name_source IS NOT NULL THEN t.name_source->>'brand' ELSE p.brand END AS brand,
+      t.name_attempts,t.source_hash,t.status,t.name_only,t.name_source,t.name AS translated_name FROM products p
       LEFT JOIN product_translations t ON t.asin=p.asin AND t.locale='vi'
-      WHERE t.status IS DISTINCT FROM 'success' OR t.name IS NULL
+      WHERE (t.status IS DISTINCT FROM 'success' OR t.name IS NULL) AND COALESCE(t.name_attempts,0)<3
       ORDER BY CASE WHEN t.status='failed' THEN 1 ELSE 0 END,
         length(p.name) ASC, COALESCE(t.updated_at, '1970-01-01'::timestamptz) ASC, p.asin ASC`);
   let translated = 0, failed = 0, skipped = 0, paused = false;
@@ -169,28 +173,76 @@ export async function translatePendingNames(): Promise<TranslationRun> {
     for (const row of rejected) {
       await lock.query(`INSERT INTO product_translations(asin,locale,source_hash,status,name_only)
         VALUES($1,'vi',$2,'failed',true)
-        ON CONFLICT(asin,locale) DO UPDATE SET status='failed',source_hash=EXCLUDED.source_hash,
-        name_only=true,updated_at=now()
+        ON CONFLICT(asin,locale) DO UPDATE SET status=CASE WHEN product_translations.status='warning' THEN 'warning' ELSE 'failed' END,updated_at=now()
         WHERE product_translations.status <> 'success' OR product_translations.name IS NULL`,
       [row.asin, nameHash(row)]);
     }
   };
+  const attempts = new Map(rows.map(row => [row.asin, row.name_attempts ?? 0]));
   batches: for (const packed of packNameBatches(rows)) {
-    // Bound recovery to two splits: at most seven attempts per packed batch.
+    // At most two split levels, still bounded by three requests per ASIN.
     const pending = [{ batch: packed, depth: 0 }];
     while (pending.length) {
-      const { batch, depth } = pending.shift()!;
+      let { batch, depth } = pending.shift()!;
+      batch = batch.filter(row => (attempts.get(row.asin) ?? 0)<3);
+      if (!batch.length) continue;
       try {
         const result = await translateNamesBatch(batch.map(row => ({ asin: row.asin, name: row.name, brand: row.brand })),
-          { beforeRequest, unavailableModels });
+          { beforeRequest: async () => {
+            if (batch.some(row => (attempts.get(row.asin) ?? 0)>=3)) throw new TranslationUnavailable(['attempt_cap']);
+            await beforeRequest();
+            await lock.query('BEGIN');
+            try {
+              for (const row of batch) {
+                const reserved = await lock.query<{ name_attempts: number }>(`INSERT INTO product_translations
+                  (asin,locale,source_hash,status,name_only,name_attempts,name_source)
+                  VALUES($1,'vi',$2,'pending',true,1,$3)
+                  ON CONFLICT(asin,locale) DO UPDATE SET name_attempts=product_translations.name_attempts+1,
+                    name_source=COALESCE(product_translations.name_source,EXCLUDED.name_source)
+                  WHERE product_translations.name_attempts<3 AND
+                    (product_translations.status<>'success' OR product_translations.name IS NULL)
+                  RETURNING name_attempts`, [row.asin, nameHash(row), JSON.stringify({ name: row.name, brand: row.brand })]);
+                if (!reserved.rows.length) throw new TranslationUnavailable(['attempt_cap']);
+                // Commit the batch reservations together.
+              }
+              await lock.query('COMMIT');
+              for (const row of batch) attempts.set(row.asin, (attempts.get(row.asin) ?? 0)+1);
+            } catch (error) { await lock.query('ROLLBACK'); throw error; }
+          }, onFailure: async (model, issues) => {
+            for (const row of batch) await (options.log ?? logTranslationEvent)({ asin: row.asin, locale: 'vi',
+              field: 'name', engine: 'openrouter', model, attempt: attempts.get(row.asin) ?? 0,
+              original: row.name, issues, result: 'failed' });
+          }, unavailableModels });
         const entries = batch.filter(row => result.names.has(row.asin)).map(row => ({ asin: row.asin,
-          hash: nameHash(row), name: result.names.get(row.asin)! }));
+          hash: nameHash(row), name: result.names.get(row.asin)!, issues: result.warnings.get(row.asin) }));
         if (entries.length) translated += await saveNamesIfCurrent(entries, result.model, lock);
+        for (const row of batch) await (options.log ?? logTranslationEvent)({ asin: row.asin, locale: 'vi', field: 'name',
+          engine: 'openrouter', model: result.model, attempt: attempts.get(row.asin) ?? 0, original: row.name,
+          candidate: result.names.get(row.asin), issues: result.warnings.get(row.asin) ??
+            (result.names.has(row.asin) ? [] : ['invalid_output']),
+          result: result.warnings.has(row.asin) ? 'warning' : result.names.has(row.asin) ? 'success' : 'failed' });
         const rejected = new Set(result.rejectedAsins);
         await markNamesFailed(batch.filter(row => rejected.has(row.asin)));
         failed += rejected.size;
         console.log(`Translated names: ${translated} in current batch`);
       } catch (error) {
+        if (!(error instanceof TranslationUnavailable)) throw error;
+        if (error.causes.includes('attempt_cap')) { await markNamesFailed(batch); failed += batch.length; continue; }
+        if (error.causes.includes('invalid_name_batch')) {
+          // Oversized input fails without making a provider request, but is still capped.
+          for (const row of batch) {
+            await lock.query(`INSERT INTO product_translations(asin,locale,source_hash,status,name_only,name_attempts,name_source)
+              VALUES($1,'vi',$2,'failed',true,1,$3) ON CONFLICT(asin,locale) DO UPDATE
+              SET name_attempts=LEAST(3,product_translations.name_attempts+1),
+                name_source=COALESCE(product_translations.name_source,EXCLUDED.name_source)
+              WHERE product_translations.status<>'success' OR product_translations.name IS NULL`,
+            [row.asin, nameHash(row), JSON.stringify({ name: row.name, brand: row.brand })]);
+            attempts.set(row.asin, (attempts.get(row.asin) ?? 0)+1);
+            await (options.log ?? logTranslationEvent)({ asin: row.asin, locale: 'vi', field: 'name',
+              engine: 'openrouter', model: null, attempt: attempts.get(row.asin)!, original: row.name,
+              issues: ['source_too_large'], result: 'failed' });
+          }
+        }
         if (error instanceof TranslationUnavailable && error.causes.includes('name_batch_truncated') && batch.length > 1 && depth < 2) {
           // Discard the partial reply. Retry both halves through the same quota gate;
           // persist each validated half independently so later exhaustion cannot revoke it.
@@ -202,7 +254,7 @@ export async function translatePendingNames(): Promise<TranslationRun> {
         if (error instanceof TranslationUnavailable && error.causes.includes('free_quota_exhausted')) { paused = true; break batches; }
         failed += batch.length;
         console.error(`Title batch unavailable: ${error instanceof TranslationUnavailable ? error.causes.join(', ') : 'unavailable'}`);
-        // Failed names are eligible again at the next scheduled run.
+        // Failed names remain eligible only while their attempt budget remains.
         await markNamesFailed(batch);
         if (translationFailureStopsBatch(error)) { paused = true; break batches; }
       }

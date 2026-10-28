@@ -10,13 +10,13 @@ type CatalogText = {
   detail?: DetailSnapshot | null;
 };
 
-/** Successful names and details remain visible even after the source changes. */
+/** Approved and usable warned text remain visible against their frozen sources. */
 export async function applyTranslations(products: CatalogText[], client: Pick<PoolClient, 'query'>) {
   if (!products.length) return;
   const { rows } = await client.query<{
     asin: string; name: string; detail: ProductText | null; source_hash: string; name_only: boolean;
   }>(`SELECT asin,name,detail,source_hash,name_only FROM product_translations
-      WHERE locale='vi' AND status='success' AND asin=ANY($1::varchar(10)[])`,
+      WHERE locale='vi' AND (status IN ('success','warning') OR detail_approved) AND asin=ANY($1::varchar(10)[])`,
     [products.map(product => product.asin)]);
   const byAsin = new Map(rows.map(row => [row.asin, row]));
   for (const product of products) {

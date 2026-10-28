@@ -193,3 +193,18 @@ INSERT INTO categories(slug, name, amazon_seed_url, shipping_estimate_vnd) VALUE
  ('thuc-pham-bo-sung', 'Thực phẩm bổ sung · Whey protein', 'https://www.amazon.co.jp/gp/bestsellers/hpc/3457072051', 40000),
  ('thuc-pham-cho-be', 'Thực phẩm cho bé', 'https://www.amazon.co.jp/s?k=%E3%83%99%E3%83%93%E3%83%BC%E3%83%95%E3%83%BC%E3%83%89&i=food-beverage', 55000)
 ON CONFLICT (slug) DO NOTHING;
+
+-- Additive WARNING metadata; retain existing approved output and precise counters.
+ALTER TABLE product_translations DROP CONSTRAINT IF EXISTS product_translations_status_check;
+ALTER TABLE product_translations ADD CONSTRAINT product_translations_status_check
+  CHECK (status IN ('pending','success','failed','warning'));
+ALTER TABLE product_translations ADD COLUMN IF NOT EXISTS name_attempts integer NOT NULL DEFAULT 0;
+ALTER TABLE product_translations ADD COLUMN IF NOT EXISTS name_source jsonb;
+ALTER TABLE product_translations ADD COLUMN IF NOT EXISTS name_issues jsonb NOT NULL DEFAULT '[]';
+ALTER TABLE local_detail_translation_items ADD COLUMN IF NOT EXISTS warning boolean NOT NULL DEFAULT false;
+ALTER TABLE local_detail_translation_items ADD COLUMN IF NOT EXISTS issues jsonb NOT NULL DEFAULT '[]';
+
+-- A legacy full detail approval is independent of a missing/warned title.
+ALTER TABLE product_translations ADD COLUMN IF NOT EXISTS detail_approved boolean NOT NULL DEFAULT false;
+UPDATE product_translations SET detail_approved=true
+  WHERE status='success' AND NOT name_only AND detail IS NOT NULL AND NOT detail_approved;

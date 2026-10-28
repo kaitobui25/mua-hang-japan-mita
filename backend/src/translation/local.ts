@@ -1,3 +1,4 @@
+import { assessTranslation } from './warnings.js';
 export function localEndpoint(value = process.env.LLAMA_BASE_URL ?? 'http://127.0.0.1:8080/v1'): string {
   const url = new URL(value);
   if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]'].includes(url.hostname) ||
@@ -13,8 +14,9 @@ export class LocalTranslationError extends Error {
 export const hasJapanese = (text: string) => /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text);
 
 export function validateAtomicTranslation(source: string, value: unknown): string {
-  if (typeof value !== 'string' || !value.trim() || value.length > 6000 || hasJapanese(value) ||
+  if (typeof value !== 'string' || !value.trim() || value.length > 6000 ||
       /```|<\/?think>|^\s*[{[]/i.test(value)) throw new LocalTranslationError(false, 'invalid_output');
+  if (hasJapanese(value)) throw new LocalTranslationError(false, 'residual_japanese');
   // Vietnamese commonly writes a decimal comma where Japanese uses a dot.
   // Only normalize one/two-digit fractional parts to avoid treating 1,000
   // (possible thousands grouping) as interchangeable with 1.000.
@@ -68,5 +70,8 @@ export async function translateLocalString(source: string, options: {
   catch { throw new LocalTranslationError(false, 'invalid_response'); }
   const choice = payload?.choices?.[0];
   if (choice?.finish_reason !== 'stop') throw new LocalTranslationError(false, 'incomplete_output');
-  return { text: validateAtomicTranslation(source, choice.message?.content), model: `llama.cpp:${model}` };
+  let assessment;
+  try { assessment = assessTranslation(source, choice.message?.content, validateAtomicTranslation); }
+  catch { throw new LocalTranslationError(false, 'invalid_output'); }
+  return { text: assessment.text, model: `llama.cpp:${model}` };
 }

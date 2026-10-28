@@ -210,7 +210,7 @@ test('oversized singleton stays isolated and is rejected before quota or HTTP us
 });
 
 
-test('one invalid name is isolated without refetching or mutating valid siblings', async () => {
+test('one warned name is retained without refetching or mutating valid siblings', async () => {
   const products = Array.from({ length: 30 }, (_, i) =>
     Object.freeze({ asin: `B${String(i).padStart(9, '0')}`, name: 'Vitamin 500mg', brand: null }));
   const before = JSON.stringify(products);
@@ -218,8 +218,9 @@ test('one invalid name is isolated without refetching or mutating valid siblings
     translations: products.map((p, i) => ({ asin: p.asin, name: i === 29 ? 'Vitamin 500g' : p.name }))
   }) } }] })) as typeof fetch;
   const result = await translateNamesBatch(products, { apiKey: 'test', fetcher });
-  assert.equal(result.names.size, 29);
-  assert.deepEqual(result.rejectedAsins, [products[29].asin]);
+  assert.equal(result.names.size, 30);
+  assert.deepEqual(result.rejectedAsins, []);
+  assert.deepEqual(result.warnings.get(products[29].asin), ['units_changed']);
   assert.equal(JSON.stringify(products), before);
 });
 
@@ -255,7 +256,7 @@ test('truncated name replies cannot produce a publishable translation', async ()
 });
 
 
-test('partial name acceptance still rejects changed quantities, units, codes, brands and empty names in one call', async () => {
+test('name batches retain semantic warnings and reject only unusable titles', async () => {
   const products = Array.from({ length: 7 }, (_, i) => Object.freeze({
     asin: `B${String(i).padStart(9, '0')}`, name: 'SAVAS AB1234 500mg', brand: 'SAVAS'
   }));
@@ -271,7 +272,8 @@ test('partial name acceptance still rejects changed quantities, units, codes, br
   }) as typeof fetch;
   const result = await translateNamesBatch(products, { apiKey: 'test', fetcher, unavailableModels });
   assert.equal(calls, 1);
-  assert.deepEqual([...result.names], [[products[6].asin, products[6].name]]);
-  assert.deepEqual(result.rejectedAsins, products.slice(0, 6).map(p => p.asin));
+  assert.deepEqual([...result.names], [0,1,2,3,6].map(i => [products[i].asin, outputs[i]]));
+  assert.equal(result.warnings.size, 4);
+  assert.deepEqual(result.rejectedAsins, products.slice(4, 6).map(p => p.asin));
   assert.equal(unavailableModels.size, 0);
 });

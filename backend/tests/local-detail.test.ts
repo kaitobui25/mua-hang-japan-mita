@@ -20,7 +20,7 @@ function fixture() {
   let frozen: DetailText | undefined;
   let source = structuredClone(snapshot);
   let legacyFull = false, lock = true, released = 0;
-  const items = new Map<string, DetailItem>();
+  const items = new Map<string, DetailItem & {attempts?: number; warning?: boolean}>();
   const sql: string[] = [];
   const query = async (statement: string, values: unknown[] = []) => {
     sql.push(statement);
@@ -29,17 +29,18 @@ function fixture() {
       assert.match(statement, /NOT t.name_only AND t.detail IS NOT NULL/);
       assert.doesNotMatch(statement, /source_hash/);
       assert.equal(values[0], 3);
-      const pending = [...items.values()].some(i => !i.translated && !i.retry_after);
+      const pending = [...items.values()].some(i => (!i.translated || i.warning) && (i.attempts ?? 0)<3 && !i.retry_after);
       return { rows: legacyFull || (frozen && !pending) ? [] : [{ asin: 'A000000001', snapshot: frozen ?? structuredClone(source) }] };
     }
     if (statement.includes('INSERT INTO local_detail_translations')) frozen ??= JSON.parse(String(values[1]));
     if (statement.includes('INSERT INTO local_detail_translation_items') && !items.has(String(values[1]))) {
       items.set(String(values[1]), { slot: String(values[1]), source: String(values[2]), translated: null });
     }
-    if (statement.includes('SELECT slot,source,translated')) return { rows: [...items.values()].filter(i => i.translated === null && !i.retry_after) };
+    if (statement.includes('SELECT slot,source,translated')) return { rows: [...items.values()].filter(i => (i.translated === null || i.warning) && (i.attempts ?? 0)<3 && !i.retry_after) };
     if (statement.includes('UPDATE local_detail_translation_items')) {
       const item = items.get(String(values[1]))!;
-      if (statement.includes('translated=$3')) { item.translated = String(values[2]); item.retry_after = null; }
+      if (statement.includes('RETURNING attempts')) { item.attempts = (item.attempts ?? 0)+1; return { rows: [{ attempts: item.attempts }] }; }
+      if (statement.includes('translated=$3')) { item.translated = String(values[2]); item.warning = Boolean(values[4]); item.retry_after = item.warning ? new Date() : null; }
       else item.retry_after = new Date(Date.now() + 43200000);
     }
     assert.doesNotMatch(statement, /(?:INSERT INTO|UPDATE) product_translations/);
@@ -135,7 +136,7 @@ test('key collisions with siblings, original keys, generated suffixes and protot
 test('partial success persists before failure; retries only failed strings against frozen source', async () => {
   const f = fixture();
   let calls: string[] = [];
-  const first = await translatePendingDetails({ limit: 3, connect: f.connect, translate: async source => {
+  const first = await translatePendingDetails({ log: async () => {}, limit: 3, connect: f.connect, translate: async source => {
     calls.push(source);
     if (source === '特長') {
       assert.equal(f.items.get('features:0')?.translated, 'Thành phần 300mg', 'first atomic success already saved');
@@ -150,27 +151,27 @@ test('partial success persists before failure; retries only failed strings again
   assert.deepEqual(partial.usage, ['Cách dùng']);
   f.changeSource();
   calls = [];
-  await translatePendingDetails({ limit: 3, connect: f.connect, translate: async source => { calls.push(source); return translate(source); } });
+  await translatePendingDetails({ log: async () => {}, limit: 3, connect: f.connect, translate: async source => { calls.push(source); return translate(source); } });
   assert.deepEqual(calls, [], 'failed item waits for retry');
   f.items.get('features:1')!.retry_after = null;
-  await translatePendingDetails({ limit: 3, connect: f.connect, translate: async source => { calls.push(source); return translate(source); } });
+  await translatePendingDetails({ log: async () => {}, limit: 3, connect: f.connect, translate: async source => { calls.push(source); return translate(source); } });
   assert.deepEqual(calls, ['特長']);
   assert.deepEqual(f.frozen?.features, snapshot.features);
   calls = [];
-  await translatePendingDetails({ limit: 3, connect: f.connect, translate: async source => { calls.push(source); return translate(source); } });
+  await translatePendingDetails({ log: async () => {}, limit: 3, connect: f.connect, translate: async source => { calls.push(source); return translate(source); } });
   assert.deepEqual(calls, [], 'completed strings never retranslate after source changes');
   assert.equal(f.released, 4);
 });
 
 test('legacy successful full detail is excluded forever, regardless of source hash', async () => {
   const f = fixture(); f.legacy();
-  await translatePendingDetails({ limit: 3, connect: f.connect, translate: async () => { assert.fail('legacy detail translated'); } });
+  await translatePendingDetails({ log: async () => {}, limit: 3, connect: f.connect, translate: async () => { assert.fail('legacy detail translated'); } });
   assert.equal(f.items.size, 0);
 });
 
 test('outages preserve earlier successes and pause; contention does not unlock another worker', async () => {
   const f = fixture();
-  const result = await translatePendingDetails({ limit: 3, connect: f.connect, translate: async source => {
+  const result = await translatePendingDetails({ log: async () => {}, limit: 3, connect: f.connect, translate: async source => {
     if (source === '特長') throw new LocalTranslationError(true, 'offline');
     return translate(source);
   } });
@@ -178,17 +179,17 @@ test('outages preserve earlier successes and pause; contention does not unlock a
   assert.equal(f.items.get('features:0')?.translated, 'Thành phần 300mg');
   assert.ok(f.sql.at(-1)?.includes('pg_advisory_unlock'));
   const other = fixture(); other.denyLock();
-  assert.equal((await translatePendingDetails({ limit: 3, connect: other.connect })).paused, true);
+  assert.equal((await translatePendingDetails({ log: async () => {}, limit: 3, connect: other.connect })).paused, true);
   assert.equal(other.sql.length, 1);
   assert.equal(other.released, 1);
 });
 
 test('cancellation makes no inference and releases lock; invalid limits never connect', async () => {
   const f = fixture(), controller = new AbortController(); controller.abort();
-  assert.equal((await translatePendingDetails({ limit: 3, connect: f.connect, signal: controller.signal })).paused, true);
+  assert.equal((await translatePendingDetails({ log: async () => {}, limit: 3, connect: f.connect, signal: controller.signal })).paused, true);
   assert.equal(f.items.size, 0);
   assert.equal(f.released, 1);
-  await assert.rejects(translatePendingDetails({ limit: 0, connect: async () => { assert.fail('invalid limit connected'); } }));
+  await assert.rejects(translatePendingDetails({ log: async () => {}, limit: 0, connect: async () => { assert.fail('invalid limit connected'); } }));
 });
 
 test('05:15 JST daily accepts only current window and process already running before due time', () => {
@@ -235,7 +236,7 @@ test('initialization failure rolls back and releases the advisory lock without i
     if (sql.includes('INSERT INTO local_detail_translation_items')) throw Error('database unavailable');
     return query(sql, values);
   }) as typeof client.query;
-  await assert.rejects(translatePendingDetails({ limit: 3, connect: async () => client,
+  await assert.rejects(translatePendingDetails({ log: async () => {}, limit: 3, connect: async () => client,
     translate: async () => { assert.fail('inference before initialization committed'); } }), /database unavailable/);
   assert.ok(f.sql.includes('ROLLBACK'));
   assert.ok(f.sql.at(-1)?.includes('pg_advisory_unlock'));

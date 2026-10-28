@@ -56,12 +56,12 @@ test('scheduled translator splits truncation before failure writes and preserves
       sizes: [100, 50], translated: 50, failed: 0, paused: true },
     { label: 'singletons terminate and are marked failed individually', count: 3, threshold: 0, quota: 50, invalidCount: 0,
       sizes: [3, 2, 1, 1, 1], translated: 0, failed: 3, paused: false },
-    { label: 'invalid units in a recovered half are never saved', count: 100, threshold: 50, quota: 50, invalidCount: 1,
-      sizes: [100, 50, 50], translated: 99, failed: 1, paused: false },
-    { label: '76-name production regression saves 38 valid siblings in one request', count: 76, threshold: 100, quota: 37, invalidCount: 38,
-      sizes: [76], translated: 38, failed: 38, paused: false },
-    { label: 'all invalid titles fail in one request without splitting', count: 76, threshold: 100, quota: 37, invalidCount: 76,
-      sizes: [76], translated: 0, failed: 76, paused: false },
+    { label: 'invalid units in a recovered half persist as warnings', count: 100, threshold: 50, quota: 50, invalidCount: 1,
+      sizes: [100, 50, 50], translated: 100, failed: 0, paused: false },
+    { label: '76-name regression saves warnings and valid siblings', count: 76, threshold: 100, quota: 37, invalidCount: 38,
+      sizes: [76], translated: 76, failed: 0, paused: false },
+    { label: 'all warned titles persist without splitting', count: 76, threshold: 100, quota: 37, invalidCount: 76,
+      sizes: [76], translated: 76, failed: 0, paused: false },
     { label: 'continual truncation stops after two split levels', count: 100, threshold: 0, quota: 50, invalidCount: 0,
       sizes: [100, 50, 25, 25, 50, 25, 25], translated: 0, failed: 100, paused: false }
   ]) {
@@ -72,11 +72,16 @@ test('scheduled translator splits truncation before failure writes and preserves
       }));
       const snapshot = JSON.stringify(rows);
       const saved: string[] = [], failed: string[] = [], sizes: number[] = [];
+      const attempts = new Map<string, number>();
       let released = false, unlocked = false, now = 0;
       const client = {
         query: async (sql: string, params: unknown[] = []) => {
           if (sql.includes('pg_try_advisory_lock')) return { rows: [{ acquired: true }] };
           if (sql.includes('pg_advisory_unlock')) unlocked = true;
+          if (sql.includes('RETURNING name_attempts')) {
+            const asin = String(params[0]); const count = (attempts.get(asin) ?? 0)+1;
+            attempts.set(asin,count); return { rows: [{ name_attempts: count }] };
+          }
           if (sql.includes('INSERT INTO product_translations')) {
             (sql.includes("'failed'") ? failed : saved).push(String(params[0]));
           }
@@ -105,17 +110,14 @@ test('scheduled translator splits truncation before failure writes and preserves
       const previousKey = process.env.OPENROUTER_API_KEY;
       process.env.OPENROUTER_API_KEY = 'test-only';
       try {
-        assert.deepEqual(await translatePendingNames(), { translated: scenario.translated,
+        assert.deepEqual(await translatePendingNames({ log: async () => {} }), { translated: scenario.translated,
           failed: scenario.failed, skipped: 0, paused: scenario.paused });
         assert.deepEqual(sizes, scenario.sizes);
         assert.equal(saved.length, scenario.translated);
         assert.equal(new Set(saved).size, saved.length);
         assert.equal(failed.length, scenario.failed);
         assert.ok(failed.every(asin => !saved.includes(asin)));
-        if (scenario.invalidCount) {
-          assert.ok(saved.every(asin => Number(asin.slice(1)) >= scenario.invalidCount));
-          assert.deepEqual(failed, rows.slice(0, scenario.invalidCount).map(row => row.asin));
-        }
+
         assert.equal(JSON.stringify(rows), snapshot);
         assert.ok(released && unlocked);
       } finally {
