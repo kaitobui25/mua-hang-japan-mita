@@ -53,6 +53,16 @@ Mở **`http://127.0.0.1:3100/admin/login`** trên **chính PC**. Truy cập log
 
 ## Kiểm tra production và xử lý sự cố
 
+### Deploy một click và đồng bộ catalog (28/10/2026)
+
+Nhấp đúp `deploy-one-click.bat` ở thư mục gốc repo trên PC Windows. Cửa sổ sẽ thực hiện lần lượt: kiểm tra đăng nhập GitHub/SSH → migration cộng thêm cột trên PostgreSQL local → mở SSH tunnel xác thực → migration/schema và merge an toàn **catalog + các bản dịch + ảnh** lên PostgreSQL VPS → đối chiếu từng khóa bản ghi và bản dịch → tạo HEAD commit `[deploy]` → push GitHub → theo dõi đúng GitHub Actions run → xác nhận revision thực trên VPS và HTTPS DuckDNS, catalog/API chi tiết, đường riêng tư bị chặn và E-KAIWA vẫn chạy. Lỗi tại bất kỳ bước nào sẽ hiển thị `DEPLOY FAILED`/`ERROR` và trả mã khác 0; thành công mới hiển thị `DEPLOY COMPLETE`/`SUCCESS`. Cửa sổ không tự đóng; **nhấn phím bất kỳ** để đóng sau khi đọc kết quả. Không cần mở Git hoặc GitHub Actions bằng tay.
+
+Yêu cầu đã cấu hình từ trước: Windows `ssh-agent` đang chạy và đã có SSH key Hermes, `gh` CLI đã đăng nhập GitHub, file DPAPI `.agents/runtime/mita-vps-database-url.dpapi` tồn tại, cổng local `15432` không bị chiếm. Script từ chối chạy khi `origin/main` đã phân nhánh hoặc thiếu SSH/DB. Các chế độ kỹ thuật: `scripts/deploy-one-click.ps1 -DryRun` chỉ đọc, không cập nhật DB/Git; `-DataOnly` chỉ đồng bộ DB và đối chiếu, không deploy code. Không mở port PostgreSQL VPS ra Internet.
+
+Sync DB **chỉ merge** bảng `categories`, `products`, `product_images`, `product_details`, `product_translations`, `local_detail_translations`, `local_detail_translation_items`, `price_observations` và `product_detail_queue`. Không xóa dữ liệu từ VPS; giữ trạng thái quyền (`rights_status`), ẩn bằng Admin, tình trạng bán của các ASIN đã tồn tại, tài khoản, session, đơn hàng, giá/chính sách, công tắc công khai và nhật ký Admin. Giá/chi tiết/crawl snapshot chỉ cập nhật theo timestamp mới hơn; các bản dịch đã thành công giữ nguyên. Nguồn sản phẩm mới giữ `local_test_only`, không được tự nâng thành verified. Các trường dữ liệu mới được thêm trong một transaction cùng với merge; nếu xảy ra lỗi thì rollback. Theo lựa chọn trước của owner, **không tạo bản sao lưu định kỳ hay dump dữ liệu**. Điều này cũng có nghĩa là không có khả năng khôi phục trạng thái trước lần sync nếu phát sinh vấn đề chỉ phát hiện sau commit.
+
+Web catalog đang gom các ASIN theo `variant_group_basis`/`variant_group_id` khi nguồn xác nhận chúng là biến thể: số card hiển thị có thể thấp hơn số ASIN trong database. Mở trang chi tiết và nhóm biến thể để truy cập các ASIN khác. Việc sync dữ liệu không có nghĩa những tên/chữ Nhật chưa được model dịch xong đã thành tiếng Việt; còn missing/failed thì vẫn để source gốc theo chính sách dịch.
+
 Tại PowerShell PC:
 
 ```powershell
@@ -113,3 +123,11 @@ Checkout vẫn đóng. Catalog hiện có 122 sản phẩm công khai do owner c
 ### Scrapling adapter prerequisite
 
 Before starting the PC tunnel worker, run `scripts/setup-scrapling.ps1`, then `scripts/check-scrapling.ps1`. Collection uses the repo virtualenv (Scrapling 0.5 + BeautifulSoup 4.15.0), with no Python DB credentials. BrowserOS Neo is no longer a collection dependency; the owner can explicitly open a blocked page for manual verification. Existing Amazon blocks are never cleared by setup/startup. See `backend-architecture.md` for limits, offline tests and the full-gallery schema upgrade. This collector remains Windows PC only; no VPS collector deployment.
+
+## Đồng bộ catalog và dịch ngày 28/10/2026
+
+Đã đồng bộ bằng transaction từ PostgreSQL local sang PostgreSQL riêng của Mita trên Hermes qua SSH: **816 ASIN**, **3.919 ảnh**, **816 detail**, **816 bản ghi tên dịch**, **813 snapshot GGUF**, **1.903 mục dịch GGUF** (1.546 có nội dung), **1.230 price observations** và **819 bản ghi hàng đợi chi tiết**. API public gộp các biến thể đã xác nhận thành **151 card**, không phải 816 card riêng lẻ. 3 đơn hàng mô phỏng, Admin, catalog toggle, pricing policy và quyền/sale status của những ASIN đã tồn tại không được ghi đè. Không có backup và không mở checkout.
+
+Sau khi chuyển dữ liệu lần đầu, báo cáo chẩn đoán 157 tên đã được dịch lại từ trước được nhập vào local có kiểm tra ASIN và tên gốc. Kết quả: **150 bản hợp lệ**, **7 warning**; cùng 659 tên success trước đó thành **809 success + 7 warning / 816 tên có nội dung sử dụng được**. Đây là bản dịch mới từ báo cáo, **không phải** nguyên văn 157 bản đã bị loại ở lần chạy cũ. Cần chạy `deploy-one-click.bat` để đồng bộ thay đổi này lên VPS và deploy code mới; không coi bước nhập local là triển khai thành công. Trong GGUF còn 357 mục chưa dịch, nên không khẳng định toàn bộ nội dung tiếng Việt.
+
+Lần sau: nhấp đúp `deploy-one-click.bat` ở root repository. Script tự đồng bộ dữ liệu additive, commit/push `[deploy]`, chờ GitHub Actions, xác thực revision, HTTPS và các private route rồi giữ cửa sổ đến khi nhấn phím. Cần giữ nguyên credential DPAPI, SSH agent và GitHub CLI đã cấu hình trên máy chủ sở hữu.

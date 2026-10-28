@@ -46,7 +46,7 @@ export async function readFreeQuota(apiKey = process.env.OPENROUTER_API_KEY, fet
   }
 }
 
-function assertTranslation(source: ProductText, value: unknown): ProductText {
+export function assertTranslation(source: ProductText, value: unknown): ProductText {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid_translation');
   const data = value as Record<string, unknown>;
   if (typeof data.name !== 'string' || !data.name.trim() || data.name.length > 600) throw new Error('invalid_name');

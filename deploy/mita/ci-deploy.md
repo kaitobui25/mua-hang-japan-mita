@@ -2,6 +2,10 @@
 
 ## Owner actions
 
+**One-click Windows release:** Double-click `deploy-one-click.bat` at the repository root. It runs the local additive schema migration, syncs catalog + Vietnamese translations and images to VPS through a verified SSH tunnel, validates table row keys and published translation counts, stages/commits local changes with a new `[deploy]` HEAD commit, pushes `main`, waits for the exact GitHub Actions run, and finally checks DuckDNS HTTPS, release revision, catalog, private paths and E-KAIWA. The window stays open until any key is pressed, including on failure. The one-click workflow preserves production Admin accounts, orders, pricing policy, catalog toggle, rights flags and existing approved translations. It does **not** enable checkout or execute Amazon scraping. Read `docs/hermes-vps-runbook.md` for prerequisites and data-sync limitations.
+
+For a read-only connectivity check use `powershell -NoProfile -File scripts/deploy-one-click.ps1 -DryRun`. For data-only sync without pushing Git use `-DataOnly`. SSH agent, owner Hermes key, encrypted VPS DB credentials and `gh` authentication must already be configured. The Windows-only script will not commit or push when a data migration/verification step fails. Run it with no other manual sync using its dedicated SSH port `15432`.
+
 Edit **only** `release.json` when you want a new displayed version (starting at `0.3`). It is read by `src/components/layout/footer.tsx`. Neither `package.json` version controls the website footer. Commits without the exact `[deploy]` marker do **not** deploy.
 
 ```bash
