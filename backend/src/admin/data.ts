@@ -105,5 +105,6 @@ export async function overview() {
   const errors = run ? await db.query('SELECT id,category_slug,asin,adapter,state,message,created_at FROM sync_errors WHERE sync_run_id=$1 ORDER BY id DESC LIMIT 50', [run.id]) : { rows: [] };
   const expected = expectedSyncAt();
   const confirmed = await db.query('SELECT id FROM sync_runs WHERE started_at>=$1 AND finished_at IS NOT NULL LIMIT 1', [expected]);
-  return { ...counts.rows[0], latestSync: run, syncErrors: errors.rows, expectedSyncAt: expected, missingScheduledRun: !confirmed.rowCount, recentOrders: (await listOrders({ limit: '5' })).items };
+  const cooldown = await db.query("SELECT reason,blocked_at,retry_after_at FROM source_access_blocks WHERE source='amazon.co.jp'");
+  return { ...counts.rows[0], amazonCooldown: cooldown.rows[0] ?? null, latestSync: run, syncErrors: errors.rows, expectedSyncAt: expected, missingScheduledRun: !confirmed.rowCount, recentOrders: (await listOrders({ limit: '5' })).items };
 }

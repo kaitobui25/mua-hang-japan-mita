@@ -71,13 +71,13 @@ test('script JSON extraction is bounded to actual data and never evaluates JavaS
 test('detail collection never falls back to browser on parse or access failures', async () => {
   let neoCalls = 0;
   const fallback = async () => { neoCalls++; return parseDetail(html, asin, category); };
-  for (const state of ['blocked', 'needs_human', 'temporary'] as const) {
+  for (const state of ['blocked', 'rate_limited', 'temporary'] as const) {
     await assert.rejects(collectEnrichedDetail(asin, category, async () => { throw new SourceError(state, state); }, fallback));
   }
   assert.equal(neoCalls, 0);
   await assert.rejects(collectEnrichedDetail(asin, category, async () => { throw new SourceError('parse_error', 'markup changed'); }, fallback));
   assert.equal(neoCalls, 0);
-  assert.throws(() => parseDetail('captcha' + html, asin, category), (e: unknown) => e instanceof SourceError && e.state === 'needs_human');
+  assert.throws(() => parseDetail('captcha' + html, asin, category), (e: unknown) => e instanceof SourceError && e.state === 'blocked');
 });
 
 test('unrelated variation scripts and unresolved numeric indices never create child evidence or attribute values', () => {
@@ -105,7 +105,7 @@ test('real HTTP 403/429 and late CAPTCHA responses stop immediately without invo
       globalThis.fetch = async () => { calls++; return new Response(' '.repeat(12000) + 'captcha', { status }); };
       await assert.rejects(collectEnrichedDetail(asin, category, async () => parseDetail(await fetchPageWithRetry(`https://www.amazon.co.jp/dp/${asin}`), asin, category), async () => {
         neoCalls++; return parseDetail(html, asin, category);
-      }), (e: unknown) => e instanceof SourceError && e.state === 'blocked');
+      }), (e: unknown) => e instanceof SourceError && e.state === (status === 429 ? 'rate_limited' : 'blocked'));
       assert.equal(calls, 1);
     }
     assert.equal(neoCalls, 0);

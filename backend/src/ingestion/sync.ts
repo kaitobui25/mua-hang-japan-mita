@@ -1,13 +1,13 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { db } from '../db/pool.js';
-import { seeds, SourceError, isAmazonCaptcha, type DiscoveryResult, type DiscoveryIssue, type Observation } from './source.js';
+import { seeds, SourceError, type DiscoveryResult, type DiscoveryIssue, type Observation } from './source.js';
 import { ingestObservations } from './store.js';
 import { ScraplingSession, isScraplingStopping } from './scrapling.js';
 import { collectDetail } from './detail.js';
 import { config } from '../config.js';
 import type { PoolClient } from 'pg';
-import { AMAZON_ACCESS_LOCK, recordAmazonPause } from './source-access.js';
+import { AMAZON_ACCESS_LOCK, recordAmazonPause, amazonGate, completeAmazonReentry } from './source-access.js';
 
 export async function collectCategory(
   seed: { categorySlug: string; url: string },
@@ -48,35 +48,8 @@ export async function seedExistingDetails(connection: Connection = db): Promise<
   return result.rowCount ?? 0;
 }
 
-/** Requires an explicit manual verification action; never automatically bypasses a source denial. */
-export async function acknowledgeSourceAccess(asin: string, humanVerified: boolean, connection: Connection = db): Promise<number> {
-  if (!humanVerified) throw Error('Owner must confirm Amazon access was manually verified');
-  if (asin !== 'ALL' && !/^[A-Z0-9]{10}$/.test(asin)) throw Error('Invalid ASIN');
-  const client = connection === db ? await db.connect() : connection;
-  try {
-    // Manual ACK must serialize with collectors. Otherwise it could erase a
-    // new CAPTCHA marker written between its gate check and DELETE.
-    const guard = await client.query<{ acquired: boolean }>('SELECT pg_try_advisory_lock($1) AS acquired', [AMAZON_ACCESS_LOCK]);
-    if (!guard.rows[0].acquired) throw Error('Amazon collection is in progress; retry manual acknowledgment when it finishes');
-    try {
-      await client.query('BEGIN');
-      try {
-        const result = await client.query(asin === 'ALL'
-          ? `UPDATE product_detail_queue SET state='pending',last_attempt_at=NULL WHERE state='needs_human'`
-          : `UPDATE product_detail_queue SET state='pending',last_attempt_at=NULL WHERE asin=$1 AND state='needs_human'`,
-          asin === 'ALL' ? [] : [asin]);
-        const remaining = await client.query(`SELECT 1 FROM product_detail_queue WHERE state='needs_human' LIMIT 1`);
-        if (!remaining.rowCount) await client.query(`DELETE FROM source_access_blocks WHERE source='amazon.co.jp'`);
-        await client.query('COMMIT');
-        return result.rowCount ?? 0;
-      } catch (error) { await client.query('ROLLBACK'); throw error; }
-    } finally { await client.query('SELECT pg_advisory_unlock($1)', [AMAZON_ACCESS_LOCK]); }
-  }
-  finally { if (connection === db) (client as PoolClient).release(); }
-}
-
 // Low-level detail stage: production must call through syncCatalog, which owns
-// the source-wide access lock and performs the manual-verification preflight.
+// the source-wide access lock and performs the cooldown preflight.
 export async function processCategoryDetails(category: string, options: {
   connection?: Connection; collect?: DetailCollector; save?: (items: Observation[]) => Promise<number>;
   delay?: (milliseconds: number) => Promise<void>;
@@ -92,7 +65,7 @@ export async function processCategoryDetails(category: string, options: {
   let saved = 0, blocked = false;
   while (attempted.length < limit && !isScraplingStopping()) {
     const next = await connection.query<{ asin: string; parent_asin: string | null; provenance: { sourceUrl?: string } }>(`SELECT asin,parent_asin,provenance FROM product_detail_queue
-      WHERE category_slug=$1 AND state <> 'needs_human' AND NOT (asin=ANY($2::varchar(10)[]))
+      WHERE category_slug=$1 AND NOT (asin=ANY($2::varchar(10)[]))
       ORDER BY last_attempt_at ASC NULLS FIRST,enqueued_at ASC,asin ASC LIMIT 1`, [category, attempted]);
     const candidate = next.rows[0];
     if (!candidate) break;
@@ -116,11 +89,11 @@ export async function processCategoryDetails(category: string, options: {
       if (item.priceJpy == null) await options.onIssue?.({ asin: candidate.asin, adapter: item.sourceAdapter.startsWith('scrapling') ? 'scrapling' : item.sourceAdapter.startsWith('browseros-neo') ? 'browseros-neo' : 'http', state: 'parse_error', message: 'Detail read without a current price; previous price observation retained' });
     } catch (error) {
       const failure = error instanceof SourceError ? error : new SourceError('temporary', String(error));
-      blocked = failure.state === 'blocked' || failure.state === 'needs_human';
+      blocked = failure.state === 'blocked' || failure.state === 'rate_limited';
       // The source pause must survive a later queue-write failure.
       const issue = { asin: candidate.asin, adapter: failure.adapter, state: failure.state, message: failure.message };
       if (blocked) await options.onIssue?.(issue);
-      await connection.query('UPDATE product_detail_queue SET state=$3 WHERE category_slug=$1 AND asin=$2', [category, candidate.asin, blocked ? 'needs_human' : 'failed']);
+      await connection.query('UPDATE product_detail_queue SET state=$3 WHERE category_slug=$1 AND asin=$2', [category, candidate.asin, 'failed']);
       if (!blocked) await options.onIssue?.(issue);
       if (blocked) break;
     }
@@ -132,7 +105,7 @@ export async function processCategoryDetails(category: string, options: {
 
 export async function syncCatalog(options: {
   discover?: typeof collectCategory; collect?: DetailCollector; limit?: number; connection?: PoolClient;
-  categories?: string[]; onCaptcha?: (url: string) => Promise<void>;
+  categories?: string[]; scheduled?: boolean;
 } = {}) {
   // A manual run must not overlap the scheduled worker and double the category budget.
   const lock = options.connection ?? await db.connect();
@@ -142,60 +115,29 @@ export async function syncCatalog(options: {
     if (!locked.rows[0].acquired) { release(); return { state: 'already_running' }; }
   } catch (error) { release(); throw error; }
   let id: number | undefined;
-  let discovered = 0, saved = 0, errors = 0, blocked = false, openedCaptcha = false;
-  // Test injectors do not open real browser tabs. Manual backfill explicitly
-  // enables the callback even though it supplies a listing-discovery stub.
-  const onCaptcha = options.onCaptcha;
+  let discovered = 0, saved = 0, errors = 0, blocked = false;
   const session = new ScraplingSession();
   const deferred: Record<string, number> = {};
   try {
     const runResult = await lock.query<{ id: string }>('INSERT INTO sync_runs DEFAULT VALUES RETURNING id');
     id = Number(runResult.rows[0].id);
     await seedExistingDetails(lock);
-    // A prior CAPTCHA/403/429 is a source-wide manual block. Do not make new
-    // requests for *either* category before the owner has resolved it.
-    const unresolved = await lock.query<{ category_slug: string; asin: string }>(
-      `SELECT category_slug,asin FROM product_detail_queue WHERE state='needs_human'
-       ORDER BY category_slug,asin LIMIT 1`);
-    const sourceBlock = await lock.query<{ reason: string }>(
-      `SELECT reason FROM source_access_blocks WHERE source='amazon.co.jp'`);
-    if (unresolved.rows[0] || sourceBlock.rows[0]) {
-      const note = unresolved.rows[0]
-        ? `Amazon human verification pending for ${unresolved.rows[0].category_slug}/${unresolved.rows[0].asin}`
-        : `Amazon source access requires manual verification`;
-      await lock.query(`UPDATE sync_runs SET finished_at=now(),state='needs_human',
-        error_count=1,note=$2 WHERE id=$1`, [id, note]);
-      console.warn(note);
-      return { id, state: 'needs_human', discovered: 0, saved: 0, errors: 1, deferred };
+    if (!await amazonGate(lock, options.scheduled === true)) {
+      const note = 'Amazon source cooldown; waiting for the next eligible daily 04:00 JST scan';
+      await lock.query(`UPDATE sync_runs SET finished_at=now(),state='failed',error_count=1,note=$2 WHERE id=$1`, [id, note]);
+      return { id, state: 'failed', discovered: 0, saved: 0, errors: 1, deferred };
     }
     for (const seed of seeds) {
       if (isScraplingStopping()) { errors++; break; }
       if (options.categories && !options.categories.includes(seed.categorySlug)) continue;
       const report = async (issue: DiscoveryIssue & { asin?: string }) => {
         errors++;
-        if (issue.state === 'blocked' || issue.state === 'needs_human') {
+        if (issue.state === 'blocked' || issue.state === 'rate_limited') {
           blocked = true;
-          await recordAmazonPause(lock, 'Amazon requested manual verification before further collection');
+          await recordAmazonPause(lock, issue.message);
         }
         await lock.query('INSERT INTO sync_errors(sync_run_id,category_slug,asin,adapter,state,message) VALUES($1,$2,$3,$4,$5,$6)',
           [id, seed.categorySlug, issue.asin ?? null, issue.adapter, issue.state, issue.page ? `Page ${issue.page}: ${issue.message}` : issue.message]);
-        if (onCaptcha && !openedCaptcha && isAmazonCaptcha(issue)) {
-          openedCaptcha = true;
-          // Browser-only, human-in-the-loop. Never extract a CAPTCHA answer or
-          // requeue here; the persistent source gate remains locked.
-          const url = issue.asin ? `https://www.amazon.co.jp/dp/${issue.asin}` : (() => {
-            const target = new URL(seed.url);
-            if (issue.page && issue.page > 1)
-              target.searchParams.set(seed.categorySlug === 'thuc-pham-bo-sung' ? 'pg' : 'page', String(issue.page));
-            return target.href;
-          })();
-          try {
-            await onCaptcha(url);
-            console.warn(`Amazon CAPTCHA: BrowserOS Neo opened ${url}; owner must verify manually, then explicitly acknowledge.`);
-          } catch {
-            console.warn('Amazon CAPTCHA: BrowserOS Neo unavailable; source remains blocked pending manual verification.');
-          }
-        }
       };
       try {
         // Every existing ASIN is eligible daily, including ones no longer on listings.
@@ -231,7 +173,9 @@ export async function syncCatalog(options: {
         if (blocked) break;
       }
     }
-    const state = blocked ? 'needs_human' : errors ? (saved ? 'partial' : 'failed') : 'success';
+    const state = errors ? (saved ? 'partial' : 'failed') : 'success';
+    // A failed re-entry retains tomorrow's reservation, including transient failures.
+    if (!errors) await completeAmazonReentry(lock);
     await lock.query('UPDATE sync_runs SET finished_at=now(),state=$2,discovered_count=$3,saved_count=$4,error_count=$5,note=$6 WHERE id=$1',
       [id, state, discovered, saved, errors, JSON.stringify({ deferred })]);
     return { id, state, discovered, saved, errors, deferred };

@@ -1,47 +1,37 @@
-// Session-wide Amazon mutex shared by discovery/backfill and Admin imports.
-// Hold this on the same PostgreSQL connection until all source requests finish.
 import type { PoolClient } from 'pg';
-export const AMAZON_ACCESS_LOCK = 70400200;
+import { expectedSyncAt } from './schedule.js';
 
+// Hold the same connection's mutex across the gate check and all Amazon requests.
+export const AMAZON_ACCESS_LOCK = 70400200;
 type Connection = Pick<PoolClient, 'query'>;
 
-/** A CAPTCHA/denial stops Amazon requests.
- * Persist the first 30-second deadline for operator status across restarts.
- * It never triggers translation, unblocks Amazon, or retries requests.
- */
+/** 04:00 JST on the following calendar day, even before today's 04:00. */
+export function nextAmazonRetryAt(now = new Date()): Date {
+  const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  return new Date(Date.UTC(jst.getUTCFullYear(), jst.getUTCMonth(), jst.getUTCDate(), 19));
+}
+
 export async function recordAmazonPause(connection: Connection, reason: string) {
-  await connection.query(`INSERT INTO source_access_blocks(source,reason,continuation_due_at)
-    VALUES('amazon.co.jp',$1,now()+interval '30 seconds')
-    ON CONFLICT(source) DO UPDATE SET
-      reason=EXCLUDED.reason,blocked_at=now(),
-      continuation_due_at=COALESCE(source_access_blocks.continuation_due_at,EXCLUDED.continuation_due_at)`, [reason]);
+  await connection.query(`INSERT INTO source_access_blocks(source,reason,retry_after_at)
+    VALUES('amazon.co.jp',$1,$2)
+    ON CONFLICT(source) DO UPDATE SET reason=EXCLUDED.reason,blocked_at=now(),
+      retry_after_at=EXCLUDED.retry_after_at`, [reason, nextAmazonRetryAt()]);
 }
 
-/** Make older human-blocked ASINs visible to the timeout status monitor
- * without claiming they have been manually verified.
+/** Caller owns AMAZON_ACCESS_LOCK. Only the scheduled window may claim a due gate.
+ * Reserve tomorrow before requesting: a crash cannot expose imports to probing.
  */
-export async function seedAmazonPause(connection: Connection) {
-  // Serialize startup seeding with owner ACK. Otherwise a stale SELECT could
-  // recreate the source-wide gate after the owner has acknowledged it.
-  await connection.query('SELECT pg_advisory_lock($1)', [AMAZON_ACCESS_LOCK]);
-  try {
-    await connection.query(`INSERT INTO source_access_blocks(source,reason,continuation_due_at)
-      SELECT 'amazon.co.jp','Existing Amazon queue requires manual verification',now()+interval '30 seconds'
-      WHERE EXISTS(SELECT 1 FROM product_detail_queue WHERE state='needs_human')
-      ON CONFLICT(source) DO UPDATE SET
-        continuation_due_at=COALESCE(source_access_blocks.continuation_due_at,EXCLUDED.continuation_due_at)`);
-    await connection.query(`UPDATE source_access_blocks SET continuation_due_at=now()+interval '30 seconds'
-      WHERE source='amazon.co.jp' AND continuation_due_at IS NULL AND timeout_recorded_at IS NULL`);
-  } finally {
-    await connection.query('SELECT pg_advisory_unlock($1)', [AMAZON_ACCESS_LOCK]);
-  }
+export async function amazonGate(connection: Connection, scheduled = false, now = new Date()): Promise<boolean> {
+  const block = await connection.query(`SELECT retry_after_at FROM source_access_blocks WHERE source='amazon.co.jp'`);
+  if (!block.rowCount) return true;
+  const windowAge = now.getTime() - expectedSyncAt(now).getTime();
+  if (!scheduled || windowAge < 0 || windowAge > 5 * 60 * 1000) return false;
+  const claim = await connection.query(`UPDATE source_access_blocks SET retry_after_at=$2
+    WHERE source='amazon.co.jp' AND retry_after_at<=$1 RETURNING source`, [now, nextAmazonRetryAt(now)]);
+  return (claim.rowCount ?? 0) > 0;
 }
 
-/** Atomic one-shot claim; races with manual ACK safely and survives worker restarts. */
-export async function claimDueAmazonContinuation(connection: Connection): Promise<boolean> {
-  const result = await connection.query(`UPDATE source_access_blocks
-    SET timeout_recorded_at=now() WHERE source='amazon.co.jp'
-      AND continuation_due_at<=now() AND timeout_recorded_at IS NULL
-    RETURNING source`);
-  return (result.rowCount ?? 0) > 0;
+/** Called under the source mutex after an error-free completed re-entry. */
+export async function completeAmazonReentry(connection: Connection) {
+  await connection.query(`DELETE FROM source_access_blocks WHERE source='amazon.co.jp'`);
 }

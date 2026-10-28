@@ -1,6 +1,8 @@
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from datetime import datetime, timezone, timedelta
+from email.utils import format_datetime
 from amazon_parser import detail, listing, identity
 from amazon_bridge import Client, SourceFailure
 
@@ -18,7 +20,7 @@ class Session:
         response = next(self.responses)
         if isinstance(response, Exception):
             raise response
-        return SimpleNamespace(status=response[0], body=response[1].encode(), url=response[2] if len(response) > 2 else url, encoding='utf-8')
+        return SimpleNamespace(status=response[0], body=response[1].encode(), url=response[2] if len(response) > 2 else url, encoding='utf-8', headers=response[3] if len(response) > 3 else {})
 
 class Tests(unittest.TestCase):
     def test_detail_gallery_fields_and_variants(self):
@@ -75,14 +77,91 @@ class Tests(unittest.TestCase):
             self.assertEqual(len(session.calls), 3)
 
     def test_denial_and_challenges_latch(self):
-        for response in [(403, ''), (429, ''), (200, '<input id="captchacharacters">'), (200, '<form action="/ap/signin">')]:
+        for response in [(403, ''), (200, '<input id="captchacharacters">'), (200, '<form action="/ap/signin">')]:
             session = Session([response])
             client = Client(session, lambda _: None)
             for _ in range(2):
                 with self.assertRaises(SourceFailure) as context:
                     client.fetch('https://www.amazon.co.jp/dp/' + ASIN)
-                self.assertEqual(context.exception.state, 'needs_human')
+                self.assertEqual(context.exception.state, 'blocked')
             self.assertEqual(len(session.calls), 1)
+
+    def test_rate_limit_two_retries_then_cooldown_latch(self):
+        session = Session([(429, '')] * 3)
+        waits = []
+        client = Client(session, waits.append)
+        for _ in range(2):
+            with self.assertRaises(SourceFailure) as context:
+                client.fetch('https://www.amazon.co.jp/dp/' + ASIN)
+            self.assertEqual(context.exception.state, 'rate_limited')
+        self.assertEqual(len(session.calls), 3)
+        self.assertGreaterEqual(client.pace, 9.6)
+        self.assertTrue(any(wait >= 4.8 for wait in waits))
+
+    def test_rate_limit_then_transient_exhaustion_still_cools_down(self):
+        for tail in [[TimeoutError(), TimeoutError()], [(503, ''), (503, '')]]:
+            session = Session([(429, ''), *tail])
+            client = Client(session, lambda _: None)
+            for _ in range(2):
+                with self.assertRaises(SourceFailure) as context:
+                    client.fetch('https://www.amazon.co.jp/dp/' + ASIN)
+                self.assertEqual(context.exception.state, 'rate_limited')
+            self.assertEqual(len(session.calls), 3)
+
+    def test_rate_limit_retry_after_and_success(self):
+        session = Session([(429, '', 'https://www.amazon.co.jp/dp/' + ASIN, {'retry-after': '7'}), (200, HTML)])
+        waits = []
+        client = Client(session, waits.append)
+        self.assertIn('productTitle', client.fetch('https://www.amazon.co.jp/dp/' + ASIN)[0])
+        self.assertEqual(len(session.calls), 2)
+        self.assertIn(7, waits)
+        self.assertGreaterEqual(client.pace, 2.4)
+
+    def test_long_retry_after_stops_without_early_retry_or_hang(self):
+        session = Session([(429, '', 'https://www.amazon.co.jp/dp/' + ASIN, {'retry-after': '3600'})])
+        waits = []
+        client = Client(session, waits.append)
+        with self.assertRaises(SourceFailure) as context:
+            client.fetch('https://www.amazon.co.jp/dp/' + ASIN)
+        self.assertEqual(context.exception.state, 'rate_limited')
+        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(waits, [])
+
+    def test_retry_after_http_date_and_invalid_header_are_bounded(self):
+        for header in [format_datetime(datetime.now(timezone.utc) + timedelta(seconds=8), usegmt=True), 'invalid']:
+            session = Session([(429, '', 'https://www.amazon.co.jp/dp/' + ASIN, {'retry-after': header}), (200, HTML)])
+            waits = []
+            Client(session, waits.append).fetch('https://www.amazon.co.jp/dp/' + ASIN)
+            self.assertEqual(len(session.calls), 2)
+            self.assertTrue(all(0 <= wait <= 10 for wait in waits))
+            if header != 'invalid':
+                self.assertGreater(waits[0], 5)
+
+    def test_login_redirect_latches_without_following(self):
+        session = Session([(302, '', 'https://www.amazon.co.jp/dp/' + ASIN, {'location': '/ap/signin'})])
+        client = Client(session, lambda _: None)
+        for _ in range(2):
+            with self.assertRaises(SourceFailure) as context:
+                client.fetch('https://www.amazon.co.jp/dp/' + ASIN)
+            self.assertEqual(context.exception.state, 'blocked')
+        self.assertEqual(len(session.calls), 1)
+
+    def test_challenge_on_429_stops_without_rate_limit_retry(self):
+        session = Session([(429, '<input id="captchacharacters">')])
+        client = Client(session, lambda _: None)
+        with self.assertRaises(SourceFailure) as context:
+            client.fetch('https://www.amazon.co.jp/dp/' + ASIN)
+        self.assertEqual(context.exception.state, 'blocked')
+        self.assertEqual(len(session.calls), 1)
+
+    def test_rate_limit_followed_by_challenge_stops_immediately(self):
+        session = Session([(429, ''), (200, '<input id="captchacharacters">')])
+        client = Client(session, lambda _: None)
+        for _ in range(2):
+            with self.assertRaises(SourceFailure) as context:
+                client.fetch('https://www.amazon.co.jp/dp/' + ASIN)
+            self.assertEqual(context.exception.state, 'blocked')
+        self.assertEqual(len(session.calls), 2)
 
     def test_normal_signin_link_is_not_login_page(self):
         session = Session([(200, HTML + '<a href="/ap/signin">Account</a>')])

@@ -7,7 +7,7 @@ import { buildServer } from '../src/server.js';
 import { provisionOwner } from '../src/admin/owner.js';
 import { digest, hashPassword, verifyPassword } from '../src/admin/security.js';
 import { enqueueImport, processNextImport } from '../src/admin/imports.js';
-import { acknowledgeSourceAccess, syncCatalog } from '../src/ingestion/sync.js';
+import { syncCatalog } from '../src/ingestion/sync.js';
 import { AMAZON_ACCESS_LOCK } from '../src/ingestion/source-access.js';
 import { getCatalogSettings, overview, savePolicy, setVisibility } from '../src/admin/data.js';
 import { getProductDetails, listCatalog } from '../src/catalog.js';
@@ -45,7 +45,7 @@ test('ASIN detail parser requires matching identity and actual product fields', 
   assert.throws(() => parseDetail(html, 'A000000002', category));
   assert.equal(parseDetail(html.replace('¥1,000', ''), asin, category).priceJpy, null);
   assert.throws(() => parseDetail(html.replace('https://m.media-amazon.com', 'http://evil.test'), asin, category));
-  assert.throws(() => parseDetail('captcha ' + html, asin, category), (e: unknown) => e instanceof SourceError && e.state === 'needs_human');
+  assert.throws(() => parseDetail('captcha ' + html, asin, category), (e: unknown) => e instanceof SourceError && e.state === 'blocked');
 });
 
 test('04:00 JST scheduler skips downtime and dashboard calculates expected dates', () => {
@@ -239,18 +239,18 @@ test('Admin MVP integration', async t => {
     for (const [id, denied] of [['A000000004', true], ['A000000005', false]] as const) {
       await enqueueImport(id, category, 1);
       await processNextImport(async () => { throw new SourceError(denied ? 'blocked' : 'parse_error', denied ? 'HTTP 403' : 'Missing product title'); });
-      assert.equal((await db.query('SELECT state FROM catalog_import_requests WHERE asin=$1', [id])).rows[0].state, denied ? 'needs_human' : 'failed');
+      assert.equal((await db.query('SELECT state FROM catalog_import_requests WHERE asin=$1', [id])).rows[0].state, 'failed');
       assert.equal(await getProductDetails(id), null);
       if (denied) {
         assert.equal((await db.query(`SELECT count(*)::int AS n FROM source_access_blocks WHERE source='amazon.co.jp'`)).rows[0].n, 1);
         assert.equal(await processNextImport(async () => { assert.fail('must not retry Amazon after import denial'); }), false);
-        assert.equal(await acknowledgeSourceAccess('ALL', true), 0);
+        await db.query("DELETE FROM source_access_blocks WHERE source='amazon.co.jp'"); // fixture reset only
       }
     }
     await enqueueImport('A000000006', category, 1);
     await db.query("UPDATE catalog_import_requests SET state='running',started_at=now()-interval '6 minutes' WHERE asin='A000000006'");
     await processNextImport();
-    assert.equal((await db.query("SELECT state FROM catalog_import_requests WHERE asin='A000000006'")).rows[0].state, 'needs_human');
+    assert.equal((await db.query("SELECT state FROM catalog_import_requests WHERE asin='A000000006'")).rows[0].state, 'failed');
     // Conversely, while an import holds the mutex, sync cannot start a new
     // category request. Import denial is then visible to all later syncs.
     await enqueueImport('A000000007', category, 1);
@@ -271,12 +271,12 @@ test('Admin MVP integration', async t => {
       try {
         const overlapping = await syncCatalog({ connection: competing, discover: async () => { assert.fail('sync must not crawl while Admin fetches'); } });
         assert.equal(overlapping.state, 'already_running');
-        await assert.rejects(acknowledgeSourceAccess('ALL', true, competing), /collection is in progress/);
       } finally { competing.release(); await competingPool.end(); }
     } finally { finishCollector(); }
     assert.equal(await inflight, true);
-    assert.equal((await db.query("SELECT state FROM catalog_import_requests WHERE asin='A000000007'")).rows[0].state, 'needs_human');
+    assert.equal((await db.query("SELECT state FROM catalog_import_requests WHERE asin='A000000007'")).rows[0].state, 'failed');
     assert.equal((await db.query("SELECT count(*)::int AS n FROM source_access_blocks WHERE source='amazon.co.jp'")).rows[0].n, 1);
+    assert.ok((await overview()).amazonCooldown?.retry_after_at > new Date());
   });
   await t.test('import queue bounds hourly submissions and total pending work', async () => {
     const count = (await db.query('SELECT count(*)::int AS n FROM catalog_import_requests')).rows[0].n;
@@ -286,7 +286,7 @@ test('Admin MVP integration', async t => {
   });
   await t.test('overview reports real sync errors and missing scheduled results, with bounded reads', async () => {
     const empty = await overview(); assert.equal(empty.missingScheduledRun, true); assert.equal(empty.latestSync, null);
-    for (const state of ['partial', 'failed', 'needs_human']) {
+    for (const state of ['partial', 'failed']) {
       const run = (await db.query('INSERT INTO sync_runs(state,finished_at,error_count) VALUES($1,now(),1) RETURNING id', [state])).rows[0];
       await db.query("INSERT INTO sync_errors(sync_run_id,state,message) VALUES($1,$2,'Source unavailable')", [run.id, state]);
       const result = await overview(); assert.equal(result.latestSync.state, state); assert.equal(result.syncErrors[0].message, 'Source unavailable');
@@ -330,7 +330,7 @@ test('Admin MVP integration', async t => {
   });
   await t.test('sync refuses all Amazon requests after an Admin import denial', async () => {
     const paused = await syncCatalog({ discover: async () => { assert.fail('source blocked after Admin denial'); } });
-    assert.equal(paused.state, 'needs_human');
+    assert.equal(paused.state, 'failed');
     assert.equal(paused.discovered, 0);
   });
 });

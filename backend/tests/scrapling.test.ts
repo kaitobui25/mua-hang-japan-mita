@@ -40,10 +40,10 @@ test('oversized IPC output is rejected and process terminated', async () => {
   await assert.rejects(session.detail('B000000003', category), /stopped/);
 });
 
-test('source denial propagates as Scrapling needs_human', async () => {
+test('source denial propagates as Scrapling blocked', async () => {
   const session = make();
   try {
-    await assert.rejects(session.detail('B000000004', category), (error: unknown) => error instanceof SourceError && error.state === 'needs_human' && error.adapter === 'scrapling');
+    await assert.rejects(session.detail('B000000004', category), (error: unknown) => error instanceof SourceError && error.state === 'blocked' && error.adapter === 'scrapling');
   } finally { session.close(); }
 });
 
@@ -65,8 +65,8 @@ test('detail denial is reported before a queue write can fail', async () => {
   } };
   await assert.rejects(processCategoryDetails(category, {
     connection: connection as never,
-    collect: async () => { throw new SourceError('needs_human', 'fixture CAPTCHA', 'scrapling'); },
-    onIssue: async issue => { assert.equal(issue.state, 'needs_human'); paused = true; }
+    collect: async () => { throw new SourceError('blocked', 'fixture CAPTCHA', 'scrapling'); },
+    onIssue: async issue => { assert.equal(issue.state, 'blocked'); paused = true; }
   }), /fixture queue write failed/);
   assert.equal(paused, true);
 });

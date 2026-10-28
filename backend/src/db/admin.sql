@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS catalog_import_requests (
   asin varchar(10) NOT NULL CHECK (asin ~ '^[A-Z0-9]{10}$'),
   category_slug text NOT NULL REFERENCES categories(slug),
   actor_id integer NOT NULL REFERENCES admin_accounts(id),
-  state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','running','succeeded','failed','needs_human')),
+  state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','running','succeeded','failed')),
   error text,
   created_at timestamptz NOT NULL DEFAULT now(),
   started_at timestamptz,

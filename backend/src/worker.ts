@@ -1,14 +1,10 @@
 import { stopScraplingSessions } from './ingestion/scrapling.js';
 import { PgBoss } from 'pg-boss';
-import { Pool } from 'pg';
 import { config } from './config.js';
 import { db } from './db/pool.js';
-import { importObservedSnapshot, syncCatalog, seedExistingDetails, acknowledgeSourceAccess } from './ingestion/sync.js';
+import { importObservedSnapshot, syncCatalog, seedExistingDetails } from './ingestion/sync.js';
 import { processNextImport } from './admin/imports.js';
 import { dailyCron, dailyTimezone, shouldRunDaily } from './ingestion/schedule.js';
-import { openNeoManualVerification } from './ingestion/neo.js';
-import { seeds } from './ingestion/source.js';
-import { claimDueAmazonContinuation, seedAmazonPause } from './ingestion/source-access.js';
 
 const command = process.argv[2];
 if (command === 'once') {
@@ -31,34 +27,11 @@ if (command === 'once') {
       (SELECT count(*)::int FROM product_translations t JOIN products p ON p.asin=t.asin
         WHERE p.category_slug=c.slug AND t.status='success' AND t.locale='vi' AND NOT t.name_only) AS fully_translated,
       (SELECT count(*)::int FROM product_detail_queue q WHERE q.category_slug=c.slug AND q.state='pending') AS pending,
-      (SELECT count(*)::int FROM product_detail_queue q WHERE q.category_slug=c.slug AND q.state='failed') AS failed,
-      (SELECT count(*)::int FROM product_detail_queue q WHERE q.category_slug=c.slug AND q.state='needs_human') AS needs_human
+      (SELECT count(*)::int FROM product_detail_queue q WHERE q.category_slug=c.slug AND q.state='failed') AS failed
       FROM categories c WHERE c.slug IN ('thuc-pham-bo-sung','thuc-pham-cho-be') ORDER BY c.slug`);
     console.table(rows);
-    const pauses = await db.query(`SELECT source,reason,continuation_due_at,timeout_recorded_at FROM source_access_blocks`);
+    const pauses = await db.query(`SELECT source,reason,blocked_at,retry_after_at FROM source_access_blocks`);
     if (pauses.rows.length) console.table(pauses.rows);
-  } finally { await db.end(); }
-} else if (command === 'backfill:ack') {
-  try {
-    const asin = process.env.BACKFILL_ACK_ASIN?.trim().toUpperCase() ?? '';
-    const confirmed = process.env.BACKFILL_ACCESS_CONFIRMED === '1';
-    console.log('Manually verified ASINs requeued:', await acknowledgeSourceAccess(asin, confirmed));
-  } finally { await db.end(); }
-} else if (command === 'captcha:open') {
-  try {
-    // Explicit owner action to open a previously blocked page; no scraping,
-    // challenge submission, status reset, or source request from the worker.
-    const asin = process.env.BACKFILL_CAPTCHA_ASIN?.trim().toUpperCase() ?? '';
-    if (asin && !/^[A-Z0-9]{10}$/.test(asin)) throw Error('Invalid BACKFILL_CAPTCHA_ASIN');
-    const { rows } = await db.query<{ asin: string; category_slug: string }>(
-      `SELECT asin,category_slug FROM product_detail_queue WHERE state='needs_human'
-       AND ($1::text='' OR asin=$1) ORDER BY category_slug,asin LIMIT 1`, [asin]);
-    const blocked = await db.query(`SELECT 1 FROM source_access_blocks WHERE source='amazon.co.jp'`);
-    if (!rows[0] && !blocked.rowCount) throw Error('No blocked Amazon page awaits manual verification');
-    if (asin && !rows[0]) throw Error('Selected ASIN is not waiting for human verification');
-    const url = rows[0] ? `https://www.amazon.co.jp/dp/${rows[0].asin}` : seeds[0].url;
-    await openNeoManualVerification(url);
-    console.log(`BrowserOS Neo opened ${url}. Solve CAPTCHA in the visible browser; source remains blocked until explicit manual ACK.`);
   } finally { await db.end(); }
 } else if (command === 'backfill') {
   const parsed = Number(process.env.BACKFILL_LIMIT_PER_CATEGORY ?? '15');
@@ -70,40 +43,17 @@ if (command === 'once') {
     // Deliberately no listing discovery; do not exceed category budget or bypass source denial.
     console.log('Manual backfill result:', await syncCatalog({
       limit: parsed, categories: category ? [category] : undefined,
-      discover: async () => ({ observations: [], issues: [] }),
-      onCaptcha: openNeoManualVerification
+      discover: async () => ({ observations: [], issues: [] })
     }));
   } finally { await db.end(); }
 } else if (command === 'daily') {
   const startedAt = new Date();
   // pg-boss DatabaseOptions.max controls its own pg.Pool (separate from db).
   const boss = new PgBoss({ connectionString: config.databaseUrl, schema: 'mita_queue', max: config.bossPoolMax, connectionTimeoutMillis: 10000 });
-  // Source-block tracking has an independent connection to survive pool pressure.
-  const continuationPool = new Pool({ connectionString: config.databaseUrl, max: 1 });
-  // pg.Pool emits idle-connection errors asynchronously. Without a listener,
-  // a temporary DB/tunnel outage would terminate the entire daily worker.
-  continuationPool.on('error', () => console.error('Amazon continuation DB unavailable; retrying on the next polling cycle.'));
   boss.on('error', () => console.error('Catalog scheduler error; check database/tunnel connectivity.'));
   let stopping = false;
   let importWork: Promise<void> = Promise.resolve();
-  let continuationWork: Promise<void> = Promise.resolve();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let continuationTimer: ReturnType<typeof setTimeout> | undefined;
-  const pollContinuation = () => {
-    continuationWork = (async () => {
-      try {
-        // Persist the source-block timeout for owner visibility. Translation
-        // is a separate 05:00 process and never starts from a CAPTCHA event.
-        if (await claimDueAmazonContinuation(continuationPool)) {
-          console.warn('Amazon still blocked after 30s; awaiting manual verification. No Amazon retry or auto-ACK.');
-        }
-      } catch {
-        console.error('CAPTCHA continuation timer unavailable; retrying without clearing the source block.');
-      } finally {
-        if (!stopping) continuationTimer = setTimeout(pollContinuation, 3000);
-      }
-    })();
-  };
   const pollImports = () => {
     importWork = (async () => {
       try {
@@ -115,36 +65,30 @@ if (command === 'once') {
   };
   try {
     console.log('Queued existing ASINs for next scheduled detail scan:', await seedExistingDetails());
-    const pauseConnection = await continuationPool.connect();
-    try { await seedAmazonPause(pauseConnection); }
-    finally { pauseConnection.release(); }
     await boss.start();
     await boss.createQueue('catalog.daily');
     await boss.work('catalog.daily', { includeMetadata: true }, async jobs => {
       for (const job of jobs) {
         if (shouldRunDaily(job.createdOn, startedAt)) {
-          await syncCatalog();
+          await syncCatalog({ scheduled: true });
         } else console.log('Skipped daily scan from downtime/outside the scheduled window.');
       }
     });
     await boss.schedule('catalog.daily', dailyCron, {}, { tz: dailyTimezone });
-    pollContinuation();
     pollImports();
     console.log('Mita catalog worker active, Scrapling FetcherSession + BeautifulSoup, 04:00 Asia/Tokyo daily');
     const halt = async () => {
       stopping = true;
       stopScraplingSessions();
       if (timer) clearTimeout(timer);
-      if (continuationTimer) clearTimeout(continuationTimer);
-      await continuationWork;
       await importWork;
-      await boss.stop(); await continuationPool.end(); await db.end(); process.exit(0);
+      await boss.stop(); await db.end(); process.exit(0);
     };
     process.once('SIGINT', () => void halt());
     process.once('SIGTERM', () => void halt());
-  } catch (error) { await boss.stop(); await continuationPool.end(); await db.end(); throw error; }
+  } catch (error) { await boss.stop(); await db.end(); throw error; }
 } else {
-  console.error('Usage: tsx src/worker.ts once|import|backfill:seed|backfill:status|backfill:ack|captcha:open|backfill|daily');
+  console.error('Usage: tsx src/worker.ts once|import|backfill:seed|backfill:status|backfill|daily');
   process.exitCode = 1;
   await db.end();
 }

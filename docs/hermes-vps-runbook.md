@@ -36,7 +36,7 @@ Chạy PowerShell trong repo trên PC **khi muốn giữ lịch quét 04:00 Asia
 
 Script dùng SSH key Hermes **đã nạp vào Windows ssh-agent** và strict host checking; không đọc hoặc hiển thị private key. Nếu agent chưa có key, owner tự chạy `ssh-add "$env:USERPROFILE\.ssh\oracle_20260624"` trong terminal cá nhân và nhập passphrase tại đó. `MITA_VPS_DATABASE_URL` được lưu **DPAPI chỉ tài khoản Windows này giải mã được** ở `.agents/runtime/mita-vps-database-url.dpapi` (gitignored). Script từ chối tunnel lạ chiếm 15432 và kiểm tra thật `SELECT 1` trên VPS trước khi chạy worker.
 
-**Cảnh báo:** nếu PC tắt/ngủ/SSH mất lúc 04:00 JST thì lần quét đó **không được tự chạy bù**. Khi Amazon trả HTTP 403/429/CAPTCHA hoặc yêu cầu xác minh, worker ghi `needs_human`/dừng theo quy tắc hiện tại; không dùng Neo để vượt kiểm soát. Worker không chạy trên VPS.
+**Cảnh báo:** nếu PC tắt/ngủ/SSH mất lúc 04:00 JST thì lần quét đó **không được tự chạy bù**. Khi Amazon trả HTTP 403/429/CAPTCHA hoặc yêu cầu xác minh, worker ghi `failed`/`partial` and a shared cooldown until next-day 04:00 JST; không dùng Neo để vượt kiểm soát. Worker không chạy trên VPS.
 
 ## Admin an toàn trên PC
 

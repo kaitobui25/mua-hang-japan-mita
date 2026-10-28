@@ -59,15 +59,15 @@ async function callNeoTool(name: string, args: Record<string, unknown>): Promise
     await rpc('initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'mita-catalog', version: '0.1.0' } });
     await rpc('notifications/initialized', {}, true);
   } catch (error) {
-    throw new SourceError('needs_human', `BrowserOS Neo is unavailable: ${String(error)}`, 'browseros-neo');
+    throw new SourceError('temporary', `BrowserOS Neo is unavailable: ${String(error)}`, 'browseros-neo');
   }
   let response: RpcResult;
   try {
     response = await rpc('tools/call', { name, arguments: args });
   } catch (error) {
-    throw new SourceError('needs_human', `BrowserOS Neo execution is unavailable: ${String(error)}`, 'browseros-neo');
+    throw new SourceError('temporary', `BrowserOS Neo execution is unavailable: ${String(error)}`, 'browseros-neo');
   }
-  if (response.result?.isError) throw new SourceError('needs_human', 'BrowserOS Neo tool could not open the manual verification page', 'browseros-neo');
+  if (response.result?.isError) throw new SourceError('temporary', 'BrowserOS Neo tool could not open the manual verification page', 'browseros-neo');
   return response;
 }
 

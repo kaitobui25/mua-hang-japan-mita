@@ -98,6 +98,7 @@ test('200 unique ASIN budget includes newly found children, persists overflow an
   const client = await db.connect();
   try {
     await client.query('BEGIN');
+    await client.query('DELETE FROM product_detail_queue'); // isolate this queue fixture within the rolled-back transaction
     const root = 'Q000000000';
     const initial = Array.from({ length: 199 }, (_, i) => observation(`Q${String(i).padStart(9, '0')}`));
     await enqueueDetails(category, [...initial, initial[0]], client);
@@ -131,10 +132,11 @@ test('200 unique ASIN budget includes newly found children, persists overflow an
   } finally { await client.query('ROLLBACK'); client.release(); }
 });
 
-test('temporary errors preserve snapshots and rotate; denial stops queue with needs_human', async () => {
+test('temporary errors preserve snapshots and rotate; denial stops queue with failed', async () => {
   const client = await db.connect();
   try {
     await client.query('BEGIN');
+    await client.query('DELETE FROM product_detail_queue'); // isolate this queue fixture within the rolled-back transaction
     const existing = parseDetail(html, 'B000000001', category);
     await ingestObservations([existing], undefined, client);
     await enqueueDetails(category, [existing, observation('Z000000001'), observation('Z000000002')], client);
@@ -151,7 +153,7 @@ test('temporary errors preserve snapshots and rotate; denial stops queue with ne
     assert.deepEqual(issues.map(x => x.state), ['temporary', 'blocked']);
     assert.equal(calls.includes('Z000000002'), false);
     const queue = (await client.query('SELECT asin,state FROM product_detail_queue ORDER BY asin')).rows;
-    assert.deepEqual(queue.map(row => row.state), ['failed', 'needs_human', 'pending']);
+    assert.deepEqual(queue.map(row => row.state), ['failed', 'failed', 'pending']);
     const after = (await client.query('SELECT row_to_json(d) AS data FROM product_details d WHERE asin=$1', [existing.asin])).rows[0].data;
     assert.deepEqual(after, before);
   } finally { await client.query('ROLLBACK'); client.release(); }

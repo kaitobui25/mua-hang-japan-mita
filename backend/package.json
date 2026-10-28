@@ -18,8 +18,6 @@
     "worker:translate:daily": "tsx src/translator.ts daily",
     "worker:backfill:seed": "tsx src/worker.ts backfill:seed",
     "worker:backfill:status": "tsx src/worker.ts backfill:status",
-    "worker:backfill:ack": "tsx src/worker.ts backfill:ack",
-    "worker:captcha:open": "tsx src/worker.ts captcha:open",
     "worker:backfill": "tsx src/worker.ts backfill",
     "worker:daily": "tsx src/worker.ts daily"
   },

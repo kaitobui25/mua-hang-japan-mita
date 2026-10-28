@@ -60,7 +60,7 @@ test('missing listing price remains unobserved without browser fallback', async 
 
 test('listing collection never invokes legacy Neo collector', async () => {
   const result = await collectCategory(seed, async () => ({ observations: [obs(asinA, null)], issues: [] }), async () => {
-    throw new SourceError('needs_human', 'BrowserOS Neo offline', 'browseros-neo');
+    throw new SourceError('blocked', 'BrowserOS Neo offline', 'browseros-neo');
   });
   assert.equal(result.observations.length, 1);
   assert.deepEqual(result.issues, []);
@@ -70,11 +70,10 @@ test('Neo reports human verification instead of treating CAPTCHA as parsing erro
   assert.throws(() => parseNeoOutcome({ blocked: true, items: [] }, seed.categorySlug), (error: unknown) => error instanceof SourceError && error.state === 'blocked' && error.adapter === 'browseros-neo');
 });
 
-test('CAPTCHA triggers manual verification only; HTTP 403/429 do not bypass via Neo', () => {
+test('CAPTCHA diagnostics distinguish source denials and never trigger a browser', () => {
   assert.equal(isAmazonCaptcha(new SourceError('blocked', 'Amazon CAPTCHA requires verification')), true);
-  assert.equal(isAmazonCaptcha(new SourceError('needs_human', 'Amazon CAPTCHA requires verification')), true);
   assert.equal(isAmazonCaptcha(new SourceError('blocked', 'Amazon HTTP 403')), false);
-  assert.equal(isAmazonCaptcha(new SourceError('blocked', 'Amazon HTTP 429')), false);
+  assert.equal(isAmazonCaptcha(new SourceError('rate_limited', 'Amazon HTTP 429')), false);
   assert.equal(isAmazonCaptcha(new SourceError('temporary', 'CAPTCHA unrelated temporary error')), false);
 });
 

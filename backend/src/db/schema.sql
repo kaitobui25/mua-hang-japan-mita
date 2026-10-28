@@ -96,21 +96,23 @@ CREATE TABLE IF NOT EXISTS product_detail_queue (
   asin varchar(10) NOT NULL CHECK (asin ~ '^[A-Z0-9]{10}$'),
   parent_asin varchar(10) CHECK (parent_asin IS NULL OR parent_asin ~ '^[A-Z0-9]{10}$'),
   provenance jsonb NOT NULL DEFAULT '{}',
-  state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','success','failed','needs_human')),
+  state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','success','failed')),
   last_attempt_at timestamptz,
   last_success_at timestamptz,
   enqueued_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (category_slug, asin)
 );
 -- Global source deny marker: a listing 403/CAPTCHA may have no ASIN and must
--- still block all later categories until an explicit manual acknowledgment.
+-- still block all source entrypoints until the next eligible daily re-entry.
 CREATE TABLE IF NOT EXISTS source_access_blocks (
   source text PRIMARY KEY,
   reason text NOT NULL,
   blocked_at timestamptz NOT NULL DEFAULT now(),
+  retry_after_at timestamptz,
   continuation_due_at timestamptz,
   timeout_recorded_at timestamptz
 );
+ALTER TABLE source_access_blocks ADD COLUMN IF NOT EXISTS retry_after_at timestamptz;
 ALTER TABLE source_access_blocks ADD COLUMN IF NOT EXISTS continuation_due_at timestamptz;
 ALTER TABLE source_access_blocks ADD COLUMN IF NOT EXISTS timeout_recorded_at timestamptz;
 CREATE INDEX IF NOT EXISTS product_detail_queue_fair_idx

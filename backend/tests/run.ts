@@ -17,6 +17,7 @@ try {
   try {
     await isolated.query(await readFile(new URL('../src/db/schema.sql', import.meta.url), 'utf8'));
     await isolated.query(await readFile(new URL('../src/db/admin.sql', import.meta.url), 'utf8'));
+    await isolated.query(await readFile(new URL('../src/db/remove-needs-human.sql', import.meta.url), 'utf8'));
     await isolated.query('INSERT INTO pricing_policy(id,fx_jpy_to_vnd,service_fee_percent) VALUES(1,190,12)');
   } finally { await isolated.end(); }
   const files = (await readdir(new URL('.', import.meta.url))).filter(f => f.endsWith('.test.ts')).map(f => `tests/${f}`);

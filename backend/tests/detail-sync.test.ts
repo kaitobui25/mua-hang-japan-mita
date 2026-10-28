@@ -6,9 +6,9 @@ import { readFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { db } from '../src/db/pool.js';
 import { ingestObservations } from '../src/ingestion/store.js';
-import { syncCatalog, seedExistingDetails, processCategoryDetails, acknowledgeSourceAccess } from '../src/ingestion/sync.js';
+import { syncCatalog, seedExistingDetails, processCategoryDetails } from '../src/ingestion/sync.js';
 import { SourceError, type Observation } from '../src/ingestion/source.js';
-import { claimDueAmazonContinuation, recordAmazonPause, seedAmazonPause } from '../src/ingestion/source-access.js';
+import { amazonGate, recordAmazonPause, nextAmazonRetryAt } from '../src/ingestion/source-access.js';
 
 const category = 'thuc-pham-bo-sung';
 after(async () => { await db.end(); });
@@ -17,7 +17,7 @@ const item = (asin: string, cat = category): Observation => ({ asin, categorySlu
   name: 'Daily enrichment fixture', sourceUrl: `https://www.amazon.co.jp/dp/${asin}`, sourceAdapter: 'fixture',
   priceJpy: 1000, observedAt: new Date().toISOString() });
 
-test('daily sync refreshes existing ASINs on discovery errors, records backlog and stops whole run on denial', async () => {
+test('daily sync refreshes existing ASINs on discovery errors, records backlog and stops whole run on denial', async t => {
   // Session advisory lock prevents duplicate workers even with a one-connection pool.
   const client = new pg.Client({ connectionString: config.databaseUrl });
   await client.connect();
@@ -66,7 +66,7 @@ test('daily sync refreshes existing ASINs on discovery errors, records backlog a
       discover: async () => { discoveries++; return { observations: [item(discovered)], issues: [] }; },
       collect: async () => { detailCalls++; throw new SourceError('blocked', 'HTTP 429'); }
     });
-    assert.equal(blocked.state, 'needs_human');
+    assert.equal(blocked.state, 'failed');
     assert.equal(detailCalls, 1);
     assert.equal(discoveries, 1, 'the second category must not be fetched after denial');
     assert.equal((await isolated.query('SELECT * FROM products WHERE asin=$1', [discovered])).rows.length, 0);
@@ -80,91 +80,76 @@ test('daily sync refreshes existing ASINs on discovery errors, records backlog a
       discover: async () => { assert.fail('human verification not cleared: do not hit listing'); },
       collect: async () => { assert.fail('human verification not cleared: do not hit detail'); }
     });
-    assert.equal(paused.state, 'needs_human');
+    assert.equal(paused.state, 'failed');
     assert.equal(paused.saved, 0);
-    await assert.rejects(acknowledgeSourceAccess(child, false, isolated), /manually verified/);
-    assert.equal(await acknowledgeSourceAccess(child, true, isolated), 1);
-    assert.equal((await isolated.query('SELECT state FROM product_detail_queue WHERE asin=$1', [child])).rows[0].state, 'pending');
-    // CAPTCHA opens a human verification tab, but does not solve it or clear
-    // the source-wide gate. No other products or categories are fetched.
-    const opened: string[] = [];
-    const captcha = await syncCatalog({ connection: isolated, categories: [category],
+    const cooldown = (await isolated.query('SELECT retry_after_at FROM source_access_blocks')).rows[0].retry_after_at;
+    assert.ok(cooldown > new Date());
+    assert.equal(cooldown.getUTCHours(), 19);
+    const historyCount = (await isolated.query('SELECT count(*)::int AS n FROM sync_errors')).rows[0].n;
+    // Only a scheduled window may consume a due cooldown. Imports/manual runs cannot.
+    await isolated.query(`UPDATE source_access_blocks SET retry_after_at='2026-10-28T19:00:00Z'`);
+    const due = new Date('2026-10-28T19:00:00Z');
+    assert.equal(await amazonGate(isolated, false, due), false);
+    assert.equal(await amazonGate(isolated, true, new Date('2026-10-28T19:06:00Z')), false);
+    assert.equal(await amazonGate(isolated, true, due), true);
+    assert.equal(await amazonGate(isolated, true, due), false, 'only one re-entry reservation');
+    // A scheduled re-entry reaches the collector once; a new denial creates tomorrow's gate.
+    await isolated.query(`UPDATE source_access_blocks SET retry_after_at=$1`, [due]);
+    t.mock.timers.enable({ apis: ['Date'], now: due });
+    let reentries = 0;
+    const captcha = await syncCatalog({ connection: isolated, scheduled: true,
       discover: async () => ({ observations: [], issues: [] }),
-      collect: async () => { throw new SourceError('needs_human', 'Amazon CAPTCHA requires manual verification'); },
-      onCaptcha: async url => { opened.push(url); }
+      collect: async () => { reentries++; throw new SourceError('blocked', 'Amazon CAPTCHA'); }
     });
-    assert.equal(captcha.state, 'needs_human');
-    assert.deepEqual(opened, [`https://www.amazon.co.jp/dp/${child}`]);
-    assert.equal((await isolated.query('SELECT state FROM product_detail_queue WHERE asin=$1', [child])).rows[0].state, 'needs_human');
-    const stillBlocked = await syncCatalog({ connection: isolated, categories: [category],
-      discover: async () => { assert.fail('opening Neo must not authorize scraping'); } });
-    assert.equal(stillBlocked.state, 'needs_human');
-    assert.equal(await acknowledgeSourceAccess(child, true, isolated), 1);
-    // A listing may be blocked before an ASIN can be identified. The global
-    // source marker must protect later categories and future worker restarts.
-    const denied = await syncCatalog({ connection: isolated, categories: [category],
-      discover: async () => { throw new SourceError('blocked', 'HTTP 403 listing'); },
+    assert.equal(reentries, 1);
+    const again = await syncCatalog({ connection: isolated, scheduled: true,
+      discover: async () => { assert.fail('no repeated scheduled probing'); } });
+    assert.equal(again.state, 'failed');
+    assert.equal((await isolated.query('SELECT retry_after_at FROM source_access_blocks')).rows[0].retry_after_at.toISOString(), nextAmazonRetryAt(due).toISOString());
+    t.mock.timers.reset();
+    assert.equal(captcha.state, 'failed');
+    assert.equal((await isolated.query('SELECT state FROM product_detail_queue WHERE asin=$1', [child])).rows[0].state, 'failed');
+    assert.equal((await isolated.query('SELECT count(*)::int AS n FROM sync_errors')).rows[0].n, historyCount + 1);
+    assert.equal((await isolated.query('SELECT name FROM products WHERE asin=$1', [existing])).rows[0].name, 'Daily enrichment fixture');
+    // Transient failure during tomorrow's re-entry also cannot trigger repeated probing.
+    const tomorrow = nextAmazonRetryAt(due);
+    t.mock.timers.enable({ apis: ['Date'], now: tomorrow });
+    const transient = await syncCatalog({ connection: isolated, scheduled: true, categories: [category], limit: 1,
+      discover: async () => ({ observations: [], issues: [] }),
+      collect: async () => { throw new SourceError('temporary', 'fixture timeout'); } });
+    assert.equal(transient.state, 'failed');
+    assert.equal((await isolated.query('SELECT retry_after_at FROM source_access_blocks')).rows[0].retry_after_at.toISOString(), nextAmazonRetryAt(tomorrow).toISOString());
+    assert.equal((await syncCatalog({ connection: isolated, scheduled: true,
+      discover: async () => { assert.fail('transient re-entry cannot repeat today'); } })).state, 'failed');
+    // An error-free scheduled re-entry clears the gate and resumes normal operation.
+    t.mock.timers.reset();
+    t.mock.timers.enable({ apis: ['Date'], now: nextAmazonRetryAt(tomorrow) });
+    const recovered = await syncCatalog({ connection: isolated, scheduled: true, categories: [category], limit: 1,
+      discover: async () => ({ observations: [], issues: [] }), collect: async (asin, cat) => item(asin, cat) });
+    assert.equal(recovered.state, 'success');
+    assert.equal((await isolated.query('SELECT count(*)::int AS n FROM source_access_blocks')).rows[0].n, 0);
+    t.mock.timers.reset();
+    // Listing denial has no ASIN but still blocks all other categories and manual runs.
+    await isolated.query(`DELETE FROM source_access_blocks`);
+    const denied = await syncCatalog({ connection: isolated,
+      discover: async () => { throw new SourceError('rate_limited', 'HTTP 429 exhausted'); },
       collect: async () => { assert.fail('no detail after listing denial'); } });
-    assert.equal(denied.state, 'needs_human');
+    assert.equal(denied.state, 'failed');
     assert.equal((await isolated.query('SELECT count(*)::int AS n FROM source_access_blocks')).rows[0].n, 1);
-    const listingPaused = await syncCatalog({ connection: isolated, categories: ['thuc-pham-cho-be'],
-      discover: async () => { assert.fail('source gate must stop other categories'); } });
-    assert.equal(listingPaused.state, 'needs_human');
-    assert.equal(await acknowledgeSourceAccess('ALL', true, isolated), 0);
-    assert.equal((await isolated.query('SELECT count(*)::int AS n FROM source_access_blocks')).rows[0].n, 0);
-    // A CAPTCHA on a later listing page must open exactly that page, not the
-    // first page and not an unverified arbitrary URL.
-    const listingOpened: string[] = [];
-    const listingCaptcha = await syncCatalog({ connection: isolated, categories: [category],
-      discover: async () => ({ observations: [],
-        issues: [{ state: 'blocked', adapter: 'http', message: 'Amazon CAPTCHA requires verification', page: 2 }] }),
-      collect: async () => { assert.fail('blocked listing cannot collect details'); },
-      onCaptcha: async url => { listingOpened.push(url); }
-    });
-    assert.equal(listingCaptcha.state, 'needs_human');
-    assert.deepEqual(listingOpened, ['https://www.amazon.co.jp/gp/bestsellers/hpc/3457072051?pg=2']);
-    assert.equal((await isolated.query('SELECT count(*)::int AS n FROM source_access_blocks')).rows[0].n, 1);
-    await acknowledgeSourceAccess('ALL', true, isolated);
-    // 30s unattended continuation is durable, atomic and never clears Amazon.
-    await recordAmazonPause(isolated, 'CAPTCHA test');
-    const initial = await isolated.query('SELECT continuation_due_at FROM source_access_blocks WHERE source=$1', ['amazon.co.jp']);
-    await recordAmazonPause(isolated, 'same CAPTCHA');
-    assert.deepEqual((await isolated.query('SELECT continuation_due_at FROM source_access_blocks WHERE source=$1',
-      ['amazon.co.jp'])).rows[0].continuation_due_at, initial.rows[0].continuation_due_at, 'repeat denial must not reset deadline');
-    await isolated.query(`UPDATE source_access_blocks SET continuation_due_at=now()+interval '30 seconds'
-      WHERE source='amazon.co.jp'`);
-    assert.equal(await claimDueAmazonContinuation(isolated), false);
-    await isolated.query(`UPDATE source_access_blocks SET continuation_due_at=now()-interval '1 second'
-      WHERE source='amazon.co.jp'`);
-    assert.equal(await claimDueAmazonContinuation(isolated), true);
-    assert.equal(await claimDueAmazonContinuation(isolated), false, 'two workers cannot claim the same deadline');
-    await seedAmazonPause(isolated);
-    assert.equal(await claimDueAmazonContinuation(isolated), false, 'restart must not repeat an acknowledged timeout');
-    assert.equal((await isolated.query('SELECT count(*)::int AS n FROM source_access_blocks')).rows[0].n, 1);
-    await acknowledgeSourceAccess('ALL', true, isolated);
-    assert.equal((await isolated.query('SELECT count(*)::int AS n FROM source_access_blocks')).rows[0].n, 0);
-    // Existing blocked ASINs from pre-migration installations get a deadline.
-    await isolated.query(`UPDATE product_detail_queue SET state='needs_human' WHERE asin=$1`, [child]);
-    await seedAmazonPause(isolated);
-    assert.equal((await isolated.query('SELECT continuation_due_at IS NOT NULL AS queued FROM source_access_blocks')).rows[0].queued, true);
-    await acknowledgeSourceAccess('ALL', true, isolated);
-    // Startup and owner ACK race over separate DB sessions. Seeding must wait
-    // for the same advisory mutex and must not resurrect an acknowledged block.
-    await isolated.query(`UPDATE product_detail_queue SET state='needs_human' WHERE asin=$1`, [child]);
-    const owner = new pg.Client({ connectionString: config.databaseUrl });
-    await owner.connect();
-    try {
-      await owner.query(`SET search_path TO ${namespace}`);
-      await owner.query('SELECT pg_advisory_lock(70400200)');
-      const seedWhileAcking = seedAmazonPause(isolated);
-      try {
-        assert.equal(await acknowledgeSourceAccess('ALL', true, owner), 1);
-      } finally {
-        await owner.query('SELECT pg_advisory_unlock(70400200)');
-      }
-      await seedWhileAcking;
-      assert.equal((await isolated.query('SELECT count(*)::int AS n FROM source_access_blocks')).rows[0].n, 0);
-    } finally { await owner.end(); }
+    assert.equal((await syncCatalog({ connection: isolated, discover: async () => { assert.fail('blocked'); } })).state, 'failed');
+    await isolated.query('DELETE FROM source_access_blocks'); // fixture reset
+    let attempts = 0;
+    const partial = await syncCatalog({ connection: isolated, categories: [category], limit: 2,
+      discover: async () => ({ observations: [], issues: [] }),
+      collect: async (asin, cat) => {
+        if (++attempts === 2) throw new SourceError('blocked', 'HTTP 403 after good detail');
+        return item(asin, cat);
+      } });
+    assert.equal(partial.state, 'partial');
+    assert.equal(partial.saved, 1);
+    assert.equal(attempts, 2);
+    assert.equal((await isolated.query("SELECT count(*)::int AS n FROM sync_errors WHERE state='needs_human'")).rows[0].n, 0);
+
   } finally {
     await isolated.query('RESET search_path');
     await isolated.query(`DROP SCHEMA ${namespace} CASCADE`);
