@@ -10,6 +10,37 @@ export async function recentAdminIssues(asin?: string) {
   const amazon = await db.query(
     'SELECT id,sync_run_id,category_slug,asin,state,message,created_at FROM sync_errors ' +
     'WHERE ($1::varchar(10) IS NULL OR asin=$1) ORDER BY id DESC LIMIT 100', [asin ?? null]);
+  // Current persisted state, not event history. Select only warning metadata.
+  const persisted = await db.query(`
+    SELECT asin,field,status,issues,updated_at FROM (
+      (SELECT asin,'name'::text AS field,status,
+        name_issues AS issues,updated_at
+       FROM product_translations
+       WHERE locale='vi' AND ($1::varchar(10) IS NULL OR asin=$1)
+         AND (status='warning' OR CASE WHEN jsonb_typeof(name_issues)='array'
+           THEN jsonb_array_length(name_issues)>0 ELSE false END)
+       ORDER BY updated_at DESC,asin LIMIT 100)
+      UNION ALL
+      (SELECT asin,left(slot,100) AS field,'warning'::text AS status,issues,updated_at
+       FROM local_detail_translation_items
+       WHERE ($1::varchar(10) IS NULL OR asin=$1)
+         AND (warning OR CASE WHEN jsonb_typeof(issues)='array'
+           THEN jsonb_array_length(issues)>0 ELSE false END)
+       ORDER BY updated_at DESC,asin,slot LIMIT 100)
+    ) warnings ORDER BY updated_at DESC,asin,field LIMIT 100`, [asin ?? null]);
+  const persistedTranslations = persisted.rows.slice(0, 100).flatMap(row => {
+    if (typeof row.asin !== 'string' || !asinPattern.test(row.asin) || (asin && row.asin !== asin)) return [];
+    return [{
+      asin: row.asin,
+      field: typeof row.field === 'string' ? row.field.slice(0, 100) : 'unknown',
+      status: typeof row.status === 'string' ? row.status.slice(0, 100) : 'warning',
+      issues: Array.isArray(row.issues)
+        ? row.issues.filter((entry: unknown): entry is string => typeof entry === 'string').slice(0, 20).map((entry: string) => entry.slice(0, 100))
+        : [],
+      updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString()
+        : typeof row.updated_at === 'string' ? row.updated_at.slice(0, 100) : null
+    }];
+  });
   const translations: Record<string, unknown>[] = [];
   let logAvailable = false;
   try {
@@ -31,7 +62,7 @@ export async function recentAdminIssues(asin?: string) {
           if (asin && issue.asin !== asin) continue;
           if (issue.result !== 'failed' && issue.result !== 'warning') continue;
           translations.push({
-            timestamp: typeof issue.timestamp === 'string' ? issue.timestamp : null,
+            timestamp: typeof issue.timestamp === 'string' ? issue.timestamp.slice(0, 100) : null,
             asin: issue.asin,
             field: typeof issue.field === 'string' ? issue.field.slice(0, 100) : 'unknown',
             engine: typeof issue.engine === 'string' ? issue.engine.slice(0, 100) : null,
@@ -51,5 +82,5 @@ export async function recentAdminIssues(asin?: string) {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  return { amazon: amazon.rows, translations, logAvailable, logLocation: '.agents/runtime/translation-warnings.jsonl' };
+  return { amazon: amazon.rows, persistedTranslations, translations, logAvailable, logLocation: '.agents/runtime/translation-warnings.jsonl' };
 }

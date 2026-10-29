@@ -18,7 +18,14 @@ export default async function IssueLogPage({
       {asin && <p>ASIN: <strong>{asin}</strong> · <Link href="/admin/nhat-ky-loi">Xem tất cả</Link></p>}
     </header>
     <section className="admin-panel">
-      <h2>Nhật ký bản dịch</h2>
+      <h2>Cảnh báo bản dịch hiện tại đã lưu (PostgreSQL)</h2>
+      <p>Chỉ đọc · Tối đa 100 cảnh báo hiện tại đã lưu cho tên VI và chi tiết. Đây là trạng thái hiện tại, không phải lịch sử sự kiện hay xác nhận bản dịch chính xác. Có thể xem ngay cả khi VPS không có JSONL cục bộ.</p>
+      {report.persistedTranslations.length ? <ul>{report.persistedTranslations.map((issue, index) => <li key={issue.asin + issue.field + index}>
+        <strong>{issue.asin}</strong> · {issue.field} · {date(issue.updatedAt)} · {issue.status} · {issue.issues.join(', ')}
+      </li>)}</ul> : <p>Không có cảnh báo bản dịch hiện tại phù hợp đã lưu.</p>}
+    </section>
+    <section className="admin-panel">
+      <h2>Lịch sử bản dịch JSONL — chỉ trên máy cục bộ</h2>
       <p>Nhật ký cục bộ trên máy chạy API này: <code>{report.logLocation}</code>. {report.logAvailable ? 'Đã đọc các sự kiện gần nhất.' : 'Không tìm thấy file trên máy chạy API; nhật ký từ Windows chưa được đồng bộ tự động lên VPS.'}</p>
       {report.translations.length ? <ul>{report.translations.map((issue, index) => <li key={issue.asin + issue.field + index}>
         <p><strong>{issue.asin}</strong> · {issue.field} · {date(issue.timestamp)} · {issue.result} · {issue.issues?.join(', ')}</p>

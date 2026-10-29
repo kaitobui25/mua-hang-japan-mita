@@ -5,7 +5,7 @@ Scope: Mita processes under this checkout only. The three cron queues stay at 04
 ## Local startup and stop
 
 - Manual: `./scripts/start-local.ps1` starts local API/web and the worker supervisor. `./scripts/start-local-detail.ps1` starts a detail-only worker supervisor when no supervisor is active. Do not run both modes simultaneously.
-- Optional Windows logon task: preview `./scripts/register-mita-boot.ps1`; only explicit `./scripts/register-mita-boot.ps1 -Apply` registers `MitaJapan-LocalWorkers`. Registration has **not** been applied by this change. The trigger is logon for the current Windows owner account, because SSH-agent and DPAPI are account-scoped. This does not run while Windows is at the sign-in screen.
+- Windows logon task: `MitaJapan-LocalWorkers` was registered and verified on 2026-10-29 with `./scripts/register-mita-boot.ps1 -Apply`. Its trigger is logon for the Windows owner account, because SSH-agent and DPAPI are account-scoped. This does not run while Windows is at the sign-in screen.
 - Logon launcher `start-mita-on-boot.ps1` only starts the existing Mita PostgreSQL cluster and supervisor, never imports source data, runs migrations, or starts the public website. It requires the backend dependencies and already initialized cluster.
 - `./scripts/stop-local.ps1` writes private stop requests; workers exit after their daily jobs or Mita source/import lock releases, and outside dispatch windows. To stop the local DB use `-StopDatabase` only after the supervisor exits. Never terminate an active job via Task Manager.
 - Logs and state live under `.agents/runtime/` and are private/untracked: `mita-supervisor.jsonl`, `mita-daily-YYYY-MM-DD.json`, `nightly-sync.out.log`, `nightly-sync.err.log`, individual worker logs, and `llama*.log`. State values are `running`, `completed`, `partial`, `failed`, `skipped`. A crash may leave a `running` sync marker; it needs manual inspection.
@@ -30,6 +30,8 @@ Checks that require a controlled test environment: simultaneous cron/worker drai
 
 On 2026-10-29 JST, the manually authorized once-per-day data-only batch committed and verified 831 products, 831 name rows, 12,701 atomic detail slots (1,554 translated), and zero per-table mismatches. Ledger status was `completed`. This is **not** evidence that the new code was deployed or that the five gallery QA products have five HiRes photos; these remain separate release/scan checks.
 
+The owner-only Admin issue page reads **current persisted** name/detail warning metadata from PostgreSQL (included in the normal daily catalog data transfer), independently of the host-local `.agents/runtime/translation-warnings.jsonl` **event history**. The latter remains Windows-only unless separately transported; a missing VPS JSONL is not a missing PostgreSQL warning. Admin authentication and localhost restrictions still apply.
+
 The supervised Windows worker defaults to `AMAZON_GALLERY_PILOT_DATE=2026-10-30`
 until reviewed; the date arms **only** that JST date's 04:00 scheduled dispatch.
 For the currently known cooldown, the earliest possible date is 2026-10-30;
@@ -50,7 +52,9 @@ requests under the source advisory lock. Once claimed, success, partial failure,
 crash, and restart all consume the single pilot; changing the date does not
 rearm it. A denied cooldown does not claim it. Do not delete the marker to retry.
 
-Deployment/activation and live QA were not performed. Before broad backfill,
+Release `f85df3c` was verified live on DuckDNS on 2026-10-29 and the Windows
+supervisor/AtLogOn activation was verified. The actual five-ASIN gallery pilot
+and source image dimension proof remain outstanding. Before broad backfill,
 verify the saved real nine-HiRes HTML offline, then review all five DuckDNS
 product galleries after an authorized scheduled run: actual image identities,
 source provenance, dimensions, thumbnail exclusion, old-cover preservation on

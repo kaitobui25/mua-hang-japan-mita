@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
 import { db } from '../src/db/pool.js';
+import { recentAdminIssues } from '../src/admin/issues.js';
 import { buildServer } from '../src/server.js';
 import { config } from '../src/config.js';
 import { csrfToken, digest } from '../src/admin/security.js';
@@ -48,7 +49,7 @@ test('Admin translation settings require owner session, valid origin/CSRF and a 
       return params[0] === digest(token) ? ok([{ account_id: 1, expires_at: new Date(Date.now() + 60_000) }]) : ok();
     }
     if (sql.includes('SELECT version,validate_translation_semantics FROM translation_settings')) return settings();
-    if (sql.includes('FROM sync_errors')) return ok();
+    if (sql.includes('FROM sync_errors') || sql.includes('FROM product_translations')) return ok();
     throw new Error(`Unexpected pool SQL: ${sql}`);
   });
   mock.method(pool, 'connect', async () => client);
@@ -63,6 +64,8 @@ test('Admin translation settings require owner session, valid origin/CSRF and a 
   await t.test('no session, remote host/IP and forged Origin are blocked', async () => {
     assert.equal((await get('/api/admin/translation-settings', local)).statusCode, 401);
     assert.equal((await get('/api/admin/issues', local)).statusCode, 401);
+    assert.equal((await get('/api/admin/issues', { ...authenticated, host: 'evil.test' })).statusCode, 403);
+    assert.equal((await server.inject({ url: '/api/admin/issues', headers: authenticated, remoteAddress: '192.0.2.3' })).statusCode, 403);
     assert.equal((await put({ version: 1, validateTranslationSemantics: true }, local)).statusCode, 401);
     assert.equal((await get('/api/admin/translation-settings', { ...authenticated, host: 'evil.test' })).statusCode, 403);
     assert.equal((await server.inject({ url: '/api/admin/translation-settings', headers: authenticated, remoteAddress: '192.0.2.3' })).statusCode, 403);
@@ -127,6 +130,51 @@ test('Admin translation settings require owner session, valid origin/CSRF and a 
     const report = all.json();
     assert.ok(Array.isArray(report.amazon));
     assert.ok(Array.isArray(report.translations));
+    assert.deepEqual(report.persistedTranslations, []);
     assert.equal(report.logLocation, '.agents/runtime/translation-warnings.jsonl');
   });
+});
+
+
+test('persisted warning summary bounds and allowlists database metadata with a parameterized filter', async t => {
+  const calls: { sql: string; params: unknown[] }[] = [];
+  const asin = 'B012345678';
+  mock.method(db, 'query', async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql, params });
+    assert.match(sql, /^\s*SELECT/);
+    if (sql.includes('FROM sync_errors')) return { rows: [] };
+    return { rows: [
+      { asin, field: 'name', status: 'warning', issues: ['residual_japanese', null, {}, 1], updated_at: new Date('2026-01-01'), secret: 'do-not-expose' },
+      { asin, field: 'features:0', status: 'warning', issues: { invalid: true }, updated_at: null },
+      { asin, field: 'x'.repeat(200), status: 'success', issues: Array(30).fill('x'.repeat(200)), updated_at: 'x'.repeat(200) },
+      { asin: 'invalid', field: 'name', issues: [] },
+      ...Array(110).fill({ asin, field: 'name', status: 'warning', issues: null })
+    ] };
+  });
+  t.after(() => mock.restoreAll());
+  const report = await recentAdminIssues(asin);
+  assert.equal(report.persistedTranslations.length, 99);
+  assert.deepEqual(report.persistedTranslations[0], {
+    asin, field: 'name', status: 'warning', issues: ['residual_japanese'], updatedAt: '2026-01-01T00:00:00.000Z'
+  });
+  assert.deepEqual(report.persistedTranslations[1].issues, []);
+  assert.equal(report.persistedTranslations[2].issues.length, 20);
+  assert.equal(report.persistedTranslations[2].issues[0].length, 100);
+  assert.equal(report.persistedTranslations[2].field.length, 100);
+  assert.equal(report.persistedTranslations[2].updatedAt?.length, 100);
+  assert.ok(!JSON.stringify(report.persistedTranslations).includes('do-not-expose'));
+  const query = calls[1];
+  assert.deepEqual(query.params, [asin]);
+  assert.ok(!query.sql.includes(asin));
+  assert.match(query.sql, /locale='vi'/);
+  assert.match(query.sql, /status='warning'/);
+  assert.match(query.sql, /warning OR CASE/);
+  assert.match(query.sql, /jsonb_typeof\(name_issues\)='array'/);
+  assert.match(query.sql, /jsonb_typeof\(issues\)='array'/);
+  assert.match(query.sql, /LIMIT 100/);
+  const count = calls.length;
+  await assert.rejects(recentAdminIssues("' OR true--"), /invalid_asin/);
+  assert.equal(calls.length, count);
+  await recentAdminIssues();
+  assert.deepEqual(calls.at(-1)?.params, [null]);
 });

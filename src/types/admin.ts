@@ -8,7 +8,8 @@ export type CatalogSettings = { version: number; hideLocalTestOnly: boolean };
 export type TranslationSettings = { version: number; validateTranslationSemantics: boolean };
 export type AdminIssueReport = {
   amazon: { id: number; sync_run_id: number; asin: string | null; category_slug: string | null; state: string; message: string; created_at: string }[];
-  translations: { timestamp: string; asin: string; field: string; engine: string; model: string | null; attempt: number; issues: string[]; result: string; original: string | null; candidate: string | null }[];
+  persistedTranslations: { asin: string; field: string; status: string; issues: string[]; updatedAt: string | null }[];
+  translations: { timestamp: string | null; asin: string; field: string; engine: string | null; model: string | null; attempt: number | null; issues: string[]; result: string; original: string | null; candidate: string | null }[];
   logAvailable: boolean; logLocation: string
 };
 export type SyncRun = { id: string; state: string; started_at: string; finished_at: string | null; discovered_count: number; saved_count: number; error_count: number; note: string | null };
