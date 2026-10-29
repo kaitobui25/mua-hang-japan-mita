@@ -79,6 +79,16 @@ async function persistOrder(body: unknown, simulation: boolean) {
       await connection.query('INSERT INTO order_items(order_id,asin,name,quantity,price_jpy,unit_price_vnd,observed_at) VALUES($1,$2,$3,$4,$5,$6,$7)',
         [orderId, line.asin, line.name, line.quantity, line.priceJpy, line.unitPriceVnd, line.observedAt]);
     }
+    if (!simulation) {
+      // Unique event identity prevents re-enqueueing the same order alert.
+      // Failure to persist the alert rolls back the entire checkout.
+      await connection.query(
+        `INSERT INTO order_notification_outbox(order_id,event_type,recipient,channel)
+         VALUES($1,'order_placed','owner','admin')
+         ON CONFLICT (order_id,event_type,recipient,channel) DO NOTHING`,
+        [orderId]
+      );
+    }
     await connection.query('COMMIT');
     return { orderId, status: simulation ? 'simulation_created' : 'pending_confirmation', lines, subtotalVnd,
       merchandiseVnd: subtotalVnd, payableNowVnd: simulation ? subtotalVnd : 0,

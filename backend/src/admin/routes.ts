@@ -4,6 +4,7 @@ import { getPricingPolicy, toVnd, validatePolicy } from '../pricing.js';
 import { AdminError, getCatalogSettings, getTranslationSettings, listOrders, listProducts, orderDetail, overview, saveCatalogSettings, savePolicy, saveTranslationSettings, setVisibility, updateOrder } from './data.js';
 import { recentAdminIssues } from './issues.js';
 import { enqueueImport, listImports } from './imports.js';
+import { acknowledgeOrderNotification, listOrderNotifications } from './notifications.js';
 import { csrfToken, digest, getSession, isLocalRequest, login, readToken, setSessionCookie, validOrigin } from './security.js';
 
 declare module 'fastify' {
@@ -68,6 +69,11 @@ export async function adminRoutes(server: FastifyInstance) {
     return reply.code('existingProduct' in result || result.duplicate ? 200 : 202).send(result);
   });
   server.get('/orders', async request => listOrders(request.query as Record<string, string | undefined>));
+  server.get('/notifications', async request => listOrderNotifications(request.query as Record<string, string | undefined>));
+  server.post('/notifications/:id/ack', async request => {
+    const { id } = request.params as { id: string };
+    return acknowledgeOrderNotification(id);
+  });
   server.get('/orders/:id', async request => {
     const { id } = request.params as { id: string };
     if (!uuid.test(id)) throw new AdminError(400, 'Mã đơn không hợp lệ.');

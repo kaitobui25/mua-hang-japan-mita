@@ -13,4 +13,4 @@ export type AdminIssueReport = {
   logAvailable: boolean; logLocation: string
 };
 export type SyncRun = { id: string; state: string; started_at: string; finished_at: string | null; discovered_count: number; saved_count: number; error_count: number; note: string | null };
-export type Overview = { amazonCooldown: { reason: string; blocked_at: string; retry_after_at: string | null } | null; orders_7_days: number; visible_products: number; latestSync: SyncRun | null; syncErrors: { id: string; state: string; message: string; category_slug: string | null; created_at: string }[]; expectedSyncAt: string; missingScheduledRun: boolean; recentOrders: AdminOrder[] };
+export type Overview = { newOrderAlertCount?: number; amazonCooldown: { reason: string; blocked_at: string; retry_after_at: string | null } | null; orders_7_days: number; visible_products: number; latestSync: SyncRun | null; syncErrors: { id: string; state: string; message: string; category_slug: string | null; created_at: string }[]; expectedSyncAt: string; missingScheduledRun: boolean; recentOrders: AdminOrder[] };

@@ -5,6 +5,6 @@ import { fileURLToPath } from 'node:url';
 const source = fileURLToPath(new URL('../src/db/', import.meta.url));
 const destination = fileURLToPath(new URL('../dist/db/', import.meta.url));
 await mkdir(destination, { recursive: true });
-for (const sql of ['schema.sql', 'admin.sql', 'remove-needs-human.sql']) {
+for (const sql of ['schema.sql', 'admin.sql', 'order-notifications.sql', 'title-presentations.sql', 'remove-needs-human.sql']) {
   await copyFile(`${source}/${sql}`, `${destination}/${sql}`);
 }

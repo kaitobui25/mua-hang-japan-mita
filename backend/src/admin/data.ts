@@ -183,5 +183,13 @@ export async function overview() {
   const expected = expectedSyncAt();
   const confirmed = await db.query('SELECT id FROM sync_runs WHERE started_at>=$1 AND finished_at IS NOT NULL LIMIT 1', [expected]);
   const cooldown = await db.query("SELECT reason,blocked_at,retry_after_at FROM source_access_blocks WHERE source='amazon.co.jp'");
-  return { ...counts.rows[0], amazonCooldown: cooldown.rows[0] ?? null, latestSync: run, syncErrors: errors.rows, expectedSyncAt: expected, missingScheduledRun: !confirmed.rowCount, recentOrders: (await listOrders({ limit: '5' })).items };
+  const unread = await db.query<{ count: number }>(
+    `SELECT count(*)::int AS count FROM order_notification_outbox e
+      JOIN orders o ON o.id=e.order_id
+      WHERE e.recipient='owner' AND e.channel='admin'
+        AND o.status<>'simulation_created' AND e.acknowledged_at IS NULL`);
+  return { ...counts.rows[0], newOrderAlertCount: unread.rows[0].count,
+    amazonCooldown: cooldown.rows[0] ?? null, latestSync: run, syncErrors: errors.rows,
+    expectedSyncAt: expected, missingScheduledRun: !confirmed.rowCount,
+    recentOrders: (await listOrders({ limit: '5' })).items };
 }
