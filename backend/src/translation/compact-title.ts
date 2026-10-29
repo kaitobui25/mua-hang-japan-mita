@@ -23,6 +23,20 @@ export function validateTitlePresentation(input: TitleInput, candidate: unknown)
   const facts = value.omittedFacts.map(fact => usableTranslation(fact, 500).trim());
   if (new Set(facts).size !== facts.length ||
       facts.some(fact => !input.translatedName.includes(fact))) throw new Error('unsourced_omitted_fact');
+  // A concise title may delete or regroup source words, but cannot introduce
+  // new health claims, ingredients, variants, or model names. Even with the
+  // semantic warning toggle OFF, factual omission must stay lossless.
+  const words = (text: string) => text.normalize('NFKC').toLocaleLowerCase('vi-VN')
+    .match(/[\p{L}\p{N}]+(?:[.,\-][\p{L}\p{N}]+)*/gu) ?? [];
+  const available = new Map<string, number>();
+  for (const word of words(input.translatedName)) {
+    available.set(word, (available.get(word) ?? 0) + 1);
+  }
+  for (const word of words(shortName)) {
+    const count = available.get(word) ?? 0;
+    if (count === 0) throw new Error('title_claim_not_in_source');
+    available.set(word, count - 1);
+  }
   if (input.brand && input.sourceName.toLowerCase().includes(input.brand.toLowerCase()) &&
       !shortName.toLowerCase().includes(input.brand.toLowerCase())) throw new Error('brand_missing');
   // A model cannot silently turn 900 g into 90 g, or omit model/pack identifiers.
@@ -94,6 +108,31 @@ export async function saveCompactTitle(input: TitleInput, title: TitlePresentati
   return Boolean(saved.rowCount);
 }
 
+const productSpecificIssues = new Set([
+  'invalid_title_json','title_too_short','invalid_omitted_facts',
+  'unsourced_omitted_fact','brand_missing','identity_numbers_changed',
+  'title_claim_not_in_source','invalid_output'
+]);
+
+export function isCompactTitleProductIssue(error: unknown): boolean {
+  return error instanceof Error && productSpecificIssues.has(error.message);
+}
+
+async function recordCompactTitleIssue(input: TitleInput, issue: string, client: Pick<PoolClient, 'query'>) {
+  await client.query(`INSERT INTO product_title_attempts
+      (asin,source_name,translated_name,attempts,last_issue)
+    SELECT p.asin,p.name,t.name,1,$4
+    FROM products p JOIN product_translations t ON t.asin=p.asin AND t.locale='vi'
+    WHERE p.asin=$1 AND p.name=$2 AND t.name=$3
+    ON CONFLICT(asin) DO UPDATE SET
+      attempts=CASE WHEN product_title_attempts.source_name=EXCLUDED.source_name
+        AND product_title_attempts.translated_name=EXCLUDED.translated_name
+        THEN LEAST(3,product_title_attempts.attempts+1) ELSE 1 END,
+      source_name=EXCLUDED.source_name,translated_name=EXCLUDED.translated_name,
+      last_issue=EXCLUDED.last_issue,updated_at=now()`,
+    [input.asin,input.sourceName,input.translatedName,issue]);
+}
+
 /** Small, quota-bound backfill; never rewrites existing successful translations. */
 export async function compactPendingTitles(options: {
   connect?: () => Promise<PoolClient>; quota?: typeof readFreeQuota;
@@ -113,9 +152,12 @@ export async function compactPendingTitles(options: {
         pt.translated_name AS "previousTranslation"
       FROM products p JOIN product_translations t ON t.asin=p.asin AND t.locale='vi'
       LEFT JOIN product_title_presentations pt ON pt.asin=p.asin
+      LEFT JOIN product_title_attempts a ON a.asin=p.asin
       WHERE t.status IN ('success','warning') AND t.name IS NOT NULL
         AND (pt.asin IS NULL OR pt.source_name IS DISTINCT FROM p.name
           OR pt.translated_name IS DISTINCT FROM t.name)
+        AND (a.asin IS NULL OR a.source_name IS DISTINCT FROM p.name
+          OR a.translated_name IS DISTINCT FROM t.name OR a.attempts<3)
       ORDER BY p.asin LIMIT $1`, [remaining]);
     let saved = 0, deferred = 0;
     for (const row of result.rows) {
@@ -127,9 +169,15 @@ export async function compactPendingTitles(options: {
         });
         if (await saveCompactTitle(row, presentation, model, client)) saved++;
         else deferred++;
-      } catch {
-        // Do not prevent other jobs or consume the old approved title on failure.
+      } catch (error) {
         deferred++;
+        if (isCompactTitleProductIssue(error)) {
+          // Record an explicit per-source attempt and let later ASINs progress.
+          await recordCompactTitleIssue(row, (error as Error).message, client);
+          continue;
+        }
+        // Shared quota/provider failures are deferred, not incorrectly marked
+        // as permanently bad source data.
         break;
       }
     }

@@ -10,3 +10,14 @@ CREATE TABLE IF NOT EXISTS product_title_presentations (
   model text NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Prevent a single unshortenable product from consuming the free quota and
+-- starving every later ASIN on each daily run. Source changes reopen attempts.
+CREATE TABLE IF NOT EXISTS product_title_attempts (
+  asin varchar(10) PRIMARY KEY REFERENCES products(asin) ON DELETE CASCADE,
+  source_name text NOT NULL,
+  translated_name text NOT NULL,
+  attempts smallint NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 3),
+  last_issue text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);

@@ -130,13 +130,17 @@ export async function ingestObservations(observations: VariantObservation[], run
       if (metrics) {
         // Reuse the catalog provenance envelope already transferred by the VPS sync.
         // Missing/denied snapshots never advance the last successful observation.
+        // A metrics-only observation must NEVER change the freshness watermark
+        // for features, ingredients, cautions and other source detail. The
+        // epoch sentinel leaves subsequent true detail observations eligible.
         await connection.query(`INSERT INTO product_details(asin,source_observed_at,provenance)
-          VALUES($1,$2,jsonb_build_object('amazonMetrics',$3::jsonb))
+          VALUES($1,'1970-01-01T00:00:00Z'::timestamptz,
+            jsonb_build_object('amazonMetrics',$2::jsonb,
+              'sourceUrl',$4::text,'adapter','metrics-only','sections','[]'::jsonb))
           ON CONFLICT(asin) DO UPDATE SET
-            provenance=jsonb_set(product_details.provenance,'{amazonMetrics}',$3::jsonb),
-            source_observed_at=GREATEST(product_details.source_observed_at,$2)
-          WHERE COALESCE(product_details.provenance->'amazonMetrics'->>'observedAt','') < $4`,
-          [o.asin, new Date(metrics.observedAt), JSON.stringify(metrics), metrics.observedAt]);
+            provenance=jsonb_set(product_details.provenance,'{amazonMetrics}',$2::jsonb)
+          WHERE COALESCE(product_details.provenance->'amazonMetrics'->>'observedAt','') < $3`,
+          [o.asin, JSON.stringify(metrics), metrics.observedAt, metrics.sourceUrl]);
       }
       if (observedAt && validPrice) {
         await connection.query('INSERT INTO price_observations(asin,price_jpy,observed_at,source_adapter,sync_run_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING',

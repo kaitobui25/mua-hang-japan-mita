@@ -27,6 +27,43 @@ test('review validation rejects aggregate scope, invented dates, duplicate evide
   assert.equal(dedup?.reviews.length, 1);
 });
 
+test('new review metrics cannot advance freshness of older product details', async () => {
+  const client = await db.connect();
+  await client.query('BEGIN');
+  try {
+    const asin = 'R999999999';
+    const oldDetailAt = new Date(Date.now() - 3 * 86_400_000).toISOString();
+    const newDetailAt = new Date(Date.now() - 86_400_000).toISOString();
+    const observation = { asin, name: 'Source detail fixture',
+      categorySlug: 'thuc-pham-bo-sung',
+      sourceUrl: `https://www.amazon.co.jp/dp/${asin}`,
+      sourceAdapter: 'fixture', observedAt: new Date().toISOString() };
+    const detail = (at: string, feature: string) => ({
+      features: [feature], ingredients: [], usage: [], cautions: [],
+      specs: {}, variantAttributes: {}, childAsins: [], sourceObservedAt: at,
+      provenance: { sourceUrl: observation.sourceUrl, adapter: 'fixture',
+        sections: ['features'], fieldObservedAt: { features: at } }
+    });
+    await ingestObservations([{ ...observation, detail: detail(oldDetailAt, 'Old observed feature') }], undefined, client);
+    const initial = await client.query<{ source_observed_at: Date }>(
+      'SELECT source_observed_at FROM product_details WHERE asin=$1', [asin]);
+    await ingestObservations([{ ...observation, amazonMetrics: metric(asin, 7) }], undefined, client);
+    const afterMetrics = await client.query<{ source_observed_at: Date }>(
+      'SELECT source_observed_at FROM product_details WHERE asin=$1', [asin]);
+    assert.equal(afterMetrics.rows[0].source_observed_at.toISOString(),
+      initial.rows[0].source_observed_at.toISOString());
+    await ingestObservations([{ ...observation,
+      detail: detail(newDetailAt, 'Genuine later feature') }], undefined, client);
+    const latest = await client.query<{ features: string[]; source_observed_at: Date }>(
+      'SELECT features,source_observed_at FROM product_details WHERE asin=$1', [asin]);
+    assert.deepEqual(latest.rows[0].features, ['Genuine later feature']);
+    assert.equal(latest.rows[0].source_observed_at.toISOString(), newDetailAt);
+  } finally {
+    await client.query('ROLLBACK');
+    client.release();
+  }
+});
+
 test('backend ranks before pagination, caps each category and retains honest unknown/stale snapshots', async () => {
   const client = await db.connect();
   await client.query('BEGIN');
