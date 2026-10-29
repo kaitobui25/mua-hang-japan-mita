@@ -1,5 +1,7 @@
 "use client";
 
+import { AmazonStars } from "./amazon-stars";
+
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useCart } from "@/context/cart";
@@ -50,7 +52,7 @@ export function ProductDetail({ asin }: { asin: string }) {
       <div className="detail-image"><ProductImage src={activeImage} name={item.name}/>
         {pictures.length > 1 && <div className="detail-gallery" aria-label="Bộ ảnh sản phẩm">{pictures.map((src, index) => <button type="button" key={src} className={src === activeImage ? "gallery-thumb active" : "gallery-thumb"} onClick={() => setSelectedImage(src)} aria-label={`Xem ảnh ${index + 1}`} aria-pressed={src === activeImage}><img src={src} alt="" loading="lazy"/></button>)}</div>}
         </div>
-      <div className="detail-content"><p className="product-brand">{item.brand || "Sản phẩm Nhật"}</p><h1>{item.name}</h1><p className="detail-category">{categoryName(item.categorySlug)}</p>
+      <div className="detail-content"><p className="product-brand">{item.brand || "Sản phẩm Nhật"}</p><h1>{item.name}</h1><AmazonStars product={item}/>{/^[A-Z0-9]{10}$/.test(item.asin) && <p><a href={`https://www.amazon.co.jp/dp/${item.asin}`} target="_blank" rel="noopener noreferrer">Xem sản phẩm gốc trên Amazon Japan ↗</a></p>}<p className="detail-category">{categoryName(item.categorySlug)}</p>
         <div className="detail-price-block"><div className="detail-price">{item.priceVnd && item.priceVnd > 0 ? formatVnd(item.priceVnd) : "Giá đang cập nhật"}</div>{productStatus(item) && <p className="status-warning">{productStatus(item)}</p>}</div>
         {variants.length > 1 && <fieldset className="variant-field"><legend>Chọn phiên bản theo sản phẩm nguồn</legend>
           {reliableAttributes ? <div className="variant-selectors">{attributes.map(attribute => <label key={attribute}><span>{attribute}</span><select value={item.variantAttributes?.[attribute] ?? ""} onChange={event => selectAttribute(attribute, event.target.value)}><option value="" disabled>Chọn {attribute}</option>{[...new Set(variants.map(variant => variant.variantAttributes?.[attribute]).filter((value): value is string => !!value))].map(value => <option key={value} value={value}>{value}</option>)}</select></label>)}</div>
@@ -65,6 +67,6 @@ export function ProductDetail({ asin }: { asin: string }) {
         <dl className="detail-metadata"><div><dt>Mã sản phẩm</dt><dd>{item.asin}</dd></div></dl>
       </div>
     </section>
-    <ProductInformation description={item.description} detail={item.detail}/>
+    <ProductInformation description={item.description} detail={item.detail} titleExtras={item.titleExtras}/>
   </>;
 }

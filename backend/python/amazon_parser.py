@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit
 from bs4 import BeautifulSoup
 
+# Raw HTML does not establish review publication rights or exact-ASIN dated
+# written-review evidence. Keep amazonMetrics absent; never infer it from stars.
 ASIN = re.compile(r'^[A-Z0-9]{10}$')
 
 def text(node):

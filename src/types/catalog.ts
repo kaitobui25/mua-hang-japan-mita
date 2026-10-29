@@ -1,8 +1,11 @@
 export type Availability = "in_stock" | "out_of_stock" | "unknown" | "requires_verification";
 
 export type CatalogProduct = {
+  amazon?: { averageStars: number | null; ratingsCount: number | null; writtenReviewCount: number | null;
+    observedAt: string; stale: boolean; qualification: 'verified' | 'ordinary' | 'unknown'; sourceUrl: string } | null;
   asin: string;
   name: string;
+  titleExtras?: string[];
   label?: string;
   brand?: string | null;
   categorySlug: string;
@@ -34,6 +37,7 @@ export type CatalogVariant = CatalogProduct & { label?: string };
 
 export type CatalogResponse = {
   items: CatalogProduct[];
+  popularity?: { qualifiedOnly: boolean; evidenceYear: number; note: string };
   total: number;
   page: number;
   lastUpdatedAt?: string | null;

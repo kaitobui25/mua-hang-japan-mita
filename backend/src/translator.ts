@@ -2,12 +2,25 @@ import { PgBoss } from 'pg-boss';
 import { config } from './config.js';
 import { db } from './db/pool.js';
 import { translatePendingNames } from './translation/jobs.js';
+import { compactPendingTitles } from './translation/compact-title.js';
 import { shouldRunTranslation, translationCron, translationTimezone } from './translation/schedule.js';
 
 const command = process.argv[2];
+async function translateAndCompact() {
+  const names = await translatePendingNames();
+  // The concise presentation is optional until its additive local migration
+  // has been applied. A provider or quota failure must not revoke full titles.
+  try {
+    const titles = await compactPendingTitles();
+    console.log('Concise product titles:', titles);
+  } catch {
+    console.error('Concise title job deferred; full product titles remain available.');
+  }
+  return names;
+}
 
 if (command === 'once') {
-  try { console.log('Manual name translation:', await translatePendingNames()); }
+  try { console.log('Manual name translation:', await translateAndCompact()); }
   finally { await db.end(); }
 } else if (command === 'daily') {
   const startedAt = new Date();
@@ -23,7 +36,7 @@ if (command === 'once') {
           continue;
         }
         console.log('05:00 JST name translation started.');
-        console.log('Name translation finished:', await translatePendingNames());
+        console.log('Name translation finished:', await translateAndCompact());
       }
     });
     await boss.schedule('translation.names.daily', translationCron, {}, { tz: translationTimezone });

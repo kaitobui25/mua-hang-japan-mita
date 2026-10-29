@@ -245,3 +245,24 @@ CREATE TABLE IF NOT EXISTS translation_name_repairs (
   after_value jsonb NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Amazon snapshots live in the existing replicated product_details provenance.
+-- No legacy rows are reclassified and no ratings count substitutes for reviews.
+CREATE OR REPLACE VIEW amazon_product_metrics AS
+SELECT d.asin, m.snapshot,
+  (m.snapshot->>'writtenReviewCount')::bigint AS written_review_count,
+  CASE WHEN counts.verified >= 2 THEN 'verified'
+       WHEN counts.written >= 2 THEN 'ordinary' ELSE 'unknown' END AS qualification,
+  (m.snapshot->>'observedAt')::timestamptz AS observed_at
+FROM product_details d
+CROSS JOIN LATERAL (SELECT d.provenance->'amazonMetrics' AS snapshot) m
+CROSS JOIN LATERAL (
+  SELECT count(DISTINCT r->>'id') AS written,
+    count(DISTINCT r->>'id') FILTER (WHERE r->>'verifiedPurchase'='true') AS verified
+  FROM jsonb_array_elements(COALESCE(m.snapshot->'reviews','[]'::jsonb)) r
+  WHERE r->>'written'='true'
+    AND r->>'postedAt' >= to_char(now() AT TIME ZONE 'Asia/Tokyo','YYYY') || '-01-01'
+    AND r->>'postedAt' <= to_char(now() AT TIME ZONE 'Asia/Tokyo','YYYY-MM-DD')
+) counts
+WHERE m.snapshot->>'publicationRights'='verified'
+  AND m.snapshot->>'scope'='asin' AND m.snapshot->>'asin'=d.asin;

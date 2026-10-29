@@ -74,12 +74,12 @@ function Description({ value }: { value: string }) {
 }
 
 export function ProductInformation({
-  description, detail,
-}: { description?: string | null; detail?: ProductDetailData | null }) {
+  description, detail, titleExtras,
+}: { description?: string | null; detail?: ProductDetailData | null; titleExtras?: string[] }) {
   const sections = SECTIONS.map(section => ({ ...section, items: detail?.[section.field] ?? [] }))
     .filter(section => section.items.length > 0);
   const specifications = Object.entries(detail?.specs ?? {});
-  if (!description && sections.length === 0 && specifications.length === 0) return null;
+  if (!description && sections.length === 0 && specifications.length === 0 && !titleExtras?.length) return null;
 
   return <section className="container detail-description" aria-labelledby="detail-information-title">
     <div className="detail-description-title"><h2 id="detail-information-title">Thông tin sản phẩm</h2></div>
@@ -96,6 +96,10 @@ export function ProductInformation({
         <dl className="detail-specifications">
           {specifications.map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value}</dd></div>)}
         </dl>
+      </section>}
+      {!!titleExtras?.length && <section className="detail-info-card detail-title-extras" aria-labelledby="title-extra-heading">
+        <div className="detail-info-heading"><h3 id="title-extra-heading">Thông tin bổ sung từ tên gốc</h3></div>
+        <ul>{titleExtras.map((fact, index) => <li key={index}>{fact}</li>)}</ul>
       </section>}
     </div>
   </section>;

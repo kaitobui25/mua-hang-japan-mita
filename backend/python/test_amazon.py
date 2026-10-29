@@ -37,6 +37,10 @@ class Tests(unittest.TestCase):
         self.assertEqual(item['detail']['usage'], ['水200mlに溶かす'])
         self.assertEqual(item['detail']['cautions'], ['乳成分を含む'])
 
+    def test_ratings_and_undated_reviews_do_not_fabricate_evidence(self):
+        html = HTML + '<span id="acrCustomerReviewText">10,000 ratings</span><div data-hook="review"><span data-hook="review-date">2026</span><span data-hook="avp-badge">Verified Purchase</span></div>'
+        self.assertNotIn('amazonMetrics', detail(html, ASIN, CATEGORY, OBSERVED))
+
     def test_identity(self):
         for html in [HTML.replace('value="B000000001"', 'value="B000000002"'), HTML.replace('https://www.amazon.co.jp/dp/B000000001', 'https://evil.test/dp/B000000001'), HTML.replace('href="https://www.amazon.co.jp/dp/B000000001"', 'href="https://www.amazon.co.jp/dp/B000000002"')]:
             with self.assertRaises(ValueError):

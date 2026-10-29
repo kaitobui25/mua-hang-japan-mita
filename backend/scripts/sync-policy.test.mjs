@@ -8,7 +8,8 @@ import {
 const conflict = table => tableSpecs.find(([name]) => name === table)[2];
 
 test('module can be imported without CLI arguments, credentials or connections', () => {
-  assert.equal(tableSpecs.length, 8);
+  assert.equal(tableSpecs.length, 9);
+  assert.ok(tableSpecs.some(([name]) => name === 'product_title_presentations'));
 });
 
 test('published title metadata uses one preservation decision', () => {

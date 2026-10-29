@@ -1,6 +1,6 @@
 import { db } from '../db/pool.js';
 import { galleryImageUrl, uniqueImages } from './enrichment.js';
-import type { Observation } from './source.js';
+import type { AmazonMetrics, Observation } from './source.js';
 import type { PoolClient } from 'pg';
 
 // These optional identifiers must be observed explicitly in source product metadata.
@@ -17,6 +17,33 @@ export function observedVariantGroup(observation: Pick<VariantObservation, 'pare
   const sourceId = observation.sourceProductId?.trim();
   if (sourceId && /^[A-Za-z0-9_.:-]{3,128}$/.test(sourceId)) return { basis: 'source_product_id', id: sourceId };
   return null;
+}
+
+/** Reject unsupported evidence rather than converting ratings into written reviews. */
+export function validatedAmazonMetrics(value: AmazonMetrics | undefined, asin: string, now = new Date()): AmazonMetrics | null {
+  if (!value || value.asin !== asin || value.scope !== 'asin' || value.publicationRights !== 'verified' ||
+    value.sourceUrl !== `https://www.amazon.co.jp/dp/${asin}` || typeof value.sourceKind !== 'string' || !value.sourceKind.trim() ||
+    !Number.isFinite(Date.parse(value.observedAt)) || Date.parse(value.observedAt) > now.getTime()) return null;
+  if (value.averageStars !== null && (typeof value.averageStars !== 'number' || !Number.isFinite(value.averageStars) || value.averageStars < 0 || value.averageStars > 5)) return null;
+  for (const count of [value.ratingsCount, value.writtenReviewCount]) {
+    if (count !== null && (!Number.isSafeInteger(count) || count < 0)) return null;
+  }
+  if (!Array.isArray(value.reviews)) return null;
+  const observedDay = new Date(Date.parse(value.observedAt) + 9 * 3600_000).toISOString().slice(0, 10);
+  const reviews = new Map<string, AmazonMetrics['reviews'][number]>();
+  for (const review of value.reviews) {
+    if (!review || typeof review.id !== 'string' || !review.id.trim() || review.written !== true || typeof review.verifiedPurchase !== 'boolean' ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(review.postedAt) || !Number.isFinite(Date.parse(review.postedAt)) ||
+      new Date(review.postedAt).toISOString().slice(0, 10) !== review.postedAt || review.postedAt > observedDay) return null;
+    const previous = reviews.get(review.id);
+    if (previous && (previous.postedAt !== review.postedAt || previous.verifiedPurchase !== review.verifiedPurchase)) return null;
+    reviews.set(review.id, { id: review.id, postedAt: review.postedAt, verifiedPurchase: review.verifiedPurchase, written: true });
+  }
+  if (value.writtenReviewCount !== null && value.writtenReviewCount < reviews.size) return null;
+  return { asin, scope: 'asin', sourceUrl: value.sourceUrl, sourceKind: value.sourceKind,
+    publicationRights: 'verified', observedAt: new Date(value.observedAt).toISOString(),
+    averageStars: value.averageStars, ratingsCount: value.ratingsCount, writtenReviewCount: value.writtenReviewCount,
+    reviews: [...reviews.values()] };
 }
 
 export async function ingestObservations(observations: VariantObservation[], runId?: number, client?: PoolClient): Promise<number> {
@@ -79,6 +106,7 @@ export async function ingestObservations(observations: VariantObservation[], run
             await connection.query('UPDATE products SET image_url=$2 WHERE asin=$1', [o.asin, nextGallery[0]]);
           }
           const fieldObservedAt = { ...d.provenance.fieldObservedAt };
+          const { amazonMetrics: _untrustedMetrics, ...detailProvenance } = d.provenance as typeof d.provenance & { amazonMetrics?: unknown };
           if (!replaceGallery) delete fieldObservedAt.images;
           await connection.query(`INSERT INTO product_details
             (asin,features,ingredients,usage,specs,cautions,variant_attributes,child_asins,source_observed_at,provenance)
@@ -95,8 +123,20 @@ export async function ingestObservations(observations: VariantObservation[], run
               provenance=product_details.provenance || EXCLUDED.provenance || jsonb_build_object(
                 'fieldObservedAt', COALESCE(product_details.provenance->'fieldObservedAt','{}'::jsonb) || COALESCE(EXCLUDED.provenance->'fieldObservedAt','{}'::jsonb))`,
           [o.asin, JSON.stringify(d.features), JSON.stringify(d.ingredients), JSON.stringify(d.usage), JSON.stringify(d.specs),
-            JSON.stringify(d.cautions), JSON.stringify(d.variantAttributes), JSON.stringify(d.childAsins), detailAt, JSON.stringify({ ...d.provenance, fieldObservedAt })]);
+            JSON.stringify(d.cautions), JSON.stringify(d.variantAttributes), JSON.stringify(d.childAsins), detailAt, JSON.stringify({ ...detailProvenance, fieldObservedAt })]);
         }
+      }
+      const metrics = validatedAmazonMetrics(o.amazonMetrics, o.asin);
+      if (metrics) {
+        // Reuse the catalog provenance envelope already transferred by the VPS sync.
+        // Missing/denied snapshots never advance the last successful observation.
+        await connection.query(`INSERT INTO product_details(asin,source_observed_at,provenance)
+          VALUES($1,$2,jsonb_build_object('amazonMetrics',$3::jsonb))
+          ON CONFLICT(asin) DO UPDATE SET
+            provenance=jsonb_set(product_details.provenance,'{amazonMetrics}',$3::jsonb),
+            source_observed_at=GREATEST(product_details.source_observed_at,$2)
+          WHERE COALESCE(product_details.provenance->'amazonMetrics'->>'observedAt','') < $4`,
+          [o.asin, new Date(metrics.observedAt), JSON.stringify(metrics), metrics.observedAt]);
       }
       if (observedAt && validPrice) {
         await connection.query('INSERT INTO price_observations(asin,price_jpy,observed_at,source_adapter,sync_run_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING',

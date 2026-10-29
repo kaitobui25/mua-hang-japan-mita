@@ -71,6 +71,17 @@ export const tableSpecs = [
       updated_at=GREATEST(product_translations.updated_at,EXCLUDED.updated_at),
       name_attempts=GREATEST(product_translations.name_attempts,EXCLUDED.name_attempts)
       WHERE EXCLUDED.updated_at>product_translations.updated_at`],
+  ['product_title_presentations', [
+    ['asin','varchar(10)'],['source_name','text'],['translated_name','text'],
+    ['short_name','text'],['omitted_facts','jsonb'],['model','text'],['updated_at','timestamptz']
+  ], `ON CONFLICT (asin) DO UPDATE SET
+      source_name=EXCLUDED.source_name,translated_name=EXCLUDED.translated_name,
+      short_name=EXCLUDED.short_name,omitted_facts=EXCLUDED.omitted_facts,
+      model=EXCLUDED.model,updated_at=EXCLUDED.updated_at
+      WHERE EXCLUDED.updated_at>product_title_presentations.updated_at
+        AND EXCLUDED.source_name=(SELECT p.name FROM products p WHERE p.asin=EXCLUDED.asin)
+        AND EXCLUDED.translated_name=(SELECT t.name FROM product_translations t
+          WHERE t.asin=EXCLUDED.asin AND t.locale='vi')`],
   ['local_detail_translations', [['asin','varchar(10)'],['snapshot','jsonb'],['created_at','timestamptz']],
     'ON CONFLICT (asin) DO NOTHING'],
   ['local_detail_translation_items', [

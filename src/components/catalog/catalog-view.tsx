@@ -10,14 +10,14 @@ import { fetchCatalog } from "@/lib/catalog";
 import type { CatalogResponse } from "@/types/catalog";
 
 const PAGE_SIZE = 12;
-const SORTS = [{ value: "newest", label: "Mới cập nhật" }, { value: "price-asc", label: "Giá: thấp đến cao" }, { value: "price-desc", label: "Giá: cao đến thấp" }, { value: "name", label: "Tên A – Z" }];
+const SORTS = [{ value: "reviews", label: "Bài nhận xét Amazon: nhiều nhất" }, { value: "top-reviews", label: "Top 100 đủ bằng chứng / danh mục" }, { value: "newest", label: "Mới cập nhật" }, { value: "price-asc", label: "Giá: thấp đến cao" }, { value: "price-desc", label: "Giá: cao đến thấp" }, { value: "name", label: "Tên A – Z" }];
 
 export function CatalogView({ category }: { category?: string }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const q = searchParams.get("q") || "";
-  const sort = searchParams.get("sort") || "newest";
+  const sort = searchParams.get("sort") || "reviews";
   const rawPage = Number(searchParams.get("page") || 1);
   const page = Number.isSafeInteger(rawPage) && rawPage > 0 ? rawPage : 1;
   const [result, setResult] = useState<CatalogResponse | null>(null);
@@ -59,7 +59,8 @@ export function CatalogView({ category }: { category?: string }) {
       </aside>
       <div className="catalog-main">
         <form className="catalog-search" role="search" onSubmit={event => { event.preventDefault(); update({ q: term.trim(), page: null }); }}><label htmlFor="catalog-search" className="visually-hidden">Tìm trong sản phẩm</label><Icon name="search" size={19}/><input id="catalog-search" type="search" placeholder="Tìm whey, thực phẩm cho bé, thương hiệu..." value={term} onChange={event => setTerm(event.target.value)}/><button type="submit" className="text-button">Tìm kiếm <Icon name="arrow" size={17}/></button></form>
-        <div className="catalog-toolbar"><div className="toolbar-left"><button type="button" className="filter-button" onClick={() => setFiltersOpen(value => !value)} aria-expanded={filtersOpen} aria-controls="catalog-filters"><Icon name="filter" size={18}/> Danh mục</button><span className="result-count" role="status">{loading ? "Đang tìm sản phẩm..." : `${result?.total ?? 0} sản phẩm`}</span></div><label className="sort-label">Sắp xếp <select value={SORTS.some(item => item.value === sort) ? sort : "newest"} onChange={event => update({ sort: event.target.value, page: null })}>{SORTS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label></div>
+        <div className="catalog-toolbar"><div className="toolbar-left"><button type="button" className="filter-button" onClick={() => setFiltersOpen(value => !value)} aria-expanded={filtersOpen} aria-controls="catalog-filters"><Icon name="filter" size={18}/> Danh mục</button><span className="result-count" role="status">{loading ? "Đang tìm sản phẩm..." : `${result?.total ?? 0} sản phẩm`}</span></div><label className="sort-label">Sắp xếp <select value={SORTS.some(item => item.value === sort) ? sort : "reviews"} onChange={event => update({ sort: event.target.value, page: null })}>{SORTS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label></div>
+        {sort === "top-reviews" && <p role="status">{result?.popularity?.note ?? "Chỉ hiển thị sản phẩm có bằng chứng bài nhận xét trong năm hiện tại. Chưa có bằng chứng thì danh sách trống."}</p>}
         {q && <div className="search-indicator">Kết quả cho <strong>“{q}”</strong><button type="button" onClick={() => { setTerm(""); update({ q: null, page: null }); }}>Xóa tìm kiếm <Icon name="x" size={14}/></button></div>}
         {loading ? <div className="product-grid" aria-busy="true" aria-label="Đang tải sản phẩm">{Array.from({length: 8}, (_, index) => <div key={index} className="product-skeleton"><div/><span/><span/><span/></div>)}</div>
           : error ? <div className="state-panel" role="alert"><Icon name="clock" size={30}/><h2>Chưa tải được sản phẩm</h2><p>{error}</p><button type="button" className="button button-primary" onClick={() => setRetry(value => value + 1)}>Thử lại <Icon name="arrow"/></button></div>

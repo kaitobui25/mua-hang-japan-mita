@@ -20,12 +20,20 @@ export type DetailSnapshot = StructuredDetail & {
     variantGroup?: { parentAsin: string; sourceUrl: string };
   };
 };
+// Only an authorized adapter may supply this snapshot. Counts are exact-ASIN,
+// never a parent/variation aggregate. Review text is deliberately not stored.
+export type AmazonMetrics = {
+  asin: string; scope: 'asin'; sourceUrl: string; sourceKind: string;
+  publicationRights: 'verified'; observedAt: string;
+  averageStars: number | null; ratingsCount: number | null; writtenReviewCount: number | null;
+  reviews: Array<{ id: string; postedAt: string; verifiedPurchase: boolean; written: true }>;
+};
 export type Observation = {
   asin: string; name: string; brand?: string | null; categorySlug: string;
   sourceUrl: string; imageUrl?: string | null; priceJpy?: number | null;
   observedAt: string; sourceAdapter: string;
   parentAsin?: string | null; sourceProductId?: string | null;
-  imageUrls?: string[]; detail?: DetailSnapshot;
+  imageUrls?: string[]; detail?: DetailSnapshot; amazonMetrics?: AmazonMetrics;
   availability?: 'in_stock' | 'out_of_stock' | 'unknown';
 };
 
