@@ -143,3 +143,11 @@ Phần mô tả release 0.3 ở trên là lịch sử, **không còn là cấu h
 **Ảnh:** không cần chạy worker lấy lại ảnh. API loại các link thumbnail Amazon độ phân giải thấp đã biết (`SR38,50`, `US40`...) khỏi gallery phóng lớn, ưu tiên các URL `hiRes` đã quan sát khi dữ liệu nguồn có. Có thể ít hơn 5 ảnh rõ cho mỗi sản phẩm; không tạo URL CDN giả. **Ngôn ngữ:** pipeline GGUF xử lý văn xuôi Anh/Nhật và tên/nhãn theo quy tắc bảo toàn số liệu; giá trị thông số giữ nguyên. Các bản dịch tiếng Anh tồn tại trước release cần audit/backfill có kiểm soát, không tự nhận mọi mục đã dịch xong.
 
 **Kiểm thử trước khi xem là hoàn thành:** `npm test --prefix backend`, `npm run lint`, `npm run build`; CI GitHub Actions thành công với SHA VPS chính xác; ít nhất **5 ASIN khác nhau** GET API/HTML trên DuckDNS, ảnh gallery không bị phóng thumbnail, kiểm tra POST đơn thật (test customer rõ nhãn QA), snapshot SQL và trạng thái chưa thanh toán; Admin public 404, E-KAIWA HTTP 200. Giữ nguyên 3 đơn mô phỏng cũ và dữ liệu sẵn có. Không tạo backup theo quyết định owner.
+
+### Thông báo đơn public VPS về Admin local (chưa kích hoạt)
+
+Xem [relay thông báo đơn owner](order-alert-relay.md) cho các biến môi trường
+VPS/Windows, bearer-secret riêng, cấu hình Caddy Mita-only, các phép thử 403/CSRF,
+và giới hạn polling 15 giây. Đây là tính năng **tùy chọn, tắt mặc định**; cập
+nhật source code hoặc chạy đồng bộ catalog không tự kích hoạt nó. Không mở
+`/api/admin/*` public và không thay đổi E-KAIWA.

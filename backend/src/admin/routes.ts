@@ -5,6 +5,7 @@ import { AdminError, getCatalogSettings, getTranslationSettings, listOrders, lis
 import { recentAdminIssues } from './issues.js';
 import { enqueueImport, listImports } from './imports.js';
 import { acknowledgeOrderNotification, listOrderNotifications } from './notifications.js';
+import { fetchVpsNotifications } from '../order-alert-relay.js';
 import { csrfToken, digest, getSession, isLocalRequest, login, readToken, setSessionCookie, validOrigin } from './security.js';
 
 declare module 'fastify' {
@@ -49,7 +50,13 @@ export async function adminRoutes(server: FastifyInstance) {
     setSessionCookie(reply, '', request.protocol === 'https');
     return { ok: true };
   });
-  server.get('/overview', overview);
+  server.get('/overview', async () => {
+    const current = await overview();
+    const relay = await fetchVpsNotifications({ limit: 1, unread: true });
+    return { ...current,
+      newOrderAlertCount: current.newOrderAlertCount + relay.unreadCount,
+      relayStatus: relay.status };
+  });
   server.get('/issues', async request => {
     const query = request.query as { asin?: string };
     if (query.asin && !/^[A-Z0-9]{10}$/.test(query.asin)) throw new AdminError(400, 'ASIN không hợp lệ.');
@@ -72,6 +79,9 @@ export async function adminRoutes(server: FastifyInstance) {
   server.get('/notifications', async request => listOrderNotifications(request.query as Record<string, string | undefined>));
   server.post('/notifications/:id/ack', async request => {
     const { id } = request.params as { id: string };
+    if (id.startsWith('vps:') && !/^vps:[1-9][0-9]{0,18}$/.test(id)) {
+      throw new AdminError(400, 'Mã thông báo không hợp lệ.');
+    }
     return acknowledgeOrderNotification(id);
   });
   server.get('/orders/:id', async request => {

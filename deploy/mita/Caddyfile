@@ -29,6 +29,24 @@ mitajapanshop.duckdns.org {
             reverse_proxy 127.0.0.1:3100
         }
 
+        # Scoped owner relay: secret-bearing requests only. Fastify verifies
+        # the bearer token; never forward /api/admin or order details publicly.
+        @orderAlertRead {
+            path /api/order-alert-relay
+            method GET
+        }
+        handle @orderAlertRead {
+            reverse_proxy 127.0.0.1:3100
+        }
+
+        @orderAlertAck {
+            path_regexp ^/api/order-alert-relay/[1-9][0-9]*/ack$
+            method POST
+        }
+        handle @orderAlertAck {
+            reverse_proxy 127.0.0.1:3100
+        }
+
         @otherApi path /api /api/*
         respond @otherApi 404
 

@@ -26,6 +26,8 @@ export default async function OverviewPage() {
         <Link href="/admin/thong-bao">Xem thông báo →</Link>
       </div>
       <p role="status"><strong>{data.newOrderAlertCount ?? 0} thông báo chưa xem.</strong></p>
+      {data.relayStatus === 'unavailable' && <p role="alert">Đang mất kết nối thông báo VPS. Số lượng trên có thể chưa đầy đủ.</p>}
+      {data.relayStatus === 'disabled' && <p>Kết nối thông báo đơn VPS chưa được cấu hình.</p>}
       <p>Thông báo lưu trong Admin để không mất sự kiện khi trang quản trị đóng.</p>
     </section>
     <p role="status">Cảnh báo bản dịch và CAPTCHA: <Link href="/admin/nhat-ky-loi">Xem nhật ký lỗi</Link>.</p>

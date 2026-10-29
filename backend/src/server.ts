@@ -4,12 +4,14 @@ import { config } from './config.js';
 import { getProductDetails, listCatalog } from './catalog.js';
 import { CheckoutError, createOrder } from './orders.js';
 import { adminRoutes } from './admin/routes.js';
+import { orderAlertRelayRoutes } from './order-alert-relay.js';
 import { pathToFileURL } from 'node:url';
 import { realpathSync } from 'node:fs';
 
 export function buildServer(logger = false) {
   const server = Fastify({ logger: logger ? { redact: ['req.headers.cookie', 'req.headers.authorization', 'res.headers.set-cookie'], serializers: { req: req => ({ method: req.method, url: req.url?.split('?')[0] }) } } : false, bodyLimit: 32768 });
   server.register(adminRoutes, { prefix: '/api/admin' });
+  server.register(orderAlertRelayRoutes);
 
   server.get('/api/health', async () => {
     const result = await db.query('SELECT 1');

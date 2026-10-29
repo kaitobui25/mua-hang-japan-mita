@@ -22,6 +22,11 @@ Use **Logout** to revoke the server session. Closing discards local credentials;
 the server session expires according to the existing backend's eight-hour policy.
 
 - **Overview:** authenticated `/overview` snapshot, including sync warnings.
+- **Notifications:** owner-only unread order notifications from local and (if
+  explicitly configured) VPS sources, 30-second refresh while selected, with
+  source identifiers and a confirmed `Đã xem` acknowledgement via the same
+  Admin API. VPS notifications contain metadata only and cannot open private
+  remote order details from the local Orders tab.
 - **Orders:** paged `/orders`, search by ID/phone, and single order state changes.
   Before each write the client fetches `/orders/:id`, checks the allowed transition
   and payment prerequisite, then asks for confirmation showing the origin and
@@ -48,10 +53,11 @@ HTTP errors are displayed with safe status guidance; offline/API format errors
 have a visible recovery message. There is no persistent local cache or second DB.
 
 This is the bounded desktop implementation of plan 13 / ADR 0017. Payment/refund
-and shipping-fee edits, imports, catalog/translation settings, durable order alerts,
-OS notifications and external push are not implemented here. Use the existing
-Admin UI for those supported operations. No notification event API currently
-exists in the inspected Admin routes, so the desktop does not claim delivery.
+and shipping-fee edits, imports, catalog/translation settings, OS push
+notifications, employee roles and external Zalo/Facebook push are not implemented
+here. Durable order alerts and acknowledgement work only when the connected
+Admin API can read the correct local or configured VPS source. See
+`docs/order-alert-relay.md` for optional VPS configuration.
 Order and product APIs expose no optimistic version/ETag: re-fetch + confirmation
 reduces stale decisions but cannot eliminate a concurrent update between read and
 write. The backend's existing workflow checks and audit remain in force. Pricing
