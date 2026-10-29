@@ -5,6 +5,7 @@ import { getProductDetails, listCatalog } from './catalog.js';
 import { CheckoutError, createOrder } from './orders.js';
 import { adminRoutes } from './admin/routes.js';
 import { orderAlertRelayRoutes } from './order-alert-relay.js';
+import { startEmailAlertScheduler } from './notifications/email-scheduler.js';
 import { pathToFileURL } from 'node:url';
 import { realpathSync } from 'node:fs';
 
@@ -62,8 +63,10 @@ export function buildServer(logger = false) {
 // starting Fastify even though systemd reports a clean exit.
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const server = buildServer(true);
-  const shutdown = async () => { await server.close(); await db.end(); };
+  let stopEmailAlerts = async () => {};
+  const shutdown = async () => { await stopEmailAlerts(); await server.close(); await db.end(); };
   process.once('SIGINT', () => void shutdown());
   process.once('SIGTERM', () => void shutdown());
   await server.listen({ port: config.port, host: '127.0.0.1' });
+  stopEmailAlerts = startEmailAlertScheduler();
 }
