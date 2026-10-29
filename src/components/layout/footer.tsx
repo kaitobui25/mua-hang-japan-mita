@@ -1,32 +1,6 @@
 import Link from "next/link";
 import { Icon } from "@/components/ui/icons";
-
-// Owner-provided public store contacts. Environment variables can override
-// these on a future release without changing application code.
-export const DEFAULT_ZALO_CONTACT = "https://zalo.me/818077391629";
-export const DEFAULT_FACEBOOK_PAGE = "https://www.facebook.com/p/Mita-Japan-100091066656305/";
-
-function contactHref(raw: string | undefined, service: "zalo" | "facebook") {
-  if (!raw || !raw.startsWith("https://") || /[\\\s]/.test(raw)) return null;
-  try {
-    const url = new URL(raw);
-    if (url.username || url.password || url.port || url.hash) return null;
-    if (service === "zalo") {
-      if (url.hostname !== "zalo.me" || !/^\/[0-9]{8,15}\/?$/.test(url.pathname) || url.search) return null;
-    } else {
-      const facebook = ["facebook.com", "www.facebook.com", "m.facebook.com"].includes(url.hostname);
-      const messenger = ["m.me", "www.m.me"].includes(url.hostname);
-      const pagePath = /^\/[A-Za-z0-9._-]+\/?$/.test(url.pathname);
-      // Facebook also publishes business page permalinks under /p/<slug>-<id>/.
-      const businessPagePath = /^\/p\/[A-Za-z0-9._-]+-[0-9]{8,20}\/?$/.test(url.pathname);
-      const profile = url.pathname === "/profile.php" && /^\?id=[0-9]+$/.test(url.search);
-      if (!(facebook && ((pagePath || businessPagePath) && !url.search || profile) || messenger && pagePath && !url.search)) return null;
-    }
-    return url.href;
-  } catch {
-    return null;
-  }
-}
+import { contactHref, DEFAULT_FACEBOOK_PAGE, DEFAULT_ZALO_CONTACT } from "@/lib/contact-links";
 
 export function Footer() {
   const zalo = contactHref(process.env.NEXT_PUBLIC_ZALO_CONTACT_URL ?? DEFAULT_ZALO_CONTACT, "zalo");
