@@ -15,6 +15,7 @@ Environment=API_PORT=4100
 Environment=NEXT_PUBLIC_READ_ONLY=0
 Environment=PUBLIC_READ_ONLY=0
 Environment=NEXT_TELEMETRY_DISABLED=1
+Environment=MITA_REVIEW_DIR=/opt/mita/shared/reviews
 Environment=NODE_OPTIONS=--max-old-space-size=192
 ExecStart=/opt/mita/node22/bin/node /opt/mita/current/web/server.js
 Restart=on-failure

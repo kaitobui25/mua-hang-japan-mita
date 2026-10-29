@@ -16,4 +16,4 @@ Thư mục `public/reviews/` trên Windows **không tự đồng bộ** với VP
 2. Chuyển file vào khu vực tạm **bên ngoài thư mục công khai** trên VPS, sau đó chuyển/đổi tên nguyên tử vào `web/public/reviews/` khi tải xong, để người truy cập không thấy file đang tải dở.
 3. Tải lại `/danh-gia` để kiểm tra. Muốn ẩn ảnh, xóa file tương ứng trên VPS. Khi phát hành release mới, đảm bảo ảnh được đồng bộ vào thư mục `public/reviews/` của release mới.
 
-Hiện chưa có đồng bộ Windows → VPS tự động. Phần gallery này chỉ tự nhận diện ảnh **đã ở cùng thư mục trên máy chủ đang chạy**; nếu muốn thao tác thêm ảnh trên Windows và xuất hiện ngay trên VPS, cần cấu hình một quy trình đồng bộ riêng có giới hạn file, kiểm tra, lịch chạy và thông tin SSH được chủ cửa hàng cung cấp.
+Đã có mã đồng bộ Windows → VPS qua supervisor Mita (tự kiểm tra khoảng 5 phút), **tắt mặc định đến khi operator chuẩn bị VPS, gắn ổ ảnh shared và bật `MITA_REVIEW_SYNC_ENABLED=1`**. Không chạy upload hoặc deploy trong lúc triển khai mã. Quy trình đầy đủ, bảo vệ quyền riêng tư, cấu hình SSH hiện hữu và nghiệm thu: [docs/mita-review-sync.md](../../docs/mita-review-sync.md).

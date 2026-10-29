@@ -16,6 +16,12 @@ const STATUS_PORT=19978;
 const STOP_FILE=path.join(runtime,'mita-supervisor.stop');
 const LOCKS={amazon:70400200,names:70400300,detail:70400301};
 export const windows={amazon:4*60,names:5*60,detail:5*60+15};
+export const REVIEW_SYNC_INTERVAL_MS=5*60*1000;
+export function canRunReviewSync(time=new Date()) {
+  const minute=jstClock(time).minute;
+  // Reserve time for Amazon collection, translation, and the nightly catalog transfer.
+  return minute<3*60+45 || minute>=5*60+45;
+}
 const specs={
   amazon:{entry:'worker.ts',code:['worker.ts','ingestion','admin/imports.ts','db/pool.ts','config.ts']},
   names:{entry:'translator.ts',code:['translator.ts','translation','db/pool.ts','config.ts']},
@@ -109,6 +115,7 @@ function appendOutput(name,chunk,handler){
 export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
   mkdirSync(runtime,{recursive:true});
   let exiting=false,ticking=false,status=null,day=null,plannedSync=false,syncInFlight=false;
+  let reviewSyncInFlight=false,lastReviewSyncAttempt=0;
   const children=new Map(),pending=new Map();
   const statePath=()=>path.join(runtime,`mita-daily-${day}.json`);
   function setState(name,state,details={}){
@@ -216,6 +223,34 @@ export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
     child.once('error',()=>complete(-1));
     record('sync_started',{day});
   }
+  function triggerReviewSync(observed){
+    if(process.env.MITA_REVIEW_SYNC_ENABLED!=='1' || reviewSyncInFlight || syncInFlight ||
+       Object.values(observed.busy).some(Boolean) || !canRunReviewSync() ||
+       Date.now()-lastReviewSyncAttempt<REVIEW_SYNC_INTERVAL_MS)return;
+    lastReviewSyncAttempt=Date.now();
+    reviewSyncInFlight=true;
+    const script=path.join(root,'scripts','sync-mita-reviews.ps1');
+    const child=spawn('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',script],{
+      windowsHide:true,cwd:root,env:process.env,stdio:['ignore','pipe','pipe']
+    });
+    child.stdout.on('data',chunk=>appendFileSync(path.join(runtime,'review-sync.out.log'),chunk));
+    child.stderr.on('data',chunk=>appendFileSync(path.join(runtime,'review-sync.err.log'),chunk));
+    let completed=false;
+    const timeout=setTimeout(()=>{
+      record('review_sync_timeout');
+      child.kill();
+    },180000);
+    const complete=code=>{
+      if(completed)return;
+      completed=true;
+      clearTimeout(timeout);
+      reviewSyncInFlight=false;
+      record('review_sync_finished',{exitCode:code??-1});
+    };
+    child.once('exit',complete);
+    child.once('error',()=>complete(-1));
+    record('review_sync_started');
+  }
   async function tick(){
     if(ticking||exiting)return;
     ticking=true;
@@ -225,7 +260,7 @@ export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
       try{observed=await activeLocks();}
       catch(error){record('database_unavailable',{reason:error.code??'connection_failed'});return;}
       if(existsSync(STOP_FILE)){
-        if(syncInFlight || Object.values(observed.busy).some(Boolean) ||
+        if(syncInFlight || reviewSyncInFlight || Object.values(observed.busy).some(Boolean) ||
            keys.some(name=>!canRestart(name,new Date(),false))){
           return; // Owner requested stop; allow in-flight work and dispatch to drain.
         }
@@ -264,6 +299,7 @@ export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
         }
       }
       if(!Object.values(observed.busy).some(Boolean))await triggerSync();
+      triggerReviewSync(observed);
     }catch(error){record('supervisor_error',{reason:error.message});}
     finally{ticking=false;}
   }

@@ -3,7 +3,15 @@ import { lstat, open, readdir } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 
-const REVIEW_DIR = path.join(process.cwd(), 'public', 'reviews');
+function reviewDirectory(): string {
+  const configured = process.env.MITA_REVIEW_DIR;
+  if (!configured) return path.join(process.cwd(), 'public', 'reviews');
+  // An invalid setting must fail closed rather than quietly expose another folder.
+  if (!path.isAbsolute(configured) || path.resolve(configured) === path.parse(configured).root) {
+    throw new Error('MITA_REVIEW_DIR must be a non-root absolute directory');
+  }
+  return path.resolve(configured);
+}
 const MAX_IMAGES = 120;
 const MAX_CANDIDATES = 300;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -37,9 +45,12 @@ function matchesImageSignature(buffer: Buffer, filename: string): boolean {
 
 async function withValidImage<T>(filename: string, use: (file: FileHandle, size: number) => Promise<T>): Promise<T | null> {
   if (!SAFE_IMAGE_NAME.test(filename)) return null;
-  const filepath = path.join(REVIEW_DIR, filename);
   let file: FileHandle | undefined;
   try {
+    const directory = reviewDirectory();
+    const directoryStat = await lstat(directory);
+    if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) return null;
+    const filepath = path.join(directory, filename);
     if (!(await lstat(filepath)).isFile()) return null;
     // O_NOFOLLOW prevents a symlink swap after lstat on Linux deployments.
     file = await open(filepath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -83,7 +94,10 @@ export async function readReviewImage(filename: string): Promise<ServedReviewIma
  */
 export async function loadReviewImages(): Promise<ReviewImage[]> {
   try {
-    const entries = await readdir(REVIEW_DIR, { withFileTypes: true });
+    const directory = reviewDirectory();
+    const directoryStat = await lstat(directory);
+    if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) return [];
+    const entries = await readdir(directory, { withFileTypes: true });
     const filenames = entries
       .filter(entry => entry.isFile() && SAFE_IMAGE_NAME.test(entry.name))
       .map(entry => entry.name)

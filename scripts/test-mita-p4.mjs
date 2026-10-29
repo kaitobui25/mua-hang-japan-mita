@@ -1,11 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createModelLifecycle, IDLE_MS } from './llama-on-demand.mjs';
-import { canRestart, jstClock } from './mita-supervisor.mjs';
+import { canRestart, canRunReviewSync, REVIEW_SYNC_INTERVAL_MS, jstClock } from './mita-supervisor.mjs';
 import { imageIdentity, hasExplicitSmallSize, selectGallery } from '../backend/scripts/gallery-snapshot-policy.mjs';
 import { readFileSync } from 'node:fs';
 
 const utc=jst=>new Date(jst+'+09:00');
+
+test('review sync stays outside Amazon, translation, and nightly transfer windows',()=>{
+  assert.equal(REVIEW_SYNC_INTERVAL_MS,300000);
+  for(const hour of ['03:45','04:00','04:55','05:15','05:44']){
+    assert.equal(canRunReviewSync(utc(`2026-10-29T${hour}:00`)),false);
+  }
+  for(const hour of ['03:44','05:45','13:20','23:59']){
+    assert.equal(canRunReviewSync(utc(`2026-10-29T${hour}:00`)),true);
+  }
+});
 const image=(name,time='2026-10-29T04:00:00Z',position=1)=>({
   source_url:`https://m.media-amazon.com/images/I/${name}._AC_SL1500_.jpg`,
   source_observed_at:time,position
