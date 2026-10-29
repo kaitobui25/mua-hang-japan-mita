@@ -23,5 +23,6 @@ export const config = {
   maxDiscover: Math.min(200, Number(process.env.MAX_DISCOVER_PER_CATEGORY ?? 200)),
   amazonTimeoutMs: Number(process.env.AMAZON_TIMEOUT_MS ?? 15000),
   neoUrl: process.env.NEO_MCP_URL ?? 'http://127.0.0.1:9010/mcp',
+  strictTop100: process.env.MITA_STRICT_TOP100 === '1',
   publicReadOnly: process.env.PUBLIC_READ_ONLY === '1'
 };

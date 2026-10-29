@@ -1,3 +1,4 @@
+import { publicMembershipSql, groupKeySql } from './publication.js';
 import { specRatingsSql, ratingsOrderingSql } from './amazon-ratings.js';
 import { db } from './db/pool.js';
 import { getPricingPolicy, isFresh, toVnd, type PricingPolicy } from './pricing.js';
@@ -29,7 +30,8 @@ export type DbProduct = {
 // Switch ON: retain verified-only publication/ordering.
 const allProductsEnabledSql = '(SELECT NOT hide_local_test_only FROM catalog_settings WHERE id=1)';
 const publicRightsSql = `(rights_status = 'verified' OR ${allProductsEnabledSql})`;
-export const publicVisibilitySql = `admin_hidden_at IS NULL AND ${publicRightsSql}`;
+export const publicVisibilitySql = `admin_hidden_at IS NULL AND ${publicRightsSql}` +
+  (config.strictTop100 ? ` AND ${publicMembershipSql('products')}` : '');
 export function canCheckoutProduct(p: DbProduct, policy: Pick<PricingPolicy, 'checkPriceExpiry' | 'priceExpiryDays'>) {
   return !config.publicReadOnly && !p.admin_hidden_at && (p.rights_status === 'verified' || p.owner_all_products_enabled === true) &&
     p.sale_status === 'ready' && p.availability === 'in_stock' &&
@@ -136,7 +138,7 @@ export async function listCatalog(options: { category?: string; q?: string; page
         AND (pt.short_name ILIKE $${params.length} OR EXISTS (
           SELECT 1 FROM jsonb_array_elements_text(pt.omitted_facts) AS omitted(value)
           WHERE omitted.value ILIKE $${params.length}))))`); }
-  if (sort === 'top-reviews') {
+  if (sort === 'top-reviews' && !config.strictTop100) {
     // Cap independently per existing category before pagination/search results.
     where.push(`asin IN (SELECT asin FROM (
       SELECT p.asin, row_number() OVER (PARTITION BY p.category_slug
@@ -151,7 +153,7 @@ export async function listCatalog(options: { category?: string; q?: string; page
   const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const sorting: Record<string, string> = {
     reviews: ratingsOrderingSql,
-    'top-reviews': reviewOrdering,
+    'top-reviews': config.strictTop100 ? ratingsOrderingSql : reviewOrdering,
     name: 'name ASC',
     'price-asc': 'price_jpy ASC NULLS LAST',
     'price-desc': 'price_jpy DESC NULLS LAST',
@@ -159,7 +161,7 @@ export async function listCatalog(options: { category?: string; q?: string; page
   };
   // Only verified group identifiers collapse multiple ASINs to one catalog card.
   // Every ASIN without an identifier is its own independent catalog product.
-  const groupKey = `CASE WHEN variant_group_basis IS NOT NULL AND variant_group_id IS NOT NULL
+  const groupKey = config.strictTop100 ? groupKeySql('products') : `CASE WHEN variant_group_basis IS NOT NULL AND variant_group_id IS NOT NULL
     THEN 'group:' || category_slug || ':' || variant_group_basis || ':' || variant_group_id
     ELSE 'asin:' || asin END`;
   const ordering = sorting[sort ?? ''] ?? ratingsOrderingSql;
@@ -174,7 +176,8 @@ export async function listCatalog(options: { category?: string; q?: string; page
   await enrichProducts(rows.rows, client);
   const policy = await getPricingPolicy(client);
   return { items: rows.rows.map(p => publicProduct(p, policy)), total: Number(total.rows[0].count), page, limit, lastUpdatedAt: rows.rows[0]?.last_seen_at.toISOString() ?? null,
-    popularity: { metric: sort === 'top-reviews' ? 'written_reviews' : 'ratings', qualifiedOnly: sort === 'top-reviews', maxPerCategory: 100,
+    popularity: { metric: !config.strictTop100 && sort === 'top-reviews' ? 'written_reviews' : 'ratings', qualifiedOnly: config.strictTop100 || sort === 'top-reviews', maxPerCategory: 100,
       evidenceYear: Number(new Intl.DateTimeFormat('en', { timeZone: 'Asia/Tokyo', year: 'numeric' }).format(new Date())),
+      ...(config.strictTop100 ? { unit: 'product_groups', aggregation: 'maximum_eligible_exact_asin' } : {}),
       note: 'Top 100 chỉ gồm ASIN có số bài nhận xét và ít nhất 2 bài có ngày trong năm hiện tại; có thể ít hơn 100.' } };
 }

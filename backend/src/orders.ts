@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { config } from './config.js';
 import { db } from './db/pool.js';
+import { publicMembershipSql } from './publication.js';
 import { DbProduct, publicProduct, canCheckoutProduct } from './catalog.js';
 import { getPricingPolicy, toVnd } from './pricing.js';
 
@@ -48,7 +49,10 @@ async function persistOrder(body: unknown, simulation: boolean) {
         COALESCE((SELECT t.name FROM product_translations t WHERE t.asin=p.asin AND t.locale='vi' AND t.status IN ('success','warning') AND t.name IS NOT NULL),p.name) AS name,
         c.shipping_estimate_vnd,
         (SELECT NOT hide_local_test_only FROM catalog_settings WHERE id=1) AS owner_all_products_enabled
-        FROM products p JOIN categories c ON c.slug = p.category_slug WHERE p.asin = ANY($1::text[]) FOR SHARE OF p, c`,
+        FROM products p JOIN categories c ON c.slug = p.category_slug
+        WHERE p.asin = ANY($1::text[])
+        ${config.strictTop100 ? `AND ${publicMembershipSql('p')}` : ''}
+        FOR SHARE OF p, c`,
       [[...quantities.keys()]]
     );
     if (products.rows.length !== quantities.size) throw new CheckoutError('missing_item', 'Một hoặc nhiều sản phẩm không còn trong catalog');
