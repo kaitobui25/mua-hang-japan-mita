@@ -21,6 +21,9 @@
 .admin-form-row { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; margin: 20px 0; }
 .admin-root label { display: grid; gap: 8px; font-size: 14px; flex: 1; min-width: 160px; }
 .admin-root input,.admin-root select { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--color-rule-2); background: var(--color-paper); color: inherit; border-radius: 3px; font: inherit; }
+.admin-root select { border-radius: var(--radius-card); accent-color: var(--color-accent); cursor: pointer; }
+.admin-root select:hover { border-color: var(--color-accent); }
+.admin-root select:disabled { opacity: .55; cursor: not-allowed; }
 .admin-root button { min-height: 44px; padding: 10px 16px; border: 1px solid var(--color-rule-2); background: var(--color-paper); color: inherit; font: inherit; border-radius: 3px; }
 .admin-root button.admin-primary { background: var(--color-accent); color: var(--color-accent-ink); border-color: var(--color-accent); }
 .admin-root :is(button,a,input,select,summary):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }

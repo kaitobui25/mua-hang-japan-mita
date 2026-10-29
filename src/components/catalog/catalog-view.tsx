@@ -12,7 +12,13 @@ import type { CatalogResponse } from "@/types/catalog";
 const PAGE_SIZE = 12;
 const SORTS = [{ value: "reviews", label: "Phổ biến nhất" }, { value: "price-asc", label: "Giá thấp đến cao" }, { value: "price-desc", label: "Giá cao đến thấp" }];
 
-export function CatalogView({ category }: { category?: string }) {
+type InitialCatalogParams = { category?: string; q: string; sort: string; page: number };
+
+export function CatalogView({ category, initialResult, initialParams }: {
+  category?: string;
+  initialResult?: CatalogResponse;
+  initialParams?: InitialCatalogParams;
+}) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -20,8 +26,10 @@ export function CatalogView({ category }: { category?: string }) {
   const sort = searchParams.get("sort") || "reviews";
   const rawPage = Number(searchParams.get("page") || 1);
   const page = Number.isSafeInteger(rawPage) && rawPage > 0 ? rawPage : 1;
-  const [result, setResult] = useState<CatalogResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const matchesInitial = Boolean(initialResult && initialParams && initialParams.category === category &&
+    initialParams.q === q && initialParams.sort === sort && initialParams.page === page);
+  const [result, setResult] = useState<CatalogResponse | null>(matchesInitial ? initialResult! : null);
+  const [loading, setLoading] = useState(!matchesInitial);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -30,12 +38,16 @@ export function CatalogView({ category }: { category?: string }) {
 
   useEffect(() => { setTerm(q); }, [q]);
   useEffect(() => {
+    if (matchesInitial && retry === 0) {
+      setResult(initialResult!); setLoading(false); setError("");
+      return;
+    }
     let active = true;
     setLoading(true);
     setError("");
     fetchCatalog({ category, q, page, limit: PAGE_SIZE, sort }).then(data => { if (active) setResult(data); }).catch(cause => { if (active) { setResult(null); setError(cause instanceof Error ? cause.message : "Không thể tải catalog."); } }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [category, q, sort, page, retry]);
+  }, [category, q, sort, page, retry, matchesInitial, initialResult]);
 
   function update(params: Record<string, string | null>) {
     const next = new URLSearchParams(searchParams.toString());

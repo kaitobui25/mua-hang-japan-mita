@@ -7,6 +7,7 @@ import type { ReviewImage } from './review-images';
 
 export function ReviewCarousel({ images }: { images: ReviewImage[] }) {
   const [current, setCurrent] = useState(0);
+  const [dragX, setDragX] = useState(0);
   const touchStart = useRef<{ x: number; y: number } | null>(null);
   const count = images.length;
 
@@ -20,7 +21,9 @@ export function ReviewCarousel({ images }: { images: ReviewImage[] }) {
 
   return <div className="review-carousel" role="region" aria-label="Thư viện ảnh phản hồi" aria-roledescription="carousel">
     <div className="review-carousel-shell">
-      <div className="review-carousel-stage" tabIndex={count > 1 ? 0 : undefined}
+      <div className={dragX === 0 ? "review-carousel-stage" : "review-carousel-stage is-dragging"}
+        style={{ '--drag-offset': `${dragX}px` } as CSSProperties}
+        tabIndex={count > 1 ? 0 : undefined}
         aria-label={count > 1 ? 'Dùng phím mũi tên trái phải để chuyển ảnh' : undefined}
         onKeyDown={event => {
           if (count < 2) return;
@@ -33,11 +36,20 @@ export function ReviewCarousel({ images }: { images: ReviewImage[] }) {
           const point = event.changedTouches[0];
           touchStart.current = point ? { x: point.clientX, y: point.clientY } : null;
         }}
-        onTouchCancel={() => { touchStart.current = null; }}
+        onTouchMove={event => {
+          const start = touchStart.current;
+          const point = event.changedTouches[0];
+          if (!start || !point || count < 2) return;
+          const dx = point.clientX - start.x;
+          const dy = point.clientY - start.y;
+          if (Math.abs(dx) > Math.abs(dy) * 1.2) setDragX(Math.max(-120, Math.min(120, dx)));
+        }}
+        onTouchCancel={() => { touchStart.current = null; setDragX(0); }}
         onTouchEnd={event => {
           const start = touchStart.current;
           const end = event.changedTouches[0];
           touchStart.current = null;
+          setDragX(0);
           if (!start || !end || count < 2) return;
           const dx = end.clientX - start.x;
           const dy = end.clientY - start.y;
