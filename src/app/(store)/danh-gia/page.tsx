@@ -15,24 +15,19 @@ export const runtime = 'nodejs';
 export default async function ReviewsPage() {
   const images = await loadReviewImages();
   const demoCount = images.filter(image => image.isDemo).length;
-  const realCount = images.length - demoCount;
 
   return <>
     <section className="review-page-intro"><div className="container">
       <nav className="breadcrumb" aria-label="Đường dẫn"><Link href="/">Trang chủ</Link><span>/</span><span>Hình ảnh phản hồi</span></nav>
       <span className="overline">Mita Japan / Thư viện hình ảnh</span>
-      <h1>Những lời gửi lại.</h1>
-      <p className="lead">Góc lưu giữ hình ảnh trao đổi và phản hồi do cửa hàng chia sẻ.</p>
+      <h1>{demoCount > 0 && demoCount === images.length ? 'Góc trao đổi cùng Mita' : 'Những lời gửi lại.'}</h1>
+      <p className="lead">Hình ảnh trao đổi và những tình huống tư vấn mẫu từ Mita Japan.</p>
     </div></section>
     <section className="review-gallery-section container" aria-labelledby="review-gallery-heading">
       <div className="review-gallery-intro">
         <div><span className="overline">Hình ảnh phản hồi</span><h2 id="review-gallery-heading">Thư viện hình ảnh</h2></div>
-        <p>Ảnh thật cần được xác nhận quyền công bố và che thông tin riêng tư trước khi đưa vào thư viện.</p>
       </div>
-      {demoCount > 0 && <div className="review-demo-notice" role="note">
-        <strong>MINH HỌA – HƯ CẤU</strong>
-        <p>{realCount === 0 ? 'Tất cả ảnh bên dưới là hội thoại giả lập để thử giao diện. Đây không phải đánh giá hay trải nghiệm mua hàng của khách thật.' : `${demoCount} ảnh minh họa giả lập được dùng để thử giao diện; không phải phản hồi khách hàng thật.`}</p>
-      </div>}
+      {demoCount > 0 && <p className="review-demo-intro">Một vài tình huống tư vấn mẫu để bạn hình dung cách Mita Japan hỗ trợ.</p>}
       <ReviewCarousel images={images}/>
     </section>
     <section className="review-page-footer"><div className="container review-page-footer-inner">

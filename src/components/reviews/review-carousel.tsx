@@ -1,11 +1,9 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { type CSSProperties, useRef, useState } from 'react';
 import Image from 'next/image';
 import { Icon } from '@/components/ui/icons';
 import type { ReviewImage } from './review-images';
-
-type Position = 'previous' | 'current' | 'next';
 
 export function ReviewCarousel({ images }: { images: ReviewImage[] }) {
   const [current, setCurrent] = useState(0);
@@ -18,11 +16,7 @@ export function ReviewCarousel({ images }: { images: ReviewImage[] }) {
 
   const selected = Math.min(current, count - 1);
   const move = (step: number) => setCurrent(previous => (previous + step + count) % count);
-  const slots: { position: Position; index: number | null }[] = [
-    { position: 'previous', index: count > 2 ? (selected - 1 + count) % count : null },
-    { position: 'current', index: selected },
-    { position: 'next', index: count > 1 ? (selected + 1) % count : null },
-  ];
+
 
   return <div className="review-carousel" role="region" aria-label="Thư viện ảnh phản hồi" aria-roledescription="carousel">
     <div className="review-carousel-shell">
@@ -49,22 +43,27 @@ export function ReviewCarousel({ images }: { images: ReviewImage[] }) {
           const dy = end.clientY - start.y;
           if (Math.abs(dx) >= 45 && Math.abs(dx) > Math.abs(dy) * 1.2) move(dx < 0 ? 1 : -1);
         }}>
-        {slots.map(({ position, index }) => {
-          if (index === null) return <span key={position} className={`review-carousel-spacer review-position-${position}`} aria-hidden="true"/>;
-          const item = images[index];
-          const isCurrent = position === 'current';
-          const image = <span className="review-photo-frame"><Image src={item.src}
-            alt={isCurrent ? (item.isDemo ? 'Ảnh hội thoại giả lập, không phải phản hồi khách hàng thật.' : 'Ảnh phản hồi do cửa hàng cung cấp.') : ''}
-            width={960} height={780} sizes={isCurrent ? '(max-width: 700px) 90vw, 42vw' : '25vw'}
-            priority={isCurrent} unoptimized/></span>;
-          return isCurrent
-            ? <figure key={position} className="review-carousel-slide review-position-current" aria-roledescription="slide" aria-label={`Ảnh ${index + 1} trên ${count}`}>
-                {image}<figcaption className="review-photo-caption">{item.isDemo ? 'MINH HỌA – HƯ CẤU' : 'Hình ảnh phản hồi'}</figcaption>
-              </figure>
-            : <button key={position} className={`review-carousel-slide review-carousel-neighbor review-position-${position}`}
-                type="button" onClick={() => setCurrent(index)} aria-label={`Xem ảnh ${index + 1} trên ${count}`}>
-                {image}<span className="review-neighbor-hint" aria-hidden="true">Xem ảnh này</span>
-              </button>;
+        {images.map((item, index) => {
+          // Keep image identity and the element type stable as positions change.
+          let offset = (index - selected + count) % count;
+          if (offset > count / 2) offset -= count;
+          const isCurrent = offset === 0;
+          const isNeighbor = Math.abs(offset) === 1;
+          return <figure key={index}
+            className={`review-carousel-slide${isCurrent ? ' is-current' : ''}${isNeighbor ? ' is-neighbor' : ''}`}
+            style={{ '--slide-offset': offset } as CSSProperties}
+            aria-hidden={!isCurrent && !isNeighbor} inert={!isCurrent && !isNeighbor}
+            aria-roledescription="slide" aria-label={`Ảnh ${index + 1} trên ${count}`}>
+            <span className="review-photo-frame"><Image src={item.src}
+              alt={isCurrent ? (item.isDemo ? 'Ảnh hội thoại mô phỏng tình huống tư vấn, không phải phản hồi khách hàng thật.' : 'Hình ảnh trao đổi do cửa hàng chia sẻ.') : ''}
+              width={960} height={780} sizes="(max-width: 700px) 80vw, 40vw"
+              priority={index === 0} unoptimized/></span>
+            <figcaption className="review-photo-caption">{item.isDemo ? 'Ảnh mô phỏng' : 'Hình ảnh trao đổi'}</figcaption>
+            {!isCurrent && isNeighbor && <button className="review-carousel-neighbor" type="button"
+              onClick={() => setCurrent(index)} aria-label={`Xem ảnh ${index + 1} trên ${count}`}>
+              <span className="review-neighbor-hint" aria-hidden="true">Xem ảnh này</span>
+            </button>}
+          </figure>;
         })}
       </div>
       {count > 1 && <>
@@ -73,8 +72,8 @@ export function ReviewCarousel({ images }: { images: ReviewImage[] }) {
       </>}
     </div>
     <div className="review-carousel-meta">
-      <span aria-live="polite" aria-atomic="true">Ảnh {selected + 1} / {count}{images[selected].isDemo ? ' · Minh họa hư cấu' : ''}</span>
-      {count > 1 && <span className="review-carousel-instruction">Chọn ảnh hai bên, dùng mũi tên hoặc vuốt để xem tiếp.</span>}
+      <span aria-live="polite" aria-atomic="true">Ảnh {selected + 1} / {count}</span>
+      {count > 1 && <span className="review-carousel-instruction">Dùng mũi tên, chấm chọn hoặc vuốt để xem ảnh.</span>}
     </div>
     {count > 1 && <div className="review-carousel-dots" aria-label="Chọn ảnh">
       {images.map((item, index) => <button type="button" key={item.file} className={index === selected ? 'review-dot is-active' : 'review-dot'}

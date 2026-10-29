@@ -14,7 +14,7 @@ const module = { exports: {} };
 new Function('require', 'module', 'exports', compiled)(createRequire(import.meta.url), module, module.exports);
 const { AmazonStars } = module.exports;
 
-test('shared card/detail stars render the real 4.2/76 snapshot with fractional fill and age', () => {
+test('shared card/detail stars render source-backed 4.2/76 without verbose metadata', () => {
   const html = renderToStaticMarkup(createElement(AmazonStars, { product: { amazon: {
     averageStars: 4.2, ratingsCount: 76, observedAt: '2026-10-28T00:00:00Z', stale: true,
   } } }));
@@ -22,7 +22,7 @@ test('shared card/detail stars render the real 4.2/76 snapshot with fractional f
   const width = Number(html.match(/width:([\d.]+)%/)[1]);
   assert.ok(Math.abs(width - 84) < 0.000001);
   assert.match(html, /76 lượt đánh giá/);
-  assert.match(html, /Dữ liệu cũ/);
+  assert.doesNotMatch(html, /Amazon ·|Dữ liệu cũ|Quan sát:/);
   for (const file of ['product-card.tsx', 'product-detail.tsx']) {
     assert.match(readFileSync(new URL(file, import.meta.url), 'utf8'), /<AmazonStars product=/);
   }

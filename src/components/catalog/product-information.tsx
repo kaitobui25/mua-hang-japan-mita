@@ -47,7 +47,7 @@ function DetailTextSection({
     {previewCount > 0 && <BulletList items={items.slice(0, previewCount)}/>}
     {lengthy && <details className="detail-info-disclosure">
       <summary>
-        <span>{previewCount ? `Xem thêm ${hiddenCount} mục` : "Xem nội dung đầy đủ"}</span>
+        <span>Xem thêm</span>
         <Icon name="chevron" size={18}/>
       </summary>
       <BulletList items={items.slice(previewCount)}/>

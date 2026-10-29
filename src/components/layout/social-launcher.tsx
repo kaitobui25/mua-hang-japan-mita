@@ -25,28 +25,12 @@ export function SocialLauncher({ zalo, messenger }: Props) {
   }, [open]);
   if (!zalo && !messenger) return null;
 
-  function openMessenger(event: React.MouseEvent<HTMLAnchorElement>) {
-    if (event.button !== 0 || event.altKey || event.shiftKey || event.ctrlKey || event.metaKey || !messenger) return;
-    const width = Math.min(440, window.screen.availWidth);
-    const height = Math.min(720, window.screen.availHeight);
-    const left = Math.max(0, Math.round((window.screen.availWidth - width) / 2));
-    const top = Math.max(0, Math.round((window.screen.availHeight - height) / 2));
-    try {
-      const popup = window.open(messenger, "mita-messenger-chat", `popup=yes,width=${width},height=${height},left=${left},top=${top}`);
-      if (popup) {
-        event.preventDefault();
-        try { popup.opener = null; popup.focus(); } catch { /* Cross-origin window. */ }
-      }
-    } catch { /* Preserve the native anchor fallback. */ }
-    setOpen(false);
-  }
-
   return <div className="social-launcher" ref={root}>
     {open && <div id="social-contact-options" className="social-launcher-options" aria-label="Chọn kênh nhắn tin">
       {zalo && <a href={zalo} target="_blank" rel="noopener noreferrer" className="social-launcher-choice" onClick={() => setOpen(false)}>
         <span className="social-launcher-mark">Z</span><span>Zalo</span>
       </a>}
-      {messenger && <a href={messenger} target="_blank" rel="noopener noreferrer" className="social-launcher-choice" onClick={openMessenger}>
+      {messenger && <a href={messenger} target="_blank" rel="noopener noreferrer" className="social-launcher-choice" onClick={() => setOpen(false)}>
         <span className="social-launcher-mark social-launcher-mark-messenger"><Icon name="message" size={19}/></span><span>Messenger</span>
       </a>}
     </div>}
