@@ -10,8 +10,8 @@ export function AmazonStars({ product }: { product: CatalogProduct }) {
   return <div style={{ fontSize: "0.8rem", marginBlock: "0.4rem" }}>
     {validStars && <span aria-label={`${stars} trên 5 sao`} style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem" }}>
       <span>{stars.toLocaleString("vi-VN")}</span>
-      <span aria-hidden="true" style={{ position: "relative", display: "inline-block", color: "#b8b8b8", lineHeight: 1, whiteSpace: "nowrap" }}>
-        ★★★★★<span style={{ position: "absolute", inset: 0, width: `${stars / 5 * 100}%`, overflow: "hidden", color: "#b76a00" }}>★★★★★</span>
+      <span aria-hidden="true" style={{ position: "relative", display: "inline-block", color: "var(--color-muted)", lineHeight: 1, whiteSpace: "nowrap" }}>
+        ★★★★★<span style={{ position: "absolute", inset: 0, width: `${Math.round(stars * 20)}%`, overflow: "hidden", color: "var(--color-accent)" }}>★★★★★</span>
       </span>
     </span>}
     {validRatings && <span> ({metric.ratingsCount!.toLocaleString("vi-VN")} lượt đánh giá)</span>}

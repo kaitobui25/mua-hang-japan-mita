@@ -10,7 +10,7 @@ import { fetchCatalog } from "@/lib/catalog";
 import type { CatalogResponse } from "@/types/catalog";
 
 const PAGE_SIZE = 12;
-const SORTS = [{ value: "reviews", label: "Bài nhận xét Amazon: nhiều nhất" }, { value: "top-reviews", label: "Top 100 đủ bằng chứng / danh mục" }, { value: "newest", label: "Mới cập nhật" }, { value: "price-asc", label: "Giá: thấp đến cao" }, { value: "price-desc", label: "Giá: cao đến thấp" }, { value: "name", label: "Tên A – Z" }];
+const SORTS = [{ value: "reviews", label: "Phổ biến nhất" }, { value: "price-asc", label: "Giá thấp đến cao" }, { value: "price-desc", label: "Giá cao đến thấp" }];
 
 export function CatalogView({ category }: { category?: string }) {
   const router = useRouter();

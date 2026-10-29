@@ -12,7 +12,7 @@ const year = day.slice(0, 4);
 function metric(asin: string, count: number | null, verified = true): AmazonMetrics {
   return { asin, scope: 'asin', sourceUrl: `https://www.amazon.co.jp/dp/${asin}`, sourceKind: 'authorized-test-fixture',
     publicationRights: 'verified', observedAt: new Date(Date.now() - 1000).toISOString(),
-    averageStars: 4.3, ratingsCount: 999999, writtenReviewCount: count,
+    averageStars: 4.3, ratingsCount: count, writtenReviewCount: count,
     reviews: [1, 2].map(id => ({ id: String(id), postedAt: day, verifiedPurchase: verified, written: true })) };
 }
 
@@ -91,13 +91,14 @@ test('backend ranks before pagination, caps each category and retains honest unk
     // A ratings-only snapshot cannot establish ranking eligibility.
     const asin = 'R000000105';
     const unknownCount = metric(asin, null);
+    unknownCount.ratingsCount = 999999;
     unknownCount.observedAt = new Date().toISOString();
     await ingestObservations([{ asin, name: 'Amazon ranking fixture', categorySlug: categories[0], sourceUrl: unknownCount.sourceUrl,
       sourceAdapter: 'fixture', observedAt: unknownCount.observedAt, amazonMetrics: unknownCount }], undefined, client);
     const ratedOnly = await listCatalog({ q: 'Amazon ranking fixture', sort: 'top-reviews', page: 1, limit: 300 }, client);
     assert.ok(!ratedOnly.items.some(p => p.asin === asin));
     const defaultWithNull = await listCatalog({ q: 'Amazon ranking fixture', page: 1, limit: 300 }, client);
-    assert.equal(defaultWithNull.items.at(-1)?.asin, asin);
+    assert.equal(defaultWithNull.items[0]?.asin, asin);
     const before = (await getProductDetails('R100000105', client))?.amazon?.observedAt;
     const older = metric('R100000105', 2000);
     older.observedAt = new Date(Date.now() - 86400_000).toISOString();

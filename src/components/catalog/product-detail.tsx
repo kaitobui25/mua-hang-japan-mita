@@ -68,6 +68,7 @@ export function ProductDetail({ asin }: { asin: string }) {
         <dl className="detail-metadata"><div><dt>Mã sản phẩm</dt><dd>{item.asin}</dd></div></dl>
       </div>
     </section>
-    <ProductInformation description={item.description} detail={item.detail} titleExtras={item.titleExtras}/>
+    <ProductInformation description={item.description} detail={item.detail} titleExtras={item.titleExtras}
+      hasStructuredRatings={Boolean(item.amazon && (item.amazon.averageStars !== null || item.amazon.ratingsCount !== null))}/>
   </>;
 }

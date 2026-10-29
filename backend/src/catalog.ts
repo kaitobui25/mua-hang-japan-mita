@@ -1,3 +1,4 @@
+import { specRatingsSql, ratingsOrderingSql } from './amazon-ratings.js';
 import { db } from './db/pool.js';
 import { getPricingPolicy, isFresh, toVnd, type PricingPolicy } from './pricing.js';
 import { config } from './config.js';
@@ -18,6 +19,7 @@ export type DbProduct = {
   owner_all_products_enabled?: boolean;
   image_urls?: string[]; detail?: DetailSnapshot | null;
   amazon_metrics?: AmazonMetrics | null;
+  spec_ratings?: { averageStars: number; ratingsCount: number; observedAt: string } | null;
   amazon_qualification?: 'verified' | 'ordinary' | 'unknown';
   titleExtras?: string[];
 };
@@ -38,16 +40,24 @@ export function publicProduct(p: DbProduct, policy: PricingPolicy) {
   const canCheckout = canCheckoutProduct(p, policy);
   const gallery = uniqueImages(p.image_urls?.length ? p.image_urls : [p.image_url]);
   const cover = galleryImageUrl(p.image_url) ? p.image_url : gallery[0] ?? null;
+  const metric = p.amazon_metrics;
+  const fallback = p.spec_ratings;
+  const usesFallback = fallback && (metric?.averageStars == null || metric?.ratingsCount == null);
+  // A newer structured snapshot must not renew the age of legacy spec data.
+  const observedAt = usesFallback && metric
+    ? new Date(Math.min(Date.parse(metric.observedAt), Date.parse(fallback.observedAt))).toISOString()
+    : metric?.observedAt ?? fallback?.observedAt;
   return {
     id: p.asin, asin: p.asin, name: p.name, titleExtras: p.titleExtras ?? [],
     brand: p.brand, categorySlug: p.category_slug,
     sourceUrl: /^[A-Z0-9]{10}$/.test(p.asin) ? `https://www.amazon.co.jp/dp/${p.asin}` : p.source_url, imageUrl: cover,
-    amazon: p.amazon_metrics ? {
-      averageStars: p.amazon_metrics.averageStars, ratingsCount: p.amazon_metrics.ratingsCount,
-      writtenReviewCount: p.amazon_metrics.writtenReviewCount,
-      observedAt: p.amazon_metrics.observedAt,
-      stale: Date.now() - Date.parse(p.amazon_metrics.observedAt) >= 86_400_000,
-      qualification: p.amazon_qualification ?? 'unknown', sourceUrl: p.amazon_metrics.sourceUrl
+    amazon: observedAt ? {
+      averageStars: metric?.averageStars ?? fallback?.averageStars ?? null,
+      ratingsCount: metric?.ratingsCount ?? fallback?.ratingsCount ?? null,
+      writtenReviewCount: metric?.writtenReviewCount ?? null,
+      observedAt,
+      stale: Date.now() - Date.parse(observedAt) >= 86_400_000,
+      qualification: p.amazon_qualification ?? 'unknown', sourceUrl: `https://www.amazon.co.jp/dp/${p.asin}`
     } : null,
     imageUrls: gallery,
     detail: p.detail ?? null, variantAttributes: p.detail?.variantAttributes ?? {},
@@ -70,8 +80,9 @@ async function enrichProducts(products: DbProduct[], client: Pick<PoolClient, 'q
   const details = await client.query<{
     asin: string; features: string[]; ingredients: string[]; usage: string[]; specs: Record<string,string>;
     cautions: string[]; variant_attributes: Record<string,string>; child_asins: string[];
+    spec_ratings: { averageStars: number; ratingsCount: number } | null;
     source_observed_at: Date; provenance: DetailSnapshot['provenance'];
-  }>('SELECT * FROM product_details WHERE asin=ANY($1::varchar(10)[])', [ids]);
+  }>(`SELECT d.*, ${specRatingsSql} AS spec_ratings FROM product_details d WHERE asin=ANY($1::varchar(10)[])`, [ids]);
   const metrics = await client.query<{ asin: string; snapshot: AmazonMetrics; qualification: 'verified' | 'ordinary' | 'unknown' }>(
     'SELECT asin,snapshot,qualification FROM amazon_product_metrics WHERE asin=ANY($1::varchar(10)[])', [ids]);
   for (const product of products) {
@@ -80,6 +91,7 @@ async function enrichProducts(products: DbProduct[], client: Pick<PoolClient, 'q
     product.amazon_qualification = metric?.qualification ?? 'unknown';
     product.image_urls = images.rows.find(row => row.asin === product.asin)?.urls ?? [];
     const d = details.rows.find(row => row.asin === product.asin);
+    product.spec_ratings = d?.spec_ratings ? { ...d.spec_ratings, observedAt: d.source_observed_at.toISOString() } : null;
     const { amazonMetrics: _privateEvidence, ...provenance } = (d?.provenance ?? {}) as DetailSnapshot['provenance'] & { amazonMetrics?: unknown };
     product.detail = d ? {
       features: d.features, ingredients: d.ingredients, usage: d.usage, specs: d.specs, cautions: d.cautions,
@@ -135,12 +147,10 @@ export async function listCatalog(options: { category?: string; q?: string; page
         AND p.category_slug IN ('thuc-pham-bo-sung','thuc-pham-cho-be')
     ) eligible WHERE category_rank <= 100)`);
   }
-  // The staged Top100 feature ranks by actual ratingsCount; retain the existing
-  // sorting contract until that source-backed publication policy can go live.
   const reviewOrdering = '(SELECT am.written_review_count FROM amazon_product_metrics am WHERE am.asin=products.asin) DESC NULLS LAST';
   const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const sorting: Record<string, string> = {
-    reviews: reviewOrdering,
+    reviews: ratingsOrderingSql,
     'top-reviews': reviewOrdering,
     name: 'name ASC',
     'price-asc': 'price_jpy ASC NULLS LAST',
@@ -152,7 +162,7 @@ export async function listCatalog(options: { category?: string; q?: string; page
   const groupKey = `CASE WHEN variant_group_basis IS NOT NULL AND variant_group_id IS NOT NULL
     THEN 'group:' || category_slug || ':' || variant_group_basis || ':' || variant_group_id
     ELSE 'asin:' || asin END`;
-  const ordering = sorting[sort ?? ''] ?? reviewOrdering;
+  const ordering = sorting[sort ?? ''] ?? ratingsOrderingSql;
   const total = await client.query<{ count: string }>(`SELECT count(DISTINCT ${groupKey})::text AS count FROM products ${clause}`, params);
   const rows = await client.query<DbProduct>(`WITH ranked AS (
     SELECT *, ${allProductsEnabledSql} AS owner_all_products_enabled,
@@ -164,7 +174,7 @@ export async function listCatalog(options: { category?: string; q?: string; page
   await enrichProducts(rows.rows, client);
   const policy = await getPricingPolicy(client);
   return { items: rows.rows.map(p => publicProduct(p, policy)), total: Number(total.rows[0].count), page, limit, lastUpdatedAt: rows.rows[0]?.last_seen_at.toISOString() ?? null,
-    popularity: { metric: 'written_reviews', qualifiedOnly: sort === 'top-reviews', maxPerCategory: 100,
+    popularity: { metric: sort === 'top-reviews' ? 'written_reviews' : 'ratings', qualifiedOnly: sort === 'top-reviews', maxPerCategory: 100,
       evidenceYear: Number(new Intl.DateTimeFormat('en', { timeZone: 'Asia/Tokyo', year: 'numeric' }).format(new Date())),
       note: 'Top 100 chỉ gồm ASIN có số bài nhận xét và ít nhất 2 bài có ngày trong năm hiện tại; có thể ít hơn 100.' } };
 }

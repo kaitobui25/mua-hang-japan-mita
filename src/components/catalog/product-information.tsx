@@ -74,11 +74,12 @@ function Description({ value }: { value: string }) {
 }
 
 export function ProductInformation({
-  description, detail, titleExtras,
-}: { description?: string | null; detail?: ProductDetailData | null; titleExtras?: string[] }) {
+  description, detail, titleExtras, hasStructuredRatings = false,
+}: { description?: string | null; detail?: ProductDetailData | null; titleExtras?: string[]; hasStructuredRatings?: boolean }) {
   const sections = SECTIONS.map(section => ({ ...section, items: detail?.[section.field] ?? [] }))
     .filter(section => section.items.length > 0);
-  const specifications = Object.entries(detail?.specs ?? {});
+  const specifications = Object.entries(detail?.specs ?? {})
+    .filter(([label]) => !hasStructuredRatings || label !== "Customer Reviews");
   if (!description && sections.length === 0 && specifications.length === 0 && !titleExtras?.length) return null;
 
   return <section className="container detail-description" aria-labelledby="detail-information-title">
