@@ -24,3 +24,17 @@ export function contactHref(raw: string | undefined, service: 'zalo' | 'facebook
     return null;
   }
 }
+
+/** Use a real Messenger conversation, never the Facebook Page timeline. */
+export function facebookMessengerHref(raw: string | undefined): string | null {
+  const page = contactHref(raw, 'facebook');
+  if (!page) return null;
+  const url = new URL(page);
+  if (url.hostname === 'm.me' || url.hostname === 'www.m.me') return `https://m.me${url.pathname}`;
+
+  const pageId = /^\/p\/[A-Za-z0-9._-]+-([0-9]{8,20})\/?$/.exec(url.pathname)?.[1];
+  const profileId = url.pathname === '/profile.php' ? url.searchParams.get('id') : null;
+  const pageName = /^\/([A-Za-z0-9._-]+)\/?$/.exec(url.pathname)?.[1];
+  const recipient = pageId ?? profileId ?? pageName;
+  return recipient ? `https://m.me/${recipient}` : null;
+}
