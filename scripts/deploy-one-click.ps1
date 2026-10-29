@@ -1,4 +1,4 @@
-param([switch]$DryRun, [switch]$DataOnly)
+param([switch]$DryRun, [switch]$DataOnly, [switch]$MigrationsOnly)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -60,8 +60,16 @@ function SyncVpsData([string]$mode) {
   Push-Location (Join-Path $root 'backend')
   try {
     Write-Host "[DATA] Database sync phase: $mode"
-    & node.exe scripts/sync-catalog-vps.mjs $mode
-    if($LASTEXITCODE -ne 0) { throw "VPS catalog $mode failed; code release NOT pushed" }
+    if ($mode -eq '--migrations' -or $mode -eq '--migrations-dry-run') {
+      $migrationMode = if ($mode -eq '--migrations-dry-run') { '--dry-run' } else { '--apply' }
+      & node.exe scripts/migrate-vps-translation.mjs $migrationMode
+      if ($LASTEXITCODE -ne 0) { throw 'VPS translation migration failed; sync/release not attempted' }
+      & node.exe scripts/migrate-vps-sync-ledger.mjs $migrationMode
+      if ($LASTEXITCODE -ne 0) { throw 'VPS ledger migration failed; sync/release not attempted' }
+    } else {
+      & node.exe scripts/sync-catalog-vps.mjs $mode
+      if($LASTEXITCODE -ne 0) { throw "VPS catalog $mode failed; code release NOT pushed" }
+    }
   } finally { Pop-Location }
 }
 
@@ -98,6 +106,7 @@ function VerifyPublic([string]$sha) {
 
 try {
   Set-Location $root
+  if ($MigrationsOnly -and $DataOnly) { throw 'MigrationsOnly cannot be combined with DataOnly' }
   New-Item -ItemType Directory -Path $runtime -Force | Out-Null
   Write-Host ('=== MITA ONE-CLICK DEPLOY ' + (Get-Date -Format o) + ' ===') -ForegroundColor Cyan
   if((git branch --show-current).Trim() -ne 'main') { throw 'Deploy requires main branch' }
@@ -106,14 +115,16 @@ try {
   RunChecked 'Fetch remote main' { git.exe fetch origin main }
   RunChecked 'Check local history contains origin/main' { git.exe merge-base --is-ancestor origin/main HEAD }
 
-  if(!$DryRun) {
+  if(!$DryRun -and !$MigrationsOnly) {
     # Upgrade local source first, so newly introduced translation metadata is
     # present before copying. Migration is additive and idempotent.
     RunChecked 'Apply local additive schema' { npm.cmd run db:migrate --prefix backend }
   }
 
-  SyncVpsData $(if($DryRun) {'--dry-run'} else {'--apply'})
-  if($DryRun) {
+  SyncVpsData $(if($MigrationsOnly -and $DryRun) {'--migrations-dry-run'} elseif($MigrationsOnly) {'--migrations'} elseif($DryRun) {'--dry-run'} else {'--apply'})
+  if ($MigrationsOnly) {
+    Write-Host $(if($DryRun) {'[MIGRATIONS DRY RUN] No VPS writes.'} else {'[MIGRATIONS OK] VPS translation + sync ledger DDL only; no catalog sync, commit or deploy.'}) -ForegroundColor Green
+  } elseif($DryRun) {
     Write-Host '[DRY RUN PASSED] No Git push and no VPS database changes.' -ForegroundColor Green
   } else {
     # The sync connection remains open until validation; verify the exact row keys.

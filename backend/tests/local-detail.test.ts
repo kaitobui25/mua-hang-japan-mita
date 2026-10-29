@@ -19,11 +19,12 @@ const output: Record<string, string> = { '成分 300mg': 'Thành phần 300mg', 
 function fixture(input: DetailText = snapshot) {
   let frozen: DetailText | undefined;
   let source = structuredClone(input);
-  let legacyFull = false, lock = true, released = 0;
+  let legacyFull = false, lock = true, released = 0, semantics = false;
   const items = new Map<string, DetailItem & {attempts?: number; warning?: boolean}>();
   const sql: string[] = [];
   const query = async (statement: string, values: unknown[] = []) => {
     sql.push(statement);
+    if (statement.includes('FROM translation_settings')) return { rows: [{ validate_translation_semantics: semantics, version: 1 }] };
     if (statement.includes('pg_try_advisory_lock')) return { rows: [{ acquired: lock }] };
     if (statement.includes('SELECT p.asin')) {
       assert.match(statement, /NOT t.name_only AND t.detail IS NOT NULL/);
@@ -48,6 +49,7 @@ function fixture(input: DetailText = snapshot) {
   };
   const connect = async () => ({ query, release: () => { released++; } }) as unknown as Pick<PoolClient, 'query' | 'release'>;
   return { connect, items, sql, get frozen() { return frozen; }, get released() { return released; },
+    setSemantics: (value: boolean) => { semantics = value; },
     changeSource: () => { source.features = ['変更']; source.specs = { '変更': 'new' }; },
     legacy: () => { legacyFull = true; }, denyLock: () => { lock = false; } };
 }
@@ -243,11 +245,12 @@ test('English atomic prompt requests Vietnamese and protects quantities, units, 
     'Thành phần: ABC AB-1234 500mg, uống 2 viên mỗi ngày',
     source
   ]) assert.throws(() => validateAtomicTranslation(source, bad, 'DHC'), LocalTranslationError);
-  await assert.rejects(translateLocalString(source, { brand: 'DHC',
+  const warned = await translateLocalString(source, { brand: 'DHC',
     fetcher: async () => Response.json({ choices: [{ finish_reason: 'stop', message: {
       content: 'Thành phần: DHC AB-1234 500g, uống 2 viên mỗi ngày'
     } }] })
-  }), (error: unknown) => error instanceof LocalTranslationError && error.message === 'unsafe_english_output');
+  });
+  assert.match(warned.text, /500g/);
 });
 
 test('English detail copy is translated through frozen atomic jobs with no raw spec value inference', async () => {
@@ -279,7 +282,7 @@ test('English detail copy is translated through frozen atomic jobs with no raw s
   assert.equal(rendered.usage[0], 'Uống 2 viên');
 });
 
-test('unsafe English mock output never replaces the frozen source', async () => {
+test('semantic English warnings are retained verbatim with validation OFF', async () => {
   const english: DetailText = { features: ['DHC Take 2 tablets AB-1234 500mg'],
     ingredients: [], usage: [], cautions: [], specs: {} };
   for (const invalid of [
@@ -289,9 +292,10 @@ test('unsafe English mock output never replaces the frozen source', async () => 
     const f = fixture(english);
     const result = await translatePendingDetails({ limit: 3, connect: f.connect, log: async () => {},
       translate: async () => ({ text: invalid, model: 'mock' }) });
-    assert.equal(result.failed, 1);
-    assert.equal(f.items.get('features:0')?.translated, null);
-    assert.equal(renderDetail(f.frozen!, [...f.items.values()]).features[0], english.features[0]);
+    assert.equal(result.failed, 0);
+    assert.equal(f.items.get('features:0')?.translated, invalid);
+    assert.equal(f.items.get('features:0')?.warning, true);
+    assert.equal(renderDetail(f.frozen!, [...f.items.values()]).features[0], invalid);
   }
 });
 
@@ -300,7 +304,7 @@ test('facts, unprocessed Japanese, empty, JSON and reasoning output are rejected
     assert.throws(() => validateAtomicTranslation('成分 300mg', value), LocalTranslationError);
   }
   assert.throws(() => validateAtomicTranslation('品 AB-1234 20ml', 'Sản phẩm XY-1234 20ml'));
-  assert.equal(validateAtomicTranslation('成分 300mg', ' Thành phần 300mg '), 'Thành phần 300mg');
+  assert.equal(validateAtomicTranslation('成分 300mg', ' Thành phần 300mg '), ' Thành phần 300mg ');
 });
 
 test('Vietnamese decimal commas and counted-one words pass without relaxing dosages or codes', () => {
@@ -470,4 +474,44 @@ test('additive schema provides immutable snapshots and atomic item identity with
   assert.match(local, /PRIMARY KEY \(asin, slot\)/);
   assert.match(local, /ON DELETE CASCADE/);
   assert.doesNotMatch(local, /source_hash|name_only/);
+});
+
+
+test('ON rejects new semantic warnings and retains the existing warned detail at the three-attempt cap', async () => {
+  const english: DetailText = { features: ['Take 2 tablets 500mg'], ingredients: [], usage: [], cautions: [], specs: {} };
+  const f = fixture(english);
+  const events: unknown[] = [];
+  const run = (text: string) => translatePendingDetails({ limit: 3, connect: f.connect,
+    log: async event => { events.push(event); }, translate: async () => ({ text, model: 'mock' }) });
+  await run(' Uong 3 vien 500g ');
+  f.setSemantics(true);
+  for (let i = 0; i < 3; i++) {
+    f.items.get('features:0')!.retry_after = null;
+    await run('Uong 4 vien 600g');
+  }
+  assert.equal(f.items.get('features:0')!.translated, ' Uong 3 vien 500g ');
+  assert.equal(f.items.get('features:0')!.attempts, 3);
+  assert.ok(events.some(e => (e as { published?: boolean }).published === false));
+  const fresh = fixture(english); fresh.setSemantics(true);
+  const result = await translatePendingDetails({ limit: 3, connect: fresh.connect, log: async () => {},
+    translate: async () => ({ text: 'Uong 3 vien 500g', model: 'mock' }) });
+  assert.equal(result.failed, 1);
+  assert.equal(fresh.items.get('features:0')!.translated, null);
+});
+
+test('HTML, script, encoded markup and malformed JSON are blocked by detail jobs with semantics OFF', async () => {
+  for (const text of ['<b>dose</b>', '<img src=x onerror=alert(1)>', 'javascript:alert(1)', '&lt;script&gt;', '{"text":', '<script']) {
+    const f = fixture({ features: ['Take 2 tablets'], ingredients: [], usage: [], cautions: [], specs: {} });
+    const result = await translatePendingDetails({ limit: 3, connect: f.connect, log: async () => {},
+      translate: async () => ({ text, model: 'mock' }) });
+    assert.equal(result.failed, 1, text);
+    assert.equal(f.items.get('features:0')!.translated, null);
+  }
+});
+
+
+test('historical structurally invalid atomic candidates fall back to the frozen source', () => {
+  const items = detailItems(snapshot).map(item => ({ ...item, translated: '<script>alert(1)</script>' }));
+  assert.deepEqual(renderDetail(snapshot, items).features, snapshot.features);
+  assert.deepEqual({ ...renderDetail(snapshot, items).specs }, snapshot.specs);
 });

@@ -32,7 +32,9 @@ test('known Amazon thumbnail transformations never enter gallery, including lega
   const low = [
     url('first', 'AC_SR38,50'), url('second', 'AC_US40'),
     url('third', 'AC_UY218'), url('fourth', 'SX300'),
-    url('fifth', 'AC_SX679'), url('sixth', 'SL75')
+    url('fifth', 'AC_SX679'), url('sixth', 'SL75'),
+    url('tiny-sh', 'SH20'), url('tiny-ac-sh', 'AC_SH20'),
+    url('thin-strip', 'AC_SR1200,120')
   ];
   const high = [url('seventh', 'AC_SL1500'), url('eighth', 'AC_SX1200'), url('ninth')];
   assert.deepEqual(low.map(value => galleryImageUrl(value)), low.map(() => false));
@@ -194,8 +196,8 @@ test('store preserves real gallery and its timestamp on partial refresh, but rep
     const mixed = { ...replacement, imageUrls: [url('new-front'), url('tiny-second', 'AC_SR38,50')],
       detail: { ...replacement.detail!, provenance: { ...replacement.detail!.provenance, sections: ['gallery:complete'] } } };
     await ingestObservations([mixed], undefined, client);
-    assert.deepEqual((await read()).map(row => row.source_url), replacement.imageUrls,
-      'a supposedly complete gallery containing thumbnails must not overwrite verified photos');
+    assert.deepEqual((await read()).map(row => row.source_url), [url('new-single'), url('new-front')],
+      'a mixed-quality partial refresh may add an independently observed clear photo but never publish a thumbnail');
   } finally { await client.query('ROLLBACK'); client.release(); }
 });
 

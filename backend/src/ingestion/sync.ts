@@ -1,3 +1,4 @@
+import { claimGalleryPilot, galleryPilotAsins, galleryPilotCategory, galleryPilotDue, galleryPilotMarker } from './gallery-pilot.js';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { db } from '../db/pool.js';
@@ -53,7 +54,7 @@ export async function seedExistingDetails(connection: Connection = db): Promise<
 export async function processCategoryDetails(category: string, options: {
   connection?: Connection; collect?: DetailCollector; save?: (items: Observation[]) => Promise<number>;
   delay?: (milliseconds: number) => Promise<void>;
-  limit?: number; onIssue?: (issue: DiscoveryIssue & { asin?: string }) => Promise<void>;
+  limit?: number; pilot?: boolean; onIssue?: (issue: DiscoveryIssue & { asin?: string }) => Promise<void>;
 } = {}) {
   const connection = options.connection ?? db;
   const collect = options.collect ?? collectEnrichedDetail;
@@ -66,7 +67,8 @@ export async function processCategoryDetails(category: string, options: {
   while (attempted.length < limit && !isScraplingStopping()) {
     const next = await connection.query<{ asin: string; parent_asin: string | null; provenance: { sourceUrl?: string } }>(`SELECT asin,parent_asin,provenance FROM product_detail_queue
       WHERE category_slug=$1 AND NOT (asin=ANY($2::varchar(10)[]))
-      ORDER BY last_attempt_at ASC NULLS FIRST,enqueued_at ASC,asin ASC LIMIT 1`, [category, attempted]);
+      AND ($3::varchar(10)[] IS NULL OR asin=ANY($3::varchar(10)[]))
+      ORDER BY last_attempt_at ASC NULLS FIRST,enqueued_at ASC,asin ASC LIMIT 1`, [category, attempted, options.pilot ? [...galleryPilotAsins] : null]);
     const candidate = next.rows[0];
     if (!candidate) break;
     if (attempted.length) await delay(1200);
@@ -84,14 +86,15 @@ export async function processCategoryDetails(category: string, options: {
       }
       saved += await save([item]);
       if (saved % 25 === 0) console.log(`Detail backfill ${category}: ${saved} saved, ${attempted.length}/${limit} ASINs attempted`);
-      await enqueueDetails(category, (item.detail?.childAsins ?? []).map(asin => ({ asin, parentAsin: item.parentAsin, sourceUrl: item.sourceUrl })), connection);
+      if (!options.pilot) await enqueueDetails(category, (item.detail?.childAsins ?? []).map(asin => ({ asin, parentAsin: item.parentAsin, sourceUrl: item.sourceUrl })), connection);
       await connection.query(`UPDATE product_detail_queue SET state='success',last_success_at=now() WHERE category_slug=$1 AND asin=$2`, [category, candidate.asin]);
       if (item.priceJpy == null) await options.onIssue?.({ asin: candidate.asin, adapter: item.sourceAdapter.startsWith('scrapling') ? 'scrapling' : item.sourceAdapter.startsWith('browseros-neo') ? 'browseros-neo' : 'http', state: 'parse_error', message: 'Detail read without a current price; previous price observation retained' });
     } catch (error) {
       const failure = error instanceof SourceError ? error : new SourceError('temporary', String(error));
       blocked = failure.state === 'blocked' || failure.state === 'rate_limited';
       // The source pause must survive a later queue-write failure.
-      const issue = { asin: candidate.asin, adapter: failure.adapter, state: failure.state, message: failure.message };
+      const issue = { asin: candidate.asin, adapter: failure.adapter, state: failure.state,
+        message: failure.message, retryAfterAt: failure.retryAfterAt };
       if (blocked) await options.onIssue?.(issue);
       await connection.query('UPDATE product_detail_queue SET state=$3 WHERE category_slug=$1 AND asin=$2', [category, candidate.asin, 'failed']);
       if (!blocked) await options.onIssue?.(issue);
@@ -105,8 +108,15 @@ export async function processCategoryDetails(category: string, options: {
 
 export async function syncCatalog(options: {
   discover?: typeof collectCategory; collect?: DetailCollector; limit?: number; connection?: PoolClient;
-  categories?: string[]; scheduled?: boolean;
+  categories?: string[]; scheduled?: boolean; galleryPilotDate?: string;
 } = {}) {
+  if (options.galleryPilotDate !== undefined && !galleryPilotDue(options.galleryPilotDate, options.scheduled === true)) {
+    return { state: 'pilot_outside_window' };
+  }
+  const pilot = options.galleryPilotDate !== undefined;
+  let pilotClaimed = false;
+  const runNote = (note: string, counters = {}) => pilotClaimed
+    ? JSON.stringify({ ...counters, galleryPilot: galleryPilotMarker, summary: note }) : note;
   // A manual run must not overlap the scheduled worker and double the category budget.
   const lock = options.connection ?? await db.connect();
   const release = () => { if (!options.connection) lock.release(); };
@@ -116,6 +126,7 @@ export async function syncCatalog(options: {
   } catch (error) { release(); throw error; }
   let id: number | undefined;
   let discovered = 0, saved = 0, errors = 0, blocked = false;
+  let attempted = 0, newProducts = 0, updatedProducts = 0, warnings = 0;
   const session = new ScraplingSession();
   const deferred: Record<string, number> = {};
   try {
@@ -127,14 +138,24 @@ export async function syncCatalog(options: {
       await lock.query(`UPDATE sync_runs SET finished_at=now(),state='failed',error_count=1,note=$2 WHERE id=$1`, [id, note]);
       return { id, state: 'failed', discovered: 0, saved: 0, errors: 1, deferred };
     }
+    if (pilot) {
+      pilotClaimed = await claimGalleryPilot(lock, id);
+      if (!pilotClaimed) {
+        await lock.query("UPDATE sync_runs SET finished_at=now(),state='success',note='Gallery pilot already consumed; QA required before broad backfill' WHERE id=$1", [id]);
+        return { id, state: 'pilot_consumed' };
+      }
+    }
     for (const seed of seeds) {
       if (isScraplingStopping()) { errors++; break; }
-      if (options.categories && !options.categories.includes(seed.categorySlug)) continue;
+      if (pilot && seed.categorySlug !== galleryPilotCategory) continue;
+      if (!pilot && options.categories && !options.categories.includes(seed.categorySlug)) continue;
       const report = async (issue: DiscoveryIssue & { asin?: string }) => {
-        errors++;
+        const missingPrice = issue.message === 'Detail read without a current price; previous price observation retained';
+        if (missingPrice) warnings++;
+        else errors++;
         if (issue.state === 'blocked' || issue.state === 'rate_limited') {
           blocked = true;
-          await recordAmazonPause(lock, issue.message);
+          await recordAmazonPause(lock, issue.message, issue.retryAfterAt);
         }
         await lock.query('INSERT INTO sync_errors(sync_run_id,category_slug,asin,adapter,state,message) VALUES($1,$2,$3,$4,$5,$6)',
           [id, seed.categorySlug, issue.asin ?? null, issue.adapter, issue.state, issue.page ? `Page ${issue.page}: ${issue.message}` : issue.message]);
@@ -142,7 +163,7 @@ export async function syncCatalog(options: {
       try {
         // Every existing ASIN is eligible daily, including ones no longer on listings.
         try {
-          const result = await (options.discover ? options.discover(seed) : session.discover(seed.categorySlug, seed.url));
+          const result = pilot ? { observations: [], issues: [] } : await (options.discover ? options.discover(seed) : session.discover(seed.categorySlug, seed.url));
           discovered += new Set(result.observations.map(o => o.asin)).size;
           // Persist access denial before any downstream queue work can fail.
           for (const issue of result.issues) await report(issue);
@@ -153,17 +174,25 @@ export async function syncCatalog(options: {
         }
         if (blocked) break;
         const result = await processCategoryDetails(seed.categorySlug, {
-          connection: lock, collect: options.collect ?? ((asin, category) => session.detail(asin, category)), limit: options.limit, onIssue: report,
+          connection: lock, collect: options.collect ?? ((asin, category) => session.detail(asin, category)), limit: pilot ? 5 : options.limit, pilot, onIssue: report,
           save: async items => {
             await lock.query('BEGIN');
             try {
+              const existing = await lock.query<{ asin: string }>(
+                'SELECT asin FROM products WHERE asin=ANY($1::varchar(10)[])',
+                [items.map(item => item.asin)]);
               const count = await ingestObservations(items, id, lock);
               await lock.query('COMMIT');
+              if (count) {
+                newProducts += items.filter(item => !existing.rows.some(row => row.asin === item.asin)).length;
+                updatedProducts += items.filter(item => existing.rows.some(row => row.asin === item.asin)).length;
+              }
               return count;
             } catch (error) { await lock.query('ROLLBACK'); throw error; }
           }
         });
         saved += result.saved;
+        attempted += result.attempted;
         deferred[seed.categorySlug] = result.deferred;
         console.log(`${seed.categorySlug}: ${result.attempted} unique ASINs attempted; ${result.deferred} deferred`);
         if (result.blocked) { blocked = true; break; }
@@ -177,10 +206,10 @@ export async function syncCatalog(options: {
     // A failed re-entry retains tomorrow's reservation, including transient failures.
     if (!errors) await completeAmazonReentry(lock);
     await lock.query('UPDATE sync_runs SET finished_at=now(),state=$2,discovered_count=$3,saved_count=$4,error_count=$5,note=$6 WHERE id=$1',
-      [id, state, discovered, saved, errors, JSON.stringify({ deferred })]);
-    return { id, state, discovered, saved, errors, deferred };
+      [id, state, discovered, saved, errors, runNote(JSON.stringify({ deferred, attempted, newProducts, updatedProducts, warnings }), { deferred, attempted, newProducts, updatedProducts, warnings })]);
+    return { id, state, discovered, saved, errors, warnings, attempted, newProducts, updatedProducts, deferred };
   } catch (error) {
-    if (id) await lock.query('UPDATE sync_runs SET finished_at=now(),state=$2,note=$3 WHERE id=$1', [id, 'failed', String(error)]);
+    if (id) await lock.query('UPDATE sync_runs SET finished_at=now(),state=$2,note=$3 WHERE id=$1', [id, 'failed', runNote(String(error))]);
     throw error;
   } finally {
     session.close();

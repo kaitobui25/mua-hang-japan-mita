@@ -67,6 +67,34 @@ export async function getCatalogSettings(client: Pick<PoolClient, 'query'> = db)
   if (!result.rows[0]) throw new Error('Run database migration before serving catalog settings');
   return { version: result.rows[0].version, hideLocalTestOnly: result.rows[0].hide_local_test_only };
 }
+export async function getTranslationSettings(client: Pick<PoolClient, 'query'> = db) {
+  const result = await client.query<{ version: number; validate_translation_semantics: boolean }>(
+    'SELECT version,validate_translation_semantics FROM translation_settings WHERE id=1');
+  if (!result.rows[0]) throw new Error('Run database migration before serving translation settings');
+  return {
+    version: result.rows[0].version,
+    validateTranslationSemantics: result.rows[0].validate_translation_semantics
+  };
+}
+
+export async function saveTranslationSettings(
+  value: { version: number; validateTranslationSemantics: boolean }, actor: number
+) {
+  if (!value || !Number.isSafeInteger(value.version) || value.version < 1 ||
+      typeof value.validateTranslationSemantics !== 'boolean') {
+    throw new AdminError(400, 'Cấu hình kiểm tra bản dịch không hợp lệ.');
+  }
+  return transaction(async client => {
+    await client.query('SELECT id FROM translation_settings WHERE id=1 FOR UPDATE');
+    const before = await getTranslationSettings(client);
+    if (before.version !== value.version) throw new AdminError(409, 'Cấu hình đã thay đổi. Tải lại trước khi lưu.');
+    await client.query('UPDATE translation_settings SET version=version+1, validate_translation_semantics=$1, updated_at=now() WHERE id=1',
+      [value.validateTranslationSemantics]);
+    const after = await getTranslationSettings(client);
+    await audit(client, actor, 'translation.semantic_policy', String(after.version), before, after);
+    return after;
+  });
+}
 export async function saveCatalogSettings(value: { version: number; hideLocalTestOnly: boolean }, actor: number) {
   if (!value || !Number.isInteger(value.version) || value.version < 1 || typeof value.hideLocalTestOnly !== 'boolean') {
     throw new AdminError(400, 'Cấu hình hiển thị không hợp lệ.');

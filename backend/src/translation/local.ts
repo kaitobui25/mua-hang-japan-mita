@@ -1,4 +1,4 @@
-import { assessTranslation } from './warnings.js';
+import { assessTranslation, usableTranslation } from './warnings.js';
 export function localEndpoint(value = process.env.LLAMA_BASE_URL ?? 'http://127.0.0.1:8080/v1'): string {
   const url = new URL(value);
   if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]'].includes(url.hostname) ||
@@ -56,9 +56,10 @@ function preserveBrands(source: string, translated: string, brand?: string | nul
 }
 
 export function validateAtomicTranslation(source: string, value: unknown, brand?: string | null): string {
-  if (typeof value !== 'string' || !value.trim() || value.length > 6000 ||
-      /```|<\/?think>|^\s*[{[]/i.test(value)) throw new LocalTranslationError(false, 'invalid_output');
-  if (hasJapanese(value)) throw new LocalTranslationError(false, 'residual_japanese');
+  try { usableTranslation(value); }
+  catch { throw new LocalTranslationError(false, 'invalid_output'); }
+  const text = value as string;
+  if (hasJapanese(text)) throw new LocalTranslationError(false, 'residual_japanese');
   // Vietnamese commonly writes a decimal comma where Japanese uses a dot.
   // Only normalize one/two-digit fractional parts to avoid treating 1,000
   // (possible thousands grouping) as interchangeable with 1.000.
@@ -70,33 +71,26 @@ export function validateAtomicTranslation(source: string, value: unknown, brand?
   // For count-one expressions such as 1本, Vietnamese may say "một thanh"
   // or "mỗi thanh". Do not relax any other quantity, measurement, or code.
   const sourceNumbers = numbers(source);
-  const outputNumbers = numbers(value);
+  const outputNumbers = numbers(text);
   const missing = [...sourceNumbers];
   for (const number of outputNumbers) {
     const at = missing.indexOf(number);
     if (at < 0) throw new LocalTranslationError(false, 'facts_changed');
     missing.splice(at, 1);
   }
-  const countOneWords = value.match(/\b(một|mỗi)\b/giu)?.length ?? 0;
+  const countOneWords = text.match(/\b(một|mỗi)\b/giu)?.length ?? 0;
   if (missing.some(number => number !== '1') || missing.length > countOneWords) {
     throw new LocalTranslationError(false, 'facts_changed');
   }
   for (const extract of [units, codes]) {
-    if (JSON.stringify(extract(source)) !== JSON.stringify(extract(value))) throw new LocalTranslationError(false, 'facts_changed');
+    if (JSON.stringify(extract(source)) !== JSON.stringify(extract(text))) throw new LocalTranslationError(false, 'facts_changed');
   }
-  preserveBrands(source, value, brand);
+  preserveBrands(source, text, brand);
   if (!hasJapanese(source) && hasEnglish(source) &&
-      source.normalize('NFKC').trim().toLowerCase() === value.normalize('NFKC').trim().toLowerCase()) {
+      source.normalize('NFKC').trim().toLowerCase() === text.normalize('NFKC').trim().toLowerCase()) {
     throw new LocalTranslationError(false, 'residual_english');
   }
-  return value.trim();
-}
-
-/** English detail expansion must not publish altered doses, codes or brands. */
-export function rejectUnsafeEnglishDetail(source: string, issues: string[]): void {
-  if (hasEnglish(source) && issues.some(issue => issue === 'facts_changed' || issue === 'brand_changed')) {
-    throw new LocalTranslationError(false, 'unsafe_english_output');
-  }
+  return text;
 }
 
 /** One atomic string, no JSON generation, credentials, redirects or remote fallback. */
@@ -128,6 +122,5 @@ export async function translateLocalString(source: string, options: {
   try { assessment = assessTranslation(source, choice.message?.content,
     (original, candidate) => validateAtomicTranslation(original, candidate, options.brand)); }
   catch { throw new LocalTranslationError(false, 'invalid_output'); }
-  rejectUnsafeEnglishDetail(source, assessment.issues);
   return { text: assessment.text, model: `llama.cpp:${model}` };
 }

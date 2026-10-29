@@ -1,8 +1,9 @@
-﻿import type { PoolClient } from 'pg';
+import { readTranslationPolicy } from './policy.js';
+import type { PoolClient } from 'pg';
 import { assessTranslation, logTranslationEvent } from './warnings.js';
 import { db } from '../db/pool.js';
 import { detailItems, detailSections, type DetailItem, type DetailText } from './detail-text.js';
-import { hasEnglish, hasJapanese, LocalTranslationError, rejectUnsafeEnglishDetail, translateLocalString, validateAtomicTranslation } from './local.js';
+import { hasEnglish, hasJapanese, LocalTranslationError, translateLocalString, validateAtomicTranslation } from './local.js';
 
 type Run = { translated: number; failed: number; skipped: number; paused: boolean };
 export function detailLimit(value: unknown): number {
@@ -91,7 +92,7 @@ export async function translatePendingDetails(options: {
         AND t.locale='vi' AND (t.detail_approved OR (t.status='success' AND NOT t.name_only AND t.detail IS NOT NULL)))
       AND (l.asin IS NULL OR EXISTS (SELECT 1 FROM local_detail_translation_items i
         WHERE i.asin=p.asin AND (i.translated IS NULL OR i.warning) AND i.attempts<3 AND (i.retry_after IS NULL OR i.retry_after<=now())))
-      ORDER BY l.created_at NULLS FIRST,p.asin LIMIT $1`, [limit]);
+      ORDER BY (l.asin IS NULL),l.created_at,p.asin LIMIT $1`, [limit]);
     for (const row of rows) {
       if (options.signal?.aborted) { result.paused = true; break; }
       await client.query('BEGIN');
@@ -118,7 +119,13 @@ export async function translatePendingDetails(options: {
           const output = await (options.translate ?? translateLocalString)(item.source, { signal: options.signal, brand: row.brand });
           const { text, issues } = assessTranslation(item.source, output.text,
             (source, candidate) => validateAtomicTranslation(source, candidate, row.brand));
-          rejectUnsafeEnglishDetail(item.source, issues);
+          const policy = await readTranslationPolicy(client);
+          if (policy.validateTranslationSemantics && issues.length) {
+            await (options.log ?? logTranslationEvent)({ asin: row.asin, locale: 'vi', field: item.slot,
+              engine: 'gguf', model: output.model, attempt, original: item.source,
+              candidate: text, issues, result: 'warning', published: false });
+            throw new LocalTranslationError(false, 'semantic_warning_rejected');
+          }
           // Each accepted string is committed independently, before the next request.
           await client.query(`UPDATE local_detail_translation_items SET translated=$3,model=$4,
             warning=$5,issues=$6,retry_after=CASE WHEN $5 THEN now()+interval '12 hours' ELSE NULL END,

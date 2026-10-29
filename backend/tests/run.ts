@@ -22,7 +22,10 @@ try {
   } finally { await isolated.end(); }
   const files = (await readdir(new URL('.', import.meta.url))).filter(f => f.endsWith('.test.ts')).map(f => `tests/${f}`);
   const code = await new Promise<number>((resolve, reject) => {
-    const child = spawn(process.execPath, ['--import', 'tsx', '--test', ...files], { stdio: 'inherit', env: { ...process.env, DATABASE_URL: url.toString() } });
+    // Suites share one disposable database; parallel DDL from independent
+    // fixtures can deadlock even when the application code is correct.
+    const child = spawn(process.execPath, ['--import', 'tsx', '--test', '--test-concurrency=1', ...files],
+      { stdio: 'inherit', env: { ...process.env, DATABASE_URL: url.toString() } });
     child.on('error', reject);
     child.on('exit', code => resolve(code ?? 1));
   });

@@ -7,6 +7,7 @@ import { fetchProduct } from "@/lib/catalog";
 import { canCheckout, categoryName, formatVnd, productStatus } from "@/lib/format";
 import { Icon } from "@/components/ui/icons";
 import { ProductImage } from "@/components/ui/product-image";
+import { ProductInformation } from "@/components/catalog/product-information";
 import { QuantitySelector } from "@/components/cart/quantity-selector";
 import type { CatalogProduct } from "@/types/catalog";
 
@@ -63,11 +64,7 @@ export function ProductDetail({ asin }: { asin: string }) {
         <div className="detail-facts"><p><Icon name="truck"/> Phí vận chuyển tính riêng.</p></div>
         <dl className="detail-metadata"><div><dt>Mã sản phẩm</dt><dd>{item.asin}</dd></div></dl>
       </div>
-    </section>{(item.description || item.detail && (item.detail.features.length || item.detail.ingredients.length || item.detail.usage.length || Object.keys(item.detail.specs).length || item.detail.cautions.length)) &&
-      <section className="container detail-description"><h2>Thông tin sản phẩm</h2><div className="detail-sections">
-        {item.description && <p>{item.description}</p>}
-        {item.detail && ([['Đặc điểm', item.detail.features], ['Thành phần', item.detail.ingredients], ['Cách sử dụng', item.detail.usage], ['Lưu ý', item.detail.cautions]] as const).map(([heading, values]) => values.length > 0 && <section key={heading}><h3>{heading}</h3><ul>{values.map((value, index) => <li key={`${heading}-${index}`}>{value}</li>)}</ul></section>)}
-        {item.detail && Object.keys(item.detail.specs).length > 0 && <section><h3>Thông số</h3><dl className="detail-specifications">{Object.entries(item.detail.specs).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value}</dd></div>)}</dl></section>}
-      </div></section>}
+    </section>
+    <ProductInformation description={item.description} detail={item.detail}/>
   </>;
 }

@@ -1,4 +1,5 @@
 """Offline-testable BeautifulSoup parser; never executes page scripts."""
+import ast
 import json
 import re
 from datetime import datetime, timezone
@@ -54,6 +55,31 @@ def field(script, key):
         except ValueError:
             pass
 
+def selected_gallery_initial(color):
+    """Decode only colorImages.initial, including Amazon's JS-wrapped JSON string.
+
+    Neither the wrapper nor anything else from a page is executed.  A fixture
+    with literal JSON continues to use the existing conservative parser.
+    """
+    if not color:
+        return None
+    direct = field(color, 'initial')
+    if isinstance(direct, list):
+        return direct
+    if not color or len(color) > 250_000:
+        return None
+    wrapper = re.search(
+        r"""['"]initial['"]\s*:\s*(?:A\.\$\.parseJSON|JSON\.parse)\(\s*"""
+        r"""('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")\s*\)""", color)
+    if not wrapper or len(wrapper[1]) > 200_000:
+        return None
+    try:
+        literal = ast.literal_eval(wrapper[1])
+        result = json.loads(literal)
+        return result if isinstance(result, list) and len(result) <= 40 else None
+    except (ValueError, SyntaxError, TypeError, RecursionError):
+        return None
+
 def canonical(url):
     p = urlsplit(url)
     if p.scheme != 'https' or p.netloc not in ('www.amazon.co.jp', 'amazon.co.jp'):
@@ -75,6 +101,18 @@ def image(url):
 
 def image_key(url):
     return re.sub(r'\._[^/]+_\.', '.', urlsplit(url).path)
+
+def image_not_thumbnail(url):
+    if not image(url):
+        return False
+    filename = urlsplit(url).path
+    modifier = re.search(r'\._([^/]+)_\.(?:jpe?g|png|webp)$', filename, re.I)
+    if not modifier:
+        return True  # Unknown dimensions are retained as source-observed, not certified.
+    for match in re.finditer(r'(?:^|_)(?:AC_)?(?:SL|SX|SY|SR|US|UX|UY|UL|SS|SH)(\d+)(?:,(\d+))?(?=_|$)', modifier[1], re.I):
+        if int(match[1]) < 800 or (match[2] and int(match[2]) < 800):
+            return False
+    return True
 
 def price(value):
     m = re.search(r'[¥￥]\s*([0-9,]+)(?:\.[0-9]{1,2})?', value.replace(' ', ''))
@@ -139,7 +177,7 @@ def detail(html, asin, category, observed):
         urls.append(node.get('src'))
         return urls, sizes
     def add(url, sizes=None):
-        if not image(url):
+        if not image_not_thumbnail(url):
             return
         size = (sizes or {}).get(url)
         area = size[0] * size[1] if isinstance(size, list) and len(size) == 2 and all(isinstance(n, (int, float)) and n > 0 for n in size) else 0
@@ -161,9 +199,9 @@ def detail(html, asin, category, observed):
         current = field(script, 'currentAsin')
         if current is not None and current != asin:
             continue
-        # colorImages itself can use JS single quoted keys; initial contents must be JSON.
+        # Amazon may wrap its actual JSON list in A.$.parseJSON('...').
         color = property_source(script, 'colorImages')
-        initial = field(color, 'initial') if color else None
+        initial = selected_gallery_initial(color)
         if not isinstance(initial, list):
             continue
         owner = next((a.get('data-asin') for a in [node, *node.parents] if a.get('data-asin')), None)
@@ -175,18 +213,25 @@ def detail(html, asin, category, observed):
         for row in initial:
             if not isinstance(row, dict):
                 continue
-            urls = [row.get('hiRes'), row.get('large'), *list(row.get('main', {}) if isinstance(row.get('main'), dict) else {})]
-            if any(image(u) for u in urls):
+            main = row.get('main') if isinstance(row.get('main'), dict) else {}
+            # A row represents one gallery photo. Its hiRes, large and main
+            # entries can have DIFFERENT Amazon IDs for different sizes. Do
+            # not treat all sizes as distinct gallery photos.
+            choices = [row.get('hiRes'), row.get('large'), *main.keys()]
+            selected_url = next((u for u in choices if image_not_thumbnail(u)), None)
+            if selected_url:
                 valid += 1
-            for u in urls:
-                add(u, row.get('main') if isinstance(row.get('main'), dict) else None)
+                add(selected_url, main)
         if valid:
             sections.append('colorImages.initial')
             sections.append('gallery:complete' if valid == len(initial) else 'gallery:partial')
     for node in dom:
-        urls, sizes = candidates(node)
-        for u in urls:
-            add(u, sizes)
+        # A complete, selected gallery has the actual images. Adding altImages
+        # again would append unrelated low-resolution 38x50 thumbnails.
+        if 'gallery:complete' not in sections:
+            urls, sizes = candidates(node)
+            for u in urls:
+                add(u, sizes)
         sections.append('altImages' if node.find_parent(id='altImages') else 'landingImage')
     image_urls = [v[0] for v in images.values()]
     if image_urls and not any(s.startswith('gallery:') for s in sections):

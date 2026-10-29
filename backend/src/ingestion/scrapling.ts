@@ -47,7 +47,8 @@ export class ScraplingSession {
           if (!pending || reply.id !== pending.id || typeof reply.ok !== 'boolean') throw Error('Invalid IPC response');
           clearTimeout(pending.timer); this.pending = undefined;
           if (reply.ok) pending.resolve(reply.result);
-          else pending.reject(new SourceError(['temporary', 'parse_error', 'rate_limited', 'blocked'].includes(reply.state) ? reply.state : 'parse_error', String(reply.message).slice(0, 1000), 'scrapling'));
+          else pending.reject(new SourceError(['temporary', 'parse_error', 'rate_limited', 'blocked'].includes(reply.state) ? reply.state : 'parse_error', String(reply.message).slice(0, 1000), 'scrapling',
+            typeof reply.retryAfterAt === 'string' ? reply.retryAfterAt : undefined));
         } catch { this.close(); }
       }
     });
@@ -62,7 +63,9 @@ export class ScraplingSession {
     if (this.pending) return Promise.reject(new SourceError('temporary', 'Concurrent Scrapling IPC request rejected', 'scrapling'));
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
-      const timer = setTimeout(() => this.close(), this.transport.timeoutMs ?? 150_000);
+      // Allow one explicitly permitted 429 retry after a two-minute cooldown,
+      // plus bounded network/parse time; callers may set a shorter test timeout.
+      const timer = setTimeout(() => this.close(), this.transport.timeoutMs ?? 240_000);
       this.pending = { id, resolve, reject, timer };
       const line = JSON.stringify({ ...payload, id }) + '\n';
       if (Buffer.byteLength(line) > 4096) { this.close(); return; }
@@ -87,7 +90,8 @@ export class ScraplingSession {
       } catch (error) {
         if (page === 1) throw error;
         const failure = error instanceof SourceError ? error : new SourceError('temporary', String(error), 'scrapling');
-        issues.push({ adapter: failure.adapter, state: failure.state, message: failure.message, page });
+        issues.push({ adapter: failure.adapter, state: failure.state, message: failure.message,
+          retryAfterAt: failure.retryAfterAt, page });
         break;
       }
     }

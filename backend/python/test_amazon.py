@@ -69,12 +69,12 @@ class Tests(unittest.TestCase):
         self.assertFalse(session.calls[0][1]['follow_redirects'])
 
     def test_transient_retry_bound(self):
-        for responses in [[(503, '')] * 3, [TimeoutError()] * 3]:
+        for responses in [[(503, '')] * 2, [TimeoutError()] * 2]:
             session = Session(responses)
             with self.assertRaises(SourceFailure) as context:
                 Client(session, lambda _: None).fetch('https://www.amazon.co.jp/dp/' + ASIN)
             self.assertEqual(context.exception.state, 'temporary')
-            self.assertEqual(len(session.calls), 3)
+            self.assertEqual(len(session.calls), 2)
 
     def test_denial_and_challenges_latch(self):
         for response in [(403, ''), (200, '<input id="captchacharacters">'), (200, '<form action="/ap/signin">')]:
@@ -86,7 +86,7 @@ class Tests(unittest.TestCase):
                 self.assertEqual(context.exception.state, 'blocked')
             self.assertEqual(len(session.calls), 1)
 
-    def test_rate_limit_two_retries_then_cooldown_latch(self):
+    def test_rate_limit_without_explicit_permission_cools_down_without_retry(self):
         session = Session([(429, '')] * 3)
         waits = []
         client = Client(session, waits.append)
@@ -94,19 +94,29 @@ class Tests(unittest.TestCase):
             with self.assertRaises(SourceFailure) as context:
                 client.fetch('https://www.amazon.co.jp/dp/' + ASIN)
             self.assertEqual(context.exception.state, 'rate_limited')
-        self.assertEqual(len(session.calls), 3)
-        self.assertGreaterEqual(client.pace, 9.6)
-        self.assertTrue(any(wait >= 4.8 for wait in waits))
+        self.assertEqual(len(session.calls), 1)
+        self.assertGreaterEqual(client.pace, 2.4)
+        self.assertEqual(waits, [])
 
     def test_rate_limit_then_transient_exhaustion_still_cools_down(self):
-        for tail in [[TimeoutError(), TimeoutError()], [(503, ''), (503, '')]]:
-            session = Session([(429, ''), *tail])
+        for tail in [TimeoutError(), (503, '')]:
+            session = Session([(429, '', 'https://www.amazon.co.jp/dp/' + ASIN, {'retry-after': '3'}), tail])
             client = Client(session, lambda _: None)
             for _ in range(2):
                 with self.assertRaises(SourceFailure) as context:
                     client.fetch('https://www.amazon.co.jp/dp/' + ASIN)
                 self.assertEqual(context.exception.state, 'rate_limited')
-            self.assertEqual(len(session.calls), 3)
+            self.assertEqual(len(session.calls), 2)
+
+    def test_long_retry_after_is_carried_to_durable_source_gate(self):
+        session = Session([(429, '', 'https://www.amazon.co.jp/dp/' + ASIN, {'retry-after': '172800'})])
+        client = Client(session, lambda _: None)
+        with self.assertRaises(SourceFailure) as caught:
+            client.fetch('https://www.amazon.co.jp/dp/' + ASIN)
+        self.assertEqual(caught.exception.state, 'rate_limited')
+        deadline = datetime.fromisoformat(caught.exception.retry_after_at)
+        self.assertGreater((deadline - datetime.now(timezone.utc)).total_seconds(), 170000)
+        self.assertEqual(len(session.calls), 1)
 
     def test_rate_limit_retry_after_and_success(self):
         session = Session([(429, '', 'https://www.amazon.co.jp/dp/' + ASIN, {'retry-after': '7'}), (200, HTML)])
@@ -114,7 +124,7 @@ class Tests(unittest.TestCase):
         client = Client(session, waits.append)
         self.assertIn('productTitle', client.fetch('https://www.amazon.co.jp/dp/' + ASIN)[0])
         self.assertEqual(len(session.calls), 2)
-        self.assertIn(7, waits)
+        self.assertIn(120, waits)
         self.assertGreaterEqual(client.pace, 2.4)
 
     def test_long_retry_after_stops_without_early_retry_or_hang(self):
@@ -131,11 +141,18 @@ class Tests(unittest.TestCase):
         for header in [format_datetime(datetime.now(timezone.utc) + timedelta(seconds=8), usegmt=True), 'invalid']:
             session = Session([(429, '', 'https://www.amazon.co.jp/dp/' + ASIN, {'retry-after': header}), (200, HTML)])
             waits = []
-            Client(session, waits.append).fetch('https://www.amazon.co.jp/dp/' + ASIN)
-            self.assertEqual(len(session.calls), 2)
-            self.assertTrue(all(0 <= wait <= 10 for wait in waits))
+            client = Client(session, waits.append)
             if header != 'invalid':
-                self.assertGreater(waits[0], 5)
+                client.fetch('https://www.amazon.co.jp/dp/' + ASIN)
+                self.assertEqual(len(session.calls), 2)
+                self.assertEqual(waits[0], 120)
+                self.assertTrue(all(value >= 0 for value in waits))
+            else:
+                with self.assertRaises(SourceFailure) as context:
+                    client.fetch('https://www.amazon.co.jp/dp/' + ASIN)
+                self.assertEqual(context.exception.state, 'rate_limited')
+                self.assertEqual(len(session.calls), 1)
+                self.assertEqual(waits, [])
 
     def test_login_redirect_latches_without_following(self):
         session = Session([(302, '', 'https://www.amazon.co.jp/dp/' + ASIN, {'location': '/ap/signin'})])
@@ -155,7 +172,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(len(session.calls), 1)
 
     def test_rate_limit_followed_by_challenge_stops_immediately(self):
-        session = Session([(429, ''), (200, '<input id="captchacharacters">')])
+        session = Session([(429, '', 'https://www.amazon.co.jp/dp/' + ASIN, {'retry-after': '4'}), (200, '<input id="captchacharacters">')])
         client = Client(session, lambda _: None)
         for _ in range(2):
             with self.assertRaises(SourceFailure) as context:
@@ -179,6 +196,38 @@ class Tests(unittest.TestCase):
         item = detail(minimal + script, ASIN, CATEGORY, OBSERVED)
         self.assertEqual(item['imageUrls'], ['https://m.media-amazon.com/front.jpg'])
         self.assertNotIn('gallery:complete', item['detail']['provenance']['sections'])
+
+    def test_real_amazon_parsejson_gallery_keeps_five_hires_without_thumbnails(self):
+        # Amazon embeds the nine observed hiRes items in a JS string wrapper,
+        # not a literal JSON array as in the older test fixture.
+        import json
+        asin = 'B0D32RZY9M'
+        rows = [dict(hiRes=f'https://m.media-amazon.com/images/I/photo{i}._AC_SL1500_.jpg',
+                     thumb=f'https://m.media-amazon.com/images/I/photo{i}._AC_SR38,50_.jpg')
+                for i in range(9)]
+        source = json.dumps(rows, separators=(',', ':'))
+        html = (f'<input id="ASIN" value="{asin}"><span id="productTitle">Baby food imported from Japan</span><img id="landingImage" '
+                f'src="{rows[0]["hiRes"]}"><div id="altImages">'
+                f'<img src="{rows[1]["thumb"]}"></div>'
+                f"<script>var data={{'currentAsin':'{asin}','colorImages':"
+                f"{{'initial': A.$.parseJSON('{source}')}}}};</script>")
+        result = detail(html, asin, CATEGORY, OBSERVED)
+        self.assertIn('colorImages.initial', result['detail']['provenance']['sections'])
+        self.assertIn('gallery:complete', result['detail']['provenance']['sections'])
+        self.assertEqual(result['imageUrls'][:5], [row['hiRes'] for row in rows[:5]])
+        self.assertFalse(any('SR38,50' in url for url in result['imageUrls']))
+
+    def test_selected_gallery_skips_explicit_short_edge_even_if_first_hires(self):
+        asin = ASIN
+        large = 'https://m.media-amazon.com/images/I/photo._AC_SL1500_.jpg'
+        tiny = 'https://m.media-amazon.com/images/I/photo._AC_SR1200,120_.jpg'
+        html = (f'<input id="ASIN" value="{asin}"><span id="productTitle">Test infant cereal</span>'
+                f'<img id="landingImage" src="{large}"><script>'
+                f'{{"currentAsin":"{asin}","colorImages":{{"initial":['
+                f'{{"hiRes":"{tiny}","large":"{large}"}}]}}}}</script>')
+        result = detail(html, asin, CATEGORY, OBSERVED)
+        self.assertEqual(result['imageUrls'], [large])
+        self.assertIn('gallery:complete', result['detail']['provenance']['sections'])
 
     def test_failed_asin_is_not_downloaded_again(self):
         session = Session([(200, 'invalid product')])

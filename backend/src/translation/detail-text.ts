@@ -1,4 +1,5 @@
 import { hasEnglish, hasJapanese } from './local.js';
+import { usableTranslation } from './warnings.js';
 
 export type DetailText = {
   features: string[]; ingredients: string[]; usage: string[]; cautions: string[];
@@ -24,7 +25,9 @@ export function renderDetail(snapshot: DetailText, items: DetailItem[]): DetailT
   const translations = new Map(items.filter(i => i.translated !== null).map(i => [i.slot, i]));
   const translated = (slot: string, source: string) => {
     const item = translations.get(slot);
-    return item?.source === source ? item.translated! : source;
+    if (item?.source !== source) return source;
+    try { return usableTranslation(item.translated); }
+    catch { return source; }
   };
   const result = { ...snapshot, specs: Object.create(null) as Record<string, string> };
   for (const section of detailSections) result[section] = snapshot[section].map((source, index) => translated(`${section}:${index}`, source));

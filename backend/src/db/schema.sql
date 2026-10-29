@@ -223,3 +223,25 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_at timestamptz;
 -- Once-only English detail backfill checkpoint for frozen GGUF snapshots.
 -- NULL on legacy rows intentionally queues a bounded scan; no translated items are reset.
 ALTER TABLE local_detail_translations ADD COLUMN IF NOT EXISTS english_slots_backfilled_at timestamptz;
+
+-- Independent from catalog visibility/rights settings; semantic validation defaults OFF.
+CREATE TABLE IF NOT EXISTS translation_settings (
+  id integer PRIMARY KEY CHECK (id = 1),
+  version integer NOT NULL DEFAULT 1 CHECK (version > 0),
+  validate_translation_semantics boolean NOT NULL DEFAULT false,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO translation_settings(id) VALUES (1) ON CONFLICT DO NOTHING;
+CREATE TABLE IF NOT EXISTS translation_policy_audit (
+  id bigserial PRIMARY KEY,
+  actor_id text NOT NULL,
+  version integer NOT NULL,
+  validate_translation_semantics boolean NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS translation_name_repairs (
+  asin varchar(10) PRIMARY KEY REFERENCES products(asin),
+  before_value jsonb NOT NULL,
+  after_value jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);

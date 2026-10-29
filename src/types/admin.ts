@@ -5,5 +5,11 @@ export type AdminOrder = { id: string; created_at: string; customer_name: string
 export type OrderDetail = AdminOrder & { customer_phone: string; customer_email: string | null; customer_address: string; estimated_shipping_vnd: string; shipping_final_vnd?: string | null; fx_jpy_to_vnd: string; service_fee_percent: string; pricing_policy_version: number | null; items: { asin: string; name: string; quantity: number; price_jpy: number; unit_price_vnd: string; observed_at: string }[] };
 export type Policy = { version: number; fxJpyToVnd: number; serviceFeePercent: number; exampleVnd: number };
 export type CatalogSettings = { version: number; hideLocalTestOnly: boolean };
+export type TranslationSettings = { version: number; validateTranslationSemantics: boolean };
+export type AdminIssueReport = {
+  amazon: { id: number; sync_run_id: number; asin: string | null; category_slug: string | null; state: string; message: string; created_at: string }[];
+  translations: { timestamp: string; asin: string; field: string; engine: string; model: string | null; attempt: number; issues: string[]; result: string; original: string | null; candidate: string | null }[];
+  logAvailable: boolean; logLocation: string
+};
 export type SyncRun = { id: string; state: string; started_at: string; finished_at: string | null; discovered_count: number; saved_count: number; error_count: number; note: string | null };
 export type Overview = { amazonCooldown: { reason: string; blocked_at: string; retry_after_at: string | null } | null; orders_7_days: number; visible_products: number; latestSync: SyncRun | null; syncErrors: { id: string; state: string; message: string; category_slug: string | null; created_at: string }[]; expectedSyncAt: string; missingScheduledRun: boolean; recentOrders: AdminOrder[] };

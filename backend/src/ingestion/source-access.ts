@@ -11,11 +11,20 @@ export function nextAmazonRetryAt(now = new Date()): Date {
   return new Date(Date.UTC(jst.getUTCFullYear(), jst.getUTCMonth(), jst.getUTCDate(), 19));
 }
 
-export async function recordAmazonPause(connection: Connection, reason: string) {
+export function amazonPauseUntil(now: Date, sourceRetryAfterAt?: string): Date {
+  const nextWindow = nextAmazonRetryAt(now);
+  // Source Retry-After wins over our daily schedule, but untrusted IPC input
+  // never moves the gate earlier or creates an invalid timestamp.
+  const sourceTime = sourceRetryAfterAt && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/.test(sourceRetryAfterAt)
+    ? Date.parse(sourceRetryAfterAt) : NaN;
+  return new Date(Number.isFinite(sourceTime) ? Math.max(nextWindow.getTime(), sourceTime) : nextWindow.getTime());
+}
+export async function recordAmazonPause(connection: Connection, reason: string, sourceRetryAfterAt?: string) {
   await connection.query(`INSERT INTO source_access_blocks(source,reason,retry_after_at)
     VALUES('amazon.co.jp',$1,$2)
     ON CONFLICT(source) DO UPDATE SET reason=EXCLUDED.reason,blocked_at=now(),
-      retry_after_at=EXCLUDED.retry_after_at`, [reason, nextAmazonRetryAt()]);
+      retry_after_at=GREATEST(source_access_blocks.retry_after_at,EXCLUDED.retry_after_at)`,
+    [reason, amazonPauseUntil(new Date(), sourceRetryAfterAt)]);
 }
 
 /** Caller owns AMAZON_ACCESS_LOCK. Only the scheduled window may claim a due gate.

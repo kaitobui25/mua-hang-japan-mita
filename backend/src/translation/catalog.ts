@@ -1,7 +1,8 @@
 import type { PoolClient } from 'pg';
 import type { DetailSnapshot } from '../ingestion/source.js';
 import type { ProductText } from './openrouter.js';
-import { renderDetail, type DetailText, type DetailItem } from './detail-text.js';
+import { detailSections, renderDetail, type DetailText, type DetailItem } from './detail-text.js';
+import { usableTranslation } from './warnings.js';
 
 type CatalogText = {
   asin: string;
@@ -9,6 +10,18 @@ type CatalogText = {
   brand: string | null;
   detail?: DetailSnapshot | null;
 };
+
+function usableLegacyDetail(detail: ProductText): boolean {
+  try {
+    for (const section of detailSections) {
+      if (!Array.isArray(detail[section])) return false;
+      detail[section].forEach(text => usableTranslation(text));
+    }
+    if (!detail.specs || typeof detail.specs !== 'object' || Array.isArray(detail.specs)) return false;
+    for (const [key, value] of Object.entries(detail.specs)) { usableTranslation(key); usableTranslation(value); }
+    return true;
+  } catch { return false; }
+}
 
 /** Approved and usable warned text remain visible against their frozen sources. */
 export async function applyTranslations(products: CatalogText[], client: Pick<PoolClient, 'query'>) {
@@ -23,8 +36,11 @@ export async function applyTranslations(products: CatalogText[], client: Pick<Po
     const translated = byAsin.get(product.asin);
     if (!translated) continue;
     const d = product.detail;
-    if (translated.name) product.name = translated.name;
-    if (d && translated.detail && !translated.name_only) product.detail = {
+    if (translated.name) {
+      try { product.name = usableTranslation(translated.name, 600); }
+      catch { /* Legacy structurally invalid candidates fall back to source. */ }
+    }
+    if (d && translated.detail && !translated.name_only && usableLegacyDetail(translated.detail)) product.detail = {
       ...d,
       features: translated.detail.features,
       ingredients: translated.detail.ingredients,

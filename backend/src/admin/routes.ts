@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { db } from '../db/pool.js';
 import { getPricingPolicy, toVnd, validatePolicy } from '../pricing.js';
-import { AdminError, getCatalogSettings, listOrders, listProducts, orderDetail, overview, saveCatalogSettings, savePolicy, setVisibility, updateOrder } from './data.js';
+import { AdminError, getCatalogSettings, getTranslationSettings, listOrders, listProducts, orderDetail, overview, saveCatalogSettings, savePolicy, saveTranslationSettings, setVisibility, updateOrder } from './data.js';
+import { recentAdminIssues } from './issues.js';
 import { enqueueImport, listImports } from './imports.js';
 import { csrfToken, digest, getSession, isLocalRequest, login, readToken, setSessionCookie, validOrigin } from './security.js';
 
@@ -48,6 +49,11 @@ export async function adminRoutes(server: FastifyInstance) {
     return { ok: true };
   });
   server.get('/overview', overview);
+  server.get('/issues', async request => {
+    const query = request.query as { asin?: string };
+    if (query.asin && !/^[A-Z0-9]{10}$/.test(query.asin)) throw new AdminError(400, 'ASIN không hợp lệ.');
+    return recentAdminIssues(query.asin);
+  });
   server.get('/products', async request => listProducts(request.query as Record<string, string | undefined>));
   server.patch('/products/:asin/visibility', async request => {
     const { asin } = request.params as { asin: string };
@@ -78,6 +84,12 @@ export async function adminRoutes(server: FastifyInstance) {
     return { ...policy, exampleVnd: toVnd(1000, policy) };
   });
   server.get('/catalog-settings', async () => getCatalogSettings());
+  server.get('/translation-settings', async () => getTranslationSettings());
+  server.put('/translation-settings', async request => {
+    const body = request.body as Parameters<typeof saveTranslationSettings>[0] | null;
+    if (!body) throw new AdminError(400, 'Thiếu cấu hình bản dịch.');
+    return saveTranslationSettings(body, request.adminSession!.actorId);
+  });
   server.put('/catalog-settings', async request => {
     const body = request.body as Parameters<typeof saveCatalogSettings>[0] | null;
     if (!body) throw new AdminError(400, 'Thiếu cấu hình hiển thị.');

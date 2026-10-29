@@ -1,4 +1,5 @@
-import { logTranslationEvent } from './warnings.js';
+import { readTranslationPolicy } from './policy.js';
+import { usableTranslation, logTranslationEvent } from './warnings.js';
 import { createHash } from 'node:crypto';
 import { db } from '../db/pool.js';
 import { translateNamesBatch, packNameBatches, readFreeQuota, assertTranslation, TranslationUnavailable, type ProductText } from './openrouter.js';
@@ -152,8 +153,12 @@ export async function saveNamesIfCurrent(
         WHERE p.asin=ANY($1::varchar(10)[]) ORDER BY p.asin FOR UPDATE OF p`,
     [entries.map(entry => entry.asin)]);
     const latest = new Map(rows.map(row => [row.asin, row]));
+    const policy = await readTranslationPolicy(connection);
     let saved = 0;
     for (const entry of entries) {
+      if (!/^[A-Z0-9]{10}$/.test(entry.asin)) throw new Error('invalid_asin');
+      usableTranslation(entry.name, 600);
+      if (policy.validateTranslationSemantics && entry.issues?.length) continue;
       const row = latest.get(entry.asin);
       if (!row || nameHash(row.name_source ?? row) !== entry.hash) continue;
       if (row.status === 'success' && row.translated_name) continue;
@@ -292,13 +297,16 @@ export async function translatePendingNames(options: { log?: typeof logTranslati
           }, unavailableModels });
         const entries = batch.filter(row => result.names.has(row.asin)).map(row => ({ asin: row.asin,
           hash: nameHash(row), name: result.names.get(row.asin)!, issues: result.warnings.get(row.asin) }));
+        const policy = await readTranslationPolicy(lock);
+        const rejected = new Set([...result.rejectedAsins,
+          ...entries.filter(entry => policy.validateTranslationSemantics && entry.issues?.length).map(entry => entry.asin)]);
         if (entries.length) translated += await saveNamesIfCurrent(entries, result.model, lock);
         for (const row of batch) await (options.log ?? logTranslationEvent)({ asin: row.asin, locale: 'vi', field: 'name',
           engine: 'openrouter', model: result.model, attempt: attempts.get(row.asin) ?? 0, original: row.name,
           candidate: result.names.get(row.asin), issues: result.warnings.get(row.asin) ??
             (result.names.has(row.asin) ? [] : ['invalid_output']),
+          published: rejected.has(row.asin) ? false : undefined,
           result: result.warnings.has(row.asin) ? 'warning' : result.names.has(row.asin) ? 'success' : 'failed' });
-        const rejected = new Set(result.rejectedAsins);
         await markNamesFailed(batch.filter(row => rejected.has(row.asin)));
         failed += rejected.size;
         console.log(`Translated names: ${translated} in current batch`);

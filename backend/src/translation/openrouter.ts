@@ -1,4 +1,4 @@
-import { assessTranslation } from './warnings.js';
+import { assessTranslation, usableTranslation } from './warnings.js';
 // Runs only on the owner's Windows worker. Never deploy an API key to the web/API VPS.
 export const FREE_TRANSLATION_MODELS = [
   'google/gemma-4-31b-it:free',
@@ -50,6 +50,7 @@ export function assertTranslation(source: ProductText, value: unknown): ProductT
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid_translation');
   const data = value as Record<string, unknown>;
   if (typeof data.name !== 'string' || !data.name.trim() || data.name.length > 600) throw new Error('invalid_name');
+  usableTranslation(data.name, 600);
   const numbers = (text: string) => (text.match(/\d+(?:[.,]\d+)*/g) ?? []).map(n => n.replaceAll(',', '.')).sort();
   const measurements = (text: string) => {
     const normalized = text.normalize('NFKC').toLowerCase().replaceAll('μ', 'µ');
@@ -62,7 +63,7 @@ export function assertTranslation(source: ProductText, value: unknown): ProductT
   const productCodes = (text: string) => [...text.normalize('NFKC').matchAll(/\b(?=[a-z0-9-]*[a-z])(?=[a-z0-9-]*\d)[a-z0-9-]{4,}\b/gi)]
     .map(match => match[0].toUpperCase()).sort();
   const validateText = (original: string, translated: string) => {
-    if (!translated.trim() || translated.length > 3000) throw new Error('invalid_text');
+    usableTranslation(translated, 3000);
     if (JSON.stringify(numbers(original)) !== JSON.stringify(numbers(translated))) throw new Error('numbers_changed');
     if (JSON.stringify(measurements(original)) !== JSON.stringify(measurements(translated))) throw new Error('units_changed');
     if (JSON.stringify(productCodes(original)) !== JSON.stringify(productCodes(translated))) throw new Error('product_codes_changed');

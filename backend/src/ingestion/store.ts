@@ -58,15 +58,25 @@ export async function ingestObservations(observations: VariantObservation[], run
           // gallery when some of its observed URLs are thumbnail sized.
           const completeGallery = d.provenance.sections.includes('gallery:complete') &&
             (o.imageUrls ?? []).every(url => galleryImageUrl(url));
-          const existingGallery = images.length && !completeGallery
-            ? await connection.query('SELECT 1 FROM product_images WHERE asin=$1 LIMIT 1', [o.asin]) : null;
-          const replaceGallery = images.length > 0 && !existingGallery?.rows.length;
+          const oldGallery = images.length
+            ? await connection.query<{ source_url: string; source_observed_at: Date }>(
+              'SELECT source_url,source_observed_at FROM product_images WHERE asin=$1 ORDER BY position', [o.asin])
+            : { rows: [] };
+          // An incomplete source may still contain new, independently proven
+          // high-resolution photos. Merge by image identity without throwing
+          // away existing good photos; a complete source replaces atomically.
+          const oldUrls = oldGallery.rows.map(row => row.source_url);
+          const nextGallery = completeGallery ? images : uniqueImages([...oldUrls, ...images]);
+          const replaceGallery = nextGallery.length > 0 &&
+            (oldUrls.length !== nextGallery.length || oldUrls.some((url, index) => nextGallery[index] !== url));
           if (replaceGallery) {
             await connection.query('DELETE FROM product_images WHERE asin=$1', [o.asin]);
-            for (const [index, url] of images.entries()) {
-              await connection.query('INSERT INTO product_images(asin,position,source_url,source_observed_at) VALUES($1,$2,$3,$4)', [o.asin, index + 1, url, detailAt]);
+            for (const [index, url] of nextGallery.entries()) {
+              const original = oldGallery.rows.find(row => row.source_url === url);
+              await connection.query('INSERT INTO product_images(asin,position,source_url,source_observed_at) VALUES($1,$2,$3,$4)',
+                [o.asin, index + 1, url, original?.source_observed_at ?? detailAt]);
             }
-            await connection.query('UPDATE products SET image_url=$2 WHERE asin=$1', [o.asin, images[0]]);
+            await connection.query('UPDATE products SET image_url=$2 WHERE asin=$1', [o.asin, nextGallery[0]]);
           }
           const fieldObservedAt = { ...d.provenance.fieldObservedAt };
           if (!replaceGallery) delete fieldObservedAt.images;

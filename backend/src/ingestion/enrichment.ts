@@ -53,9 +53,11 @@ export function amazonImageUrl(value: unknown): value is string {
 export function galleryImageUrl(value: unknown, observedMaxSides: ReadonlyMap<string, number> = new Map()): value is string {
   if (!amazonImageUrl(value)) return false;
   const modifier = new URL(value).pathname.match(/\._([^/]+)_\.(?:jpe?g|png|webp)$/i)?.[1] ?? '';
-  const encodedSides = [...modifier.matchAll(/(?:^|_)(?:AC_)?(?:SL|SX|SY|SR|US|UX|UY|UL|SS)(\d+)(?:,(\d+))?(?=_|$)/gi)]
-    .flatMap(match => [Number(match[1]), ...(match[2] ? [Number(match[2])] : [])]);
-  if (encodedSides.length && Math.max(...encodedSides) < 800) return false;
+  const encodedSizes = [...modifier.matchAll(/(?:^|_)(?:AC_)?(?:SL|SX|SY|SR|US|UX|UY|UL|SS|SH)(\d+)(?:,(\d+))?(?=_|$)/gi)];
+  // For explicit rectangular resizes the shorter edge is the limit; a
+  // 1200x120 strip is not a high-resolution product photo.
+  if (encodedSizes.some(match => match[2] && Math.min(Number(match[1]), Number(match[2])) < 800)) return false;
+  if (encodedSizes.length && Math.max(...encodedSizes.map(match => Number(match[1]))) < 800) return false;
   const observedSide = observedMaxSides.get(value);
   return observedSide === undefined || observedSide >= 800;
 }

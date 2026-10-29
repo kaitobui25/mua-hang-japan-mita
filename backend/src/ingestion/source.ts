@@ -30,7 +30,9 @@ export type Observation = {
 };
 
 export class SourceError extends Error {
-  constructor(public state: 'blocked' | 'rate_limited' | 'temporary' | 'parse_error', message: string, public adapter: 'http' | 'browseros-neo' | 'scrapling' = 'http') { super(message); }
+  constructor(public state: 'blocked' | 'rate_limited' | 'temporary' | 'parse_error', message: string,
+    public adapter: 'http' | 'browseros-neo' | 'scrapling' = 'http',
+    public readonly retryAfterAt?: string) { super(message); }
 }
 
 /** Identify a CAPTCHA for diagnostics; normal operations never open a browser. */
@@ -38,7 +40,7 @@ export function isAmazonCaptcha(error: Pick<SourceError, 'state' | 'message'>): 
   return error.state === 'blocked' && /\bcaptcha\b/i.test(error.message);
 }
 
-export type DiscoveryIssue = { state: SourceError['state']; adapter: SourceError['adapter']; message: string; page?: number };
+export type DiscoveryIssue = { state: SourceError['state']; adapter: SourceError['adapter']; message: string; page?: number; retryAfterAt?: string };
 export type DiscoveryResult = { observations: Observation[]; issues: DiscoveryIssue[] };
 
 const asinPattern = /^[A-Z0-9]{10}$/;

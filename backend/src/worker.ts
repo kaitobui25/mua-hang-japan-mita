@@ -70,7 +70,8 @@ if (command === 'once') {
     await boss.work('catalog.daily', { includeMetadata: true }, async jobs => {
       for (const job of jobs) {
         if (shouldRunDaily(job.createdOn, startedAt)) {
-          await syncCatalog({ scheduled: true });
+          await syncCatalog({ scheduled: true, galleryPilotDate: process.env.AMAZON_GALLERY_PILOT_DATE === 'verified'
+            ? undefined : process.env.AMAZON_GALLERY_PILOT_DATE });
         } else console.log('Skipped daily scan from downtime/outside the scheduled window.');
       }
     });

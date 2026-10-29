@@ -3,7 +3,7 @@ import json
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from amazon_parser import canonical, identity, listing, detail, ASIN
 
@@ -11,9 +11,10 @@ MAX_LINE = 2 * 1024 * 1024
 MAX_BODY = 8 * 1024 * 1024
 
 class SourceFailure(Exception):
-    def __init__(self, state, message):
+    def __init__(self, state, message, retry_after_at=None):
         super().__init__(message)
         self.state = state
+        self.retry_after_at = retry_after_at
 
 class Client:
     def __init__(self, session, delay=time.sleep):
@@ -29,7 +30,9 @@ class Client:
         if self.blocked:
             raise SourceFailure(self.blocked, 'Amazon session stopped; source cooldown required')
         rate_limited = False
-        for attempt in range(3):
+        # At most one retry per fetch. A 429 is only retryable when Amazon
+        # explicitly provides a positive Retry-After within the IPC budget.
+        for attempt in range(2):
             if self.finished is not None:
                 self.delay(max(0, self.pace - (time.monotonic() - self.finished)))
             try:
@@ -57,19 +60,24 @@ class Client:
                 if status == 429:
                     rate_limited = True
                     self.pace = max(self.pace, 2.4 * 2 ** attempt)
-                    retry_after = str(getattr(response, 'headers', {}).get('retry-after', '0'))
+                    retry_after = str(getattr(response, 'headers', {}).get('retry-after', '')).strip()
+                    wait = None
                     try:
-                        wait = float(retry_after)
-                    except ValueError:
+                        if retry_after:
+                            wait = float(retry_after)
+                    except (ValueError, OverflowError):
                         try:
                             wait = (parsedate_to_datetime(retry_after) - datetime.now(timezone.utc)).total_seconds()
                         except (ValueError, TypeError, OverflowError):
-                            wait = 0
-                    # Do not retry earlier than a long Retry-After or hang the IPC.
-                    if attempt == 2 or wait > 10:
+                            wait = None
+                    # Respect long source cooldowns instead of sleeping beyond
+                    # the bounded IPC. Never infer permission from a missing,
+                    # expired or malformed header.
+                    if attempt == 1 or wait is None or not 0 < wait <= 180:
                         self.blocked = 'rate_limited'
-                        raise SourceFailure('rate_limited', 'Amazon HTTP 429 retry budget or Retry-After requires source cooldown')
-                    self.delay(max(self.pace, wait))
+                        source_deadline = (datetime.now(timezone.utc) + timedelta(seconds=wait)).isoformat() if wait is not None and 0 < wait < 365 * 86400 else None
+                        raise SourceFailure('rate_limited', 'Amazon HTTP 429: no permitted bounded retry; source cooldown required', source_deadline)
+                    self.delay(max(120, self.pace, wait))
                     continue
                 if status == 408 or status >= 500:
                     raise SourceFailure('temporary', f'Amazon HTTP {status}')
@@ -79,7 +87,7 @@ class Client:
             except SourceFailure as exc:
                 if exc.state != 'temporary':
                     raise
-                if attempt == 2:
+                if attempt == 1:
                     if rate_limited:
                         self.blocked = 'rate_limited'
                         raise SourceFailure('rate_limited', 'Amazon HTTP 429 retry budget exhausted after transient failures; source cooldown required') from None
@@ -87,7 +95,7 @@ class Client:
             except ValueError as exc:
                 raise SourceFailure('parse_error', str(exc))
             except Exception:
-                if attempt == 2:
+                if attempt == 1:
                     if rate_limited:
                         self.blocked = 'rate_limited'
                         raise SourceFailure('rate_limited', 'Amazon HTTP 429 retry budget exhausted after network failures; source cooldown required') from None
@@ -115,10 +123,10 @@ class Client:
                     self.cache[asin] = dict(result=detail(html, asin, category, observed), status=status, url=url)
                 except Exception as exc:
                     # Do not retain traceback frames containing entire parsed pages.
-                    self.cache[asin] = {'error': (getattr(exc, 'state', 'parse_error'), str(exc)[:500])}
+                    self.cache[asin] = {'error': (getattr(exc, 'state', 'parse_error'), str(exc)[:500], getattr(exc, 'retry_after_at', None))}
             if 'error' in self.cache[asin]:
-                state, message = self.cache[asin]['error']
-                raise SourceFailure(state, message)
+                state, message, deadline = self.cache[asin]['error']
+                raise SourceFailure(state, message, deadline)
             cached = self.cache[asin]
             return {**cached, 'result': {**cached['result'], 'categorySlug': category}}
         if op == 'listing':
@@ -148,7 +156,8 @@ def main():
                 request = json.loads(line)
                 outcome = dict(id=request['id'], ok=True, **client.request(request))
             except Exception as exc:
-                outcome = dict(id=request.get('id'), ok=False, state=getattr(exc, 'state', 'parse_error'), message=str(exc)[:500])
+                outcome = dict(id=request.get('id'), ok=False, state=getattr(exc, 'state', 'parse_error'),
+                               message=str(exc)[:500], retryAfterAt=getattr(exc, 'retry_after_at', None))
             encoded = json.dumps(outcome, ensure_ascii=False)
             if len(encoded.encode('utf-8')) > MAX_LINE:
                 encoded = json.dumps(dict(id=request.get('id'), ok=False, state='parse_error', message='Scrapling result exceeds IPC limit'))
