@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { copyFile, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
-import { loadReviewImages } from './review-images.ts';
+import { loadReviewImages, readReviewImage } from './review-images.ts';
 
 const directory = path.join(process.cwd(), 'public', 'reviews');
 const source = path.join(directory, 'review-demo-01.png');
@@ -19,8 +19,11 @@ test('new owner image automatically appears without editing a manifest', async (
     copied = true;
     const after = await loadReviewImages();
     const added = after.find(item => item.file === name);
-    assert.deepEqual(added, { file: name, src: `/reviews/${encodeURIComponent(name)}`, isDemo: false });
+    assert.deepEqual(added, { file: name, src: `/anh-danh-gia/${encodeURIComponent(name)}`, isDemo: false });
     assert.ok(!before.some(item => item.file === name));
+    const served = await readReviewImage(name);
+    assert.equal(served?.contentType, 'image/png');
+    assert.ok(served?.bytes.equals((await readReviewImage('review-demo-01.png')).bytes));
   } finally {
     if (copied) await rm(destination);
   }
@@ -38,6 +41,11 @@ test('rejects misleading image extension and invalid signatures', async () => {
     copiedExtension = true;
     const images = await loadReviewImages();
     assert.ok(!images.some(item => [path.basename(wrongSignature), path.basename(wrongExtension)].includes(item.file)));
+    assert.equal(await readReviewImage(path.basename(wrongSignature)), null);
+    assert.equal(await readReviewImage(path.basename(wrongExtension)), null);
+    assert.equal(await readReviewImage('../review-demo-01.png'), null);
+    assert.equal(await readReviewImage('%2e%2e%2freview-demo-01.png'), null);
+    assert.equal(await readReviewImage('review-demo-01.png/another.png'), null);
   } finally {
     if (wroteSignature) await rm(wrongSignature);
     if (copiedExtension) await rm(wrongExtension);
@@ -60,6 +68,7 @@ test('does not publish symlinks', async t => {
       throw error;
     }
     assert.ok(!(await loadReviewImages()).some(item => item.file === linkedName));
+    assert.equal(await readReviewImage(linkedName), null);
   } finally {
     if (linked) await rm(linkedPath);
   }
