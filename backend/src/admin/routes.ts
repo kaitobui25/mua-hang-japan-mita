@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { db } from '../db/pool.js';
-import { getPricingPolicy, toVnd, validatePolicy } from '../pricing.js';
+import { getPricingPolicy, toVnd, validatePolicy, validateExpiryPolicy, type PricingPolicy } from '../pricing.js';
 import { AdminError, getCatalogSettings, getTranslationSettings, listOrders, listProducts, orderDetail, overview, saveCatalogSettings, savePolicy, saveTranslationSettings, setVisibility, updateOrder } from './data.js';
 import { recentAdminIssues } from './issues.js';
 import { enqueueImport, listImports } from './imports.js';
@@ -112,10 +112,10 @@ export async function adminRoutes(server: FastifyInstance) {
     return saveCatalogSettings(body, request.adminSession!.actorId);
   });
   server.post('/pricing/preview', async request => {
-    const body = request.body as { fxJpyToVnd: number; serviceFeePercent: number } | null;
+    const body = request.body as PricingPolicy | null;
     if (!body) throw new AdminError(400, 'Thiếu cấu hình.');
-    try { validatePolicy(body); } catch (error) { throw new AdminError(400, (error as Error).message); }
-    return { fxJpyToVnd: body.fxJpyToVnd, serviceFeePercent: body.serviceFeePercent, exampleVnd: toVnd(1000, body) };
+    try { validatePolicy(body); validateExpiryPolicy(body); } catch (error) { throw new AdminError(400, (error as Error).message); }
+    return { checkPriceExpiry: body.checkPriceExpiry, priceExpiryDays: body.priceExpiryDays, fxJpyToVnd: body.fxJpyToVnd, serviceFeePercent: body.serviceFeePercent, exampleVnd: toVnd(1000, body) };
   });
   server.put('/pricing', async request => {
     const body = request.body as Parameters<typeof savePolicy>[0] | null;

@@ -57,10 +57,12 @@ test('real checkout persists locked merchandise, separates shipping and never ca
     for (const items of [[], [{ asin, quantity: -1 }], [{ asin, quantity: 0.5 }], [{ asin, quantity: 99 }, { asin, quantity: 1 }], [{ asin: 'MISSING001', quantity: 1 }]]) {
       await assert.rejects(createOrder({ customer, items }));
     }
+    await db.query('UPDATE pricing_policy SET check_price_expiry=true,price_expiry_days=1 WHERE id=1');
     for (const change of ["price_observed_at=now()-interval '25 hours'", "price_observed_at=now(),admin_hidden_at=now()"]) {
       await db.query(`UPDATE products SET ${change} WHERE asin=$1`, [asin]);
       await assert.rejects(createOrder(payload));
     }
+    await db.query('UPDATE pricing_policy SET check_price_expiry=false WHERE id=1');
     await db.query('UPDATE products SET admin_hidden_at=NULL WHERE asin=$1', [asin]);
     assert.equal((await db.query("SELECT count(*) FROM orders WHERE customer_name='Checkout test private customer'")).rows[0].count, before);
   });
@@ -86,9 +88,12 @@ test('real checkout persists locked merchandise, separates shipping and never ca
       await db.query('UPDATE catalog_settings SET hide_local_test_only=false WHERE id=1');
       assert.equal((await createOrder(payload)).status, 'pending_confirmation');
       await db.query("UPDATE products SET price_observed_at=now()-interval '25 hours' WHERE asin=$1", [asin]);
+      assert.equal((await createOrder(payload)).status, 'pending_confirmation');
+      await db.query('UPDATE pricing_policy SET check_price_expiry=true,price_expiry_days=1 WHERE id=1');
       await assert.rejects(createOrder(payload));
     } finally {
       await db.query('UPDATE catalog_settings SET hide_local_test_only=$1 WHERE id=1', [previous]);
+      await db.query('UPDATE pricing_policy SET check_price_expiry=false WHERE id=1');
       await db.query("UPDATE products SET rights_status='verified',price_observed_at=now() WHERE asin=$1", [asin]);
     }
   });

@@ -71,7 +71,8 @@ test('detail persistence and API retain selected ASIN images, attributes, old qu
     assert.deepEqual(product.imageUrls, item.imageUrls);
     assert.deepEqual(product.detail?.ingredients, item.detail!.ingredients);
     assert.equal(product.variantAttributes.Size, '1 kg');
-    assert.equal(product.canCheckout, false, 'a detail refresh cannot freshen an old price');
+    assert.equal(product.priceObservedAt, old, 'a detail refresh cannot freshen an old price timestamp');
+    assert.equal(product.canCheckout, true, 'expiry defaults OFF and an old valid price remains purchasable');
     assert.notEqual(product.detail!.sourceObservedAt, product.priceObservedAt);
     assert.deepEqual(product.detail!.childAsins, [], 'private child discovery must not leak hidden/unverified ASINs');
     const listing = await listCatalog({ q: item.asin, page: 1, limit: 10 }, client);

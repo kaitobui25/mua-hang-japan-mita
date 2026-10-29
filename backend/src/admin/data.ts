@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 import { db } from '../db/pool.js';
-import { getPricingPolicy, toVnd, validatePolicy, type PricingPolicy } from '../pricing.js';
+import { getPricingPolicy, toVnd, validatePolicy, validateExpiryPolicy, type PricingPolicy } from '../pricing.js';
 import { publicVisibilitySql, publicProduct, type DbProduct } from '../catalog.js';
 import { expectedSyncAt } from '../ingestion/schedule.js';
 
@@ -50,13 +50,13 @@ export async function setVisibility(asin: string, hidden: boolean, actor: number
   });
 }
 export async function savePolicy(policy: PricingPolicy, actor: number) {
-  try { validatePolicy(policy); } catch (error) { throw new AdminError(400, (error as Error).message); }
+  try { validatePolicy(policy); validateExpiryPolicy(policy); } catch (error) { throw new AdminError(400, (error as Error).message); }
   if (!Number.isInteger(policy.version) || policy.version < 1) throw new AdminError(400, 'Version không hợp lệ.');
   return transaction(async client => {
     await client.query('SELECT id FROM pricing_policy WHERE id=1 FOR UPDATE');
     const old = await getPricingPolicy(client);
     if (old.version !== policy.version) throw new AdminError(409, 'Cấu hình đã thay đổi. Tải lại trước khi lưu.');
-    await client.query('UPDATE pricing_policy SET version=version+1,fx_jpy_to_vnd=$1,service_fee_percent=$2,updated_at=now() WHERE id=1', [policy.fxJpyToVnd, policy.serviceFeePercent]);
+    await client.query('UPDATE pricing_policy SET version=version+1,fx_jpy_to_vnd=$1,service_fee_percent=$2,check_price_expiry=$3,price_expiry_days=$4,updated_at=now() WHERE id=1', [policy.fxJpyToVnd, policy.serviceFeePercent, policy.checkPriceExpiry, policy.priceExpiryDays]);
     const next = await getPricingPolicy(client);
     await audit(client, actor, 'pricing.changed', String(next.version), old, next);
     return { ...next, exampleVnd: toVnd(1000, next) };

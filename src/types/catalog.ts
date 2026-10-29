@@ -14,6 +14,8 @@ export type CatalogProduct = {
   priceJpy?: number | null;
   priceVnd?: number | null;
   priceObservedAt?: string | null;
+  /** The backend is the source of truth for current public checkout eligibility. */
+  canCheckout?: boolean;
   availability?: Availability | string;
   status?: string;
   sourceUrl?: string | null;

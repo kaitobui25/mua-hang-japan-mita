@@ -1,0 +1,58 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { Icon } from "@/components/ui/icons";
+
+type Props = { zalo: string | null; messenger: string | null };
+
+export function SocialLauncher({ zalo, messenger }: Props) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    function close(event: PointerEvent) {
+      if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false);
+    }
+    function escape(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [open]);
+  if (!zalo && !messenger) return null;
+
+  function openMessenger(event: React.MouseEvent<HTMLAnchorElement>) {
+    if (event.button !== 0 || event.altKey || event.shiftKey || event.ctrlKey || event.metaKey || !messenger) return;
+    const width = Math.min(440, window.screen.availWidth);
+    const height = Math.min(720, window.screen.availHeight);
+    const left = Math.max(0, Math.round((window.screen.availWidth - width) / 2));
+    const top = Math.max(0, Math.round((window.screen.availHeight - height) / 2));
+    try {
+      const popup = window.open(messenger, "mita-messenger-chat", `popup=yes,width=${width},height=${height},left=${left},top=${top}`);
+      if (popup) {
+        event.preventDefault();
+        try { popup.opener = null; popup.focus(); } catch { /* Cross-origin window. */ }
+      }
+    } catch { /* Preserve the native anchor fallback. */ }
+    setOpen(false);
+  }
+
+  return <div className="social-launcher" ref={root}>
+    {open && <div id="social-contact-options" className="social-launcher-options" aria-label="Chọn kênh nhắn tin">
+      {zalo && <a href={zalo} target="_blank" rel="noopener noreferrer" className="social-launcher-choice" onClick={() => setOpen(false)}>
+        <span className="social-launcher-mark">Z</span><span>Zalo</span>
+      </a>}
+      {messenger && <a href={messenger} target="_blank" rel="noopener noreferrer" className="social-launcher-choice" onClick={openMessenger}>
+        <span className="social-launcher-mark social-launcher-mark-messenger"><Icon name="message" size={19}/></span><span>Messenger</span>
+      </a>}
+    </div>}
+    <button type="button" className="social-launcher-toggle" aria-label={open ? "Đóng các kênh liên hệ" : "Mở các kênh liên hệ"} aria-expanded={open} aria-controls="social-contact-options" onClick={() => setOpen(prev => !prev)}>
+      <Icon name={open ? "x" : "message"} size={24}/>
+      <span className="visually-hidden">{open ? "Đóng" : "Liên hệ"}</span>
+    </button>
+  </div>;
+}

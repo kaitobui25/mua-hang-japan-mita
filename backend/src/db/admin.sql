@@ -26,6 +26,13 @@ CREATE TABLE IF NOT EXISTS pricing_policy (
   service_fee_percent numeric(6,2) NOT NULL CHECK (service_fee_percent >= 0 AND service_fee_percent <= 100),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+-- A price without a recorded timestamp remains undated when expiry is OFF.
+ALTER TABLE order_items ALTER COLUMN observed_at DROP NOT NULL;
+
+-- Existing policies default OFF; retain original price timestamps.
+ALTER TABLE pricing_policy ADD COLUMN IF NOT EXISTS check_price_expiry boolean NOT NULL DEFAULT false;
+ALTER TABLE pricing_policy ADD COLUMN IF NOT EXISTS price_expiry_days integer NOT NULL DEFAULT 1 CHECK (price_expiry_days BETWEEN 1 AND 365);
+
 -- OFF by default: local_test_only products are included in the public catalog.
 -- The owner can enable this switch to hide them again without changing rights_status.
 CREATE TABLE IF NOT EXISTS catalog_settings (

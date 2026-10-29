@@ -5,7 +5,7 @@ import { AmazonStars } from "./amazon-stars";
 import Link from "next/link";
 import { useState } from "react";
 import { useCart } from "@/context/cart";
-import { formatVnd, productStatus } from "@/lib/format";
+import { canCheckout, formatVnd, productStatus } from "@/lib/format";
 import { Icon } from "@/components/ui/icons";
 import { ProductImage } from "@/components/ui/product-image";
 import type { CatalogProduct } from "@/types/catalog";
@@ -16,7 +16,7 @@ export function ProductCard({ product }: { product: CatalogProduct }) {
   const href = `/san-pham/${encodeURIComponent(product.asin)}`;
   const characters = Array.from(product.name);
   const shortName = characters.length > 28 ? `${characters.slice(0, 28).join("")}…` : product.name;
-  const canAdd = product.status === "ready" && product.availability !== "out_of_stock" && product.availability !== "requires_verification";
+  const canAdd = canCheckout(product);
   return <article className="product-card">
     <Link className="product-card-image-link" href={href} aria-label={`Xem ${product.name}`}><ProductImage src={product.imageUrl} name={product.name}/></Link>
     <div className="product-card-body">

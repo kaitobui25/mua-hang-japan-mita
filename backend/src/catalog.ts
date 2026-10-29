@@ -28,13 +28,14 @@ export type DbProduct = {
 const allProductsEnabledSql = '(SELECT NOT hide_local_test_only FROM catalog_settings WHERE id=1)';
 const publicRightsSql = `(rights_status = 'verified' OR ${allProductsEnabledSql})`;
 export const publicVisibilitySql = `admin_hidden_at IS NULL AND ${publicRightsSql}`;
-export function canCheckoutProduct(p: DbProduct) {
+export function canCheckoutProduct(p: DbProduct, policy: Pick<PricingPolicy, 'checkPriceExpiry' | 'priceExpiryDays'>) {
   return !config.publicReadOnly && !p.admin_hidden_at && (p.rights_status === 'verified' || p.owner_all_products_enabled === true) &&
-    p.sale_status === 'ready' && !['unavailable', 'out_of_stock'].includes(p.availability) &&
-    p.price_jpy !== null && p.price_jpy > 0 && isFresh(p.price_observed_at);
+    p.sale_status === 'ready' && p.availability === 'in_stock' &&
+    p.price_jpy !== null && Number.isSafeInteger(p.price_jpy) && p.price_jpy > 0 &&
+    (!policy.checkPriceExpiry || isFresh(p.price_observed_at, policy.priceExpiryDays));
 }
 export function publicProduct(p: DbProduct, policy: PricingPolicy) {
-  const canCheckout = canCheckoutProduct(p);
+  const canCheckout = canCheckoutProduct(p, policy);
   const gallery = uniqueImages(p.image_urls?.length ? p.image_urls : [p.image_url]);
   const cover = galleryImageUrl(p.image_url) ? p.image_url : gallery[0] ?? null;
   return {
@@ -134,6 +135,8 @@ export async function listCatalog(options: { category?: string; q?: string; page
         AND p.category_slug IN ('thuc-pham-bo-sung','thuc-pham-cho-be')
     ) eligible WHERE category_rank <= 100)`);
   }
+  // The staged Top100 feature ranks by actual ratingsCount; retain the existing
+  // sorting contract until that source-backed publication policy can go live.
   const reviewOrdering = '(SELECT am.written_review_count FROM amazon_product_metrics am WHERE am.asin=products.asin) DESC NULLS LAST';
   const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const sorting: Record<string, string> = {

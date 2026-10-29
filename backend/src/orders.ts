@@ -55,7 +55,7 @@ async function persistOrder(body: unknown, simulation: boolean) {
     let subtotalVnd = 0;
     let shippingEstimatedVnd = 0;
     const lines = products.rows.map(p => {
-      if (!canCheckoutProduct(p)) {
+      if (!canCheckoutProduct(p, policy)) {
         throw new CheckoutError('price_stale', 'Một số sản phẩm đang được cập nhật. Vui lòng kiểm tra lại giỏ hàng.');
       }
       const quantity = quantities.get(p.asin)!;
@@ -67,7 +67,7 @@ async function persistOrder(body: unknown, simulation: boolean) {
       subtotalVnd += unitPriceVnd * quantity;
       shippingEstimatedVnd += p.shipping_estimate_vnd * quantity;
       if (!Number.isSafeInteger(subtotalVnd) || !Number.isSafeInteger(shippingEstimatedVnd)) throw new CheckoutError('invalid_price', 'Giá trị đơn vượt giới hạn an toàn.');
-      return { ...publicProduct(p, policy), quantity, unitPriceVnd, lineTotalVnd: unitPriceVnd * quantity, observedAt: p.price_observed_at! };
+      return { ...publicProduct(p, policy), quantity, unitPriceVnd, lineTotalVnd: unitPriceVnd * quantity, observedAt: p.price_observed_at };
     });
     const orderId = randomUUID();
     await connection.query(

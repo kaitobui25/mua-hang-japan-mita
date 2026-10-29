@@ -12,24 +12,16 @@ export function formatObservation(value?: string | null) {
   return new Intl.DateTimeFormat("vi-VN", { dateStyle: "short", timeStyle: "short", timeZone: "Asia/Ho_Chi_Minh" }).format(new Date(value));
 }
 
-export function isFreshPrice(product: CatalogProduct) {
-  const observed = Date.parse(product.priceObservedAt || "");
-  return typeof product.priceVnd === "number" && Number.isFinite(product.priceVnd) && product.priceVnd > 0
-    && Number.isFinite(observed) && observed <= Date.now() && Date.now() - observed <= 24 * 60 * 60 * 1000;
-}
-
 export function canCheckout(product: CatalogProduct) {
-  return isFreshPrice(product)
-    && product.status === "ready"
-    && product.availability !== "out_of_stock"
-    && product.availability !== "requires_verification";
+  // Do not override the owner's configurable price-age policy in the browser.
+  return product.canCheckout === true;
 }
 
 export function productStatus(product: CatalogProduct) {
   if (product.availability === "out_of_stock") return "Tạm hết hàng";
   if (product.availability === "requires_verification") return "Liên hệ để kiểm tra";
   if (!product.priceVnd) return "Giá đang cập nhật";
-  if (!isFreshPrice(product)) return "Giá đang cập nhật";
+  if (!canCheckout(product)) return "Sản phẩm hiện chưa nhận đặt hàng";
   return "";
 }
 

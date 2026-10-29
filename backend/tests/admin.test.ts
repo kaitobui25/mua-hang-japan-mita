@@ -27,7 +27,7 @@ const category = 'thuc-pham-bo-sung';
 const asin = 'A000000001';
 const observation = (id = asin) => ({ asin: id, name: 'Integration Japanese product', categorySlug: category,
   sourceUrl: `https://www.amazon.co.jp/dp/${id}`, sourceAdapter: 'http-detail', imageUrl: 'https://m.media-amazon.com/images/test.jpg',
-  priceJpy: 1000, observedAt: new Date().toISOString() });
+  priceJpy: 1000, availability: 'in_stock' as const, observedAt: new Date().toISOString() });
 const checkout = (id = asin) => createSimulationOrder({ customer: { name: 'Private customer', phone: '0901234567', address: 'Private address', email: 'private@example.test' }, items: [{ asin: id, quantity: 2 }] });
 
 test('Amazon input is canonicalized and hostile URLs never become fetch targets', () => {
@@ -137,8 +137,11 @@ test('Admin MVP integration', async t => {
     await setVisibility(asin, false, 1);
     assert.ok(await getProductDetails(asin));
     await db.query("UPDATE products SET price_observed_at=now()-interval '25 hours' WHERE asin=$1", [asin]);
+    assert.equal((await getProductDetails(asin))!.canCheckout, true, 'expiry OFF accepts an old price');
+    await db.query('UPDATE pricing_policy SET check_price_expiry=true WHERE id=1');
     assert.equal((await getProductDetails(asin))!.canCheckout, false);
     await assert.rejects(checkout());
+    await db.query('UPDATE pricing_policy SET check_price_expiry=false WHERE id=1');
     await ingestObservations([observation()]);
     await db.query("UPDATE products SET rights_status='unverified' WHERE asin=$1", [asin]);
     // Owner policy OFF permits catalog/checkout for unverified DB rows; it does
@@ -148,7 +151,7 @@ test('Admin MVP integration', async t => {
     assert.ok((await checkout()).orderId);
     await db.query("UPDATE products SET rights_status='local_test_only',availability='out_of_stock' WHERE asin=$1", [asin]);
     await assert.rejects(checkout());
-    await db.query("UPDATE products SET availability='unknown' WHERE asin=$1", [asin]);
+    await db.query("UPDATE products SET availability='in_stock' WHERE asin=$1", [asin]);
   });
   await t.test('local_test_only switch defaults OFF, changes public catalog immediately, remains private and audited', async () => {
     const headers = { ...local, cookie, 'x-csrf-token': csrf };
@@ -200,15 +203,15 @@ test('Admin MVP integration', async t => {
     const old = await checkout();
     const headers = { ...local, cookie, 'x-csrf-token': csrf };
     for (const patch of [{ fxJpyToVnd: -1 }, { fxJpyToVnd: 10001 }, { serviceFeePercent: -1 }, { serviceFeePercent: 101 }, { fxJpyToVnd: '200' }, { serviceFeePercent: 1.001 }]) {
-      const result = await server.inject({ method: 'PUT', url: '/api/admin/pricing', headers, payload: { version: 1, fxJpyToVnd: 200, serviceFeePercent: 15, ...patch } });
+      const result = await server.inject({ method: 'PUT', url: '/api/admin/pricing', headers, payload: { version: 1, fxJpyToVnd: 200, serviceFeePercent: 15, checkPriceExpiry: false, priceExpiryDays: 1, ...patch } });
       assert.equal(result.statusCode, 400, result.body);
     }
     assert.equal((await getPricingPolicy()).version, 1);
-    const preview = await server.inject({ method: 'POST', url: '/api/admin/pricing/preview', headers, payload: { fxJpyToVnd: 200, serviceFeePercent: 15 } });
+    const preview = await server.inject({ method: 'POST', url: '/api/admin/pricing/preview', headers, payload: { fxJpyToVnd: 200, serviceFeePercent: 15, checkPriceExpiry: false, priceExpiryDays: 1 } });
     assert.equal(preview.json().exampleVnd, 230000);
-    const result = await server.inject({ method: 'PUT', url: '/api/admin/pricing', headers, payload: { version: 1, fxJpyToVnd: 200, serviceFeePercent: 15 } });
+    const result = await server.inject({ method: 'PUT', url: '/api/admin/pricing', headers, payload: { version: 1, fxJpyToVnd: 200, serviceFeePercent: 15, checkPriceExpiry: false, priceExpiryDays: 1 } });
     assert.equal(result.statusCode, 200); assert.equal(result.json().version, 2);
-    await assert.rejects(savePolicy({ version: 1, fxJpyToVnd: 190, serviceFeePercent: 12 }, 1));
+    await assert.rejects(savePolicy({ version: 1, fxJpyToVnd: 190, serviceFeePercent: 12, checkPriceExpiry: false, priceExpiryDays: 1 }, 1));
     const current = await checkout();
     assert.equal(current.subtotalVnd, 460000); assert.equal(current.version, 2);
     assert.equal((await getProductDetails(asin))!.priceVnd, 230000);
@@ -220,8 +223,8 @@ test('Admin MVP integration', async t => {
     const audit = (await db.query("SELECT * FROM admin_audit_events WHERE action='pricing.changed'")).rows[0];
     assert.equal(audit.before_value.serviceFeePercent, 12); assert.equal(audit.after_value.fxJpyToVnd, 200);
     // Failure to write the audit must roll back the policy as well.
-    await assert.rejects(savePolicy({ version: 2, fxJpyToVnd: 210, serviceFeePercent: 16 }, 999));
-    assert.deepEqual(await getPricingPolicy(), { version: 2, fxJpyToVnd: 200, serviceFeePercent: 15 });
+    await assert.rejects(savePolicy({ version: 2, fxJpyToVnd: 210, serviceFeePercent: 16, checkPriceExpiry: false, priceExpiryDays: 1 }, 999));
+    assert.deepEqual(await getPricingPolicy(), { version: 2, fxJpyToVnd: 200, serviceFeePercent: 15, checkPriceExpiry: false, priceExpiryDays: 1 });
   });
   await t.test('real order follows owner lifecycle, requires payment before completion, and audits each change', async () => {
     const placed = await server.inject({ method: 'POST', url: '/api/checkout', payload: {

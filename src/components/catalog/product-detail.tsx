@@ -12,6 +12,7 @@ import { ProductImage } from "@/components/ui/product-image";
 import { ProductInformation } from "@/components/catalog/product-information";
 import { QuantitySelector } from "@/components/cart/quantity-selector";
 import type { CatalogProduct } from "@/types/catalog";
+import { variantLabel } from "@/lib/variant-labels";
 
 export function ProductDetail({ asin }: { asin: string }) {
   const { add } = useCart();
@@ -55,7 +56,7 @@ export function ProductDetail({ asin }: { asin: string }) {
       <div className="detail-content"><p className="product-brand">{item.brand || "Sản phẩm Nhật"}</p><h1>{item.name}</h1><AmazonStars product={item}/>{/^[A-Z0-9]{10}$/.test(item.asin) && <p><a href={`https://www.amazon.co.jp/dp/${item.asin}`} target="_blank" rel="noopener noreferrer">Xem sản phẩm gốc trên Amazon Japan ↗</a></p>}<p className="detail-category">{categoryName(item.categorySlug)}</p>
         <div className="detail-price-block"><div className="detail-price">{item.priceVnd && item.priceVnd > 0 ? formatVnd(item.priceVnd) : "Giá đang cập nhật"}</div>{productStatus(item) && <p className="status-warning">{productStatus(item)}</p>}</div>
         {variants.length > 1 && <fieldset className="variant-field"><legend>Chọn phiên bản theo sản phẩm nguồn</legend>
-          {reliableAttributes ? <div className="variant-selectors">{attributes.map(attribute => <label key={attribute}><span>{attribute}</span><select value={item.variantAttributes?.[attribute] ?? ""} onChange={event => selectAttribute(attribute, event.target.value)}><option value="" disabled>Chọn {attribute}</option>{[...new Set(variants.map(variant => variant.variantAttributes?.[attribute]).filter((value): value is string => !!value))].map(value => <option key={value} value={value}>{value}</option>)}</select></label>)}</div>
+          {reliableAttributes ? <div className="variant-selectors">{attributes.map(attribute => <label key={attribute}><span>{variantLabel(attribute)}</span><select value={item.variantAttributes?.[attribute] ?? ""} onChange={event => selectAttribute(attribute, event.target.value)}><option value="" disabled>Chọn {variantLabel(attribute).toLowerCase()}</option>{[...new Set(variants.map(variant => variant.variantAttributes?.[attribute]).filter((value): value is string => !!value))].map(value => <option key={value} value={value}>{value}</option>)}</select></label>)}</div>
             : <div className="variant-list">{variants.map(variant => <label key={variant.asin} className={selected === variant.asin ? "variant selected" : "variant"}><input type="radio" name="variant" value={variant.asin} checked={selected === variant.asin} onChange={() => changeVariant(variant.asin)}/><span>{variant.name} ({variant.asin}) · {variant.priceVnd ? formatVnd(variant.priceVnd) : "Chưa có giá"}</span></label>)}</div>}
           <p className="variant-asin">ASIN đã chọn: {item.asin}</p>
         </fieldset>}

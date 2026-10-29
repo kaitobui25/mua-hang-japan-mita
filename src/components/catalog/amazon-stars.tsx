@@ -5,6 +5,8 @@ export function AmazonStars({ product }: { product: CatalogProduct }) {
   if (!metric) return null;
   const stars = metric.averageStars;
   const validStars = typeof stars === "number" && Number.isFinite(stars) && stars >= 0 && stars <= 5;
+  const validRatings = typeof metric.ratingsCount === "number" && Number.isSafeInteger(metric.ratingsCount) && metric.ratingsCount >= 0;
+  if (!validStars && !validRatings) return null;
   return <div style={{ fontSize: "0.8rem", marginBlock: "0.4rem" }}>
     {validStars && <span aria-label={`${stars} trên 5 sao`} style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem" }}>
       <span>{stars.toLocaleString("vi-VN")}</span>
@@ -12,8 +14,7 @@ export function AmazonStars({ product }: { product: CatalogProduct }) {
         ★★★★★<span style={{ position: "absolute", inset: 0, width: `${stars / 5 * 100}%`, overflow: "hidden", color: "#b76a00" }}>★★★★★</span>
       </span>
     </span>}
-    {metric.ratingsCount !== null && <span> ({metric.ratingsCount.toLocaleString("vi-VN")} lượt đánh giá sao)</span>}
-    {metric.writtenReviewCount !== null && <span> ({metric.writtenReviewCount.toLocaleString("vi-VN")} bài nhận xét)</span>}
+    {validRatings && <span> ({metric.ratingsCount!.toLocaleString("vi-VN")} lượt đánh giá)</span>}
     <small style={{ display: "block" }}>Amazon · {metric.stale ? "Dữ liệu cũ · " : ""}Quan sát: {new Date(metric.observedAt).toLocaleDateString("vi-VN", { timeZone: "Asia/Tokyo" })}</small>
   </div>;
 }

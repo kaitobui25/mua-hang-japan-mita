@@ -560,3 +560,19 @@ main { min-height: 65vh; }
 @media (prefers-reduced-motion: reduce) {
   .review-carousel-neighbor, .review-neighbor-hint, .review-carousel-arrow { transition: none; }
 }
+
+/* Hallmark · Garden · floating two-channel contact, using Mita's existing tokens */
+.social-launcher { position: fixed; z-index: var(--z-sticky-nav); left: max(var(--space-md), env(safe-area-inset-left)); bottom: calc(var(--space-lg) + env(safe-area-inset-bottom)); display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-sm); }
+.social-launcher-toggle { width: 56px; height: 56px; display: grid; place-items: center; border-radius: var(--radius-pill); border: 1px solid var(--color-accent); background: var(--color-accent); color: var(--color-accent-ink); box-shadow: 0 4px 18px var(--tint-moss); transition: transform var(--dur-short), background-color var(--dur-short); }
+.social-launcher-toggle:hover { background: var(--color-ink); transform: translateY(-2px); }
+.social-launcher-toggle:focus-visible, .social-launcher-choice:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 3px; }
+.social-launcher-options { display: flex; flex-direction: column; gap: var(--space-xs); padding: var(--space-sm); border-radius: var(--radius-card); background: var(--color-paper); box-shadow: 0 10px 32px var(--tint-moss); }
+.social-launcher-choice { display: flex; align-items: center; gap: var(--space-sm); min-width: 158px; min-height: 46px; padding: 4px var(--space-xs); border-radius: var(--radius-card); font-size: 14px; font-weight: 600; }
+.social-launcher-choice:hover { background: var(--color-paper-2); }
+.social-launcher-mark { width: 32px; height: 32px; display: grid; place-items: center; color: var(--color-accent-ink); background: var(--color-accent); border-radius: var(--radius-pill); font-weight: 700; font-size: 18px; }
+.social-launcher-mark-messenger { background: var(--color-ink); }
+@media (max-width: 700px) {
+  .social-launcher { bottom: calc(84px + env(safe-area-inset-bottom)); left: max(var(--space-sm), env(safe-area-inset-left)); }
+  .social-launcher-toggle { width: 48px; height: 48px; }
+}
+@media (prefers-reduced-motion: reduce) { .social-launcher-toggle { transition: none; } }

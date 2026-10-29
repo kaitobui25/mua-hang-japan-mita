@@ -1,6 +1,6 @@
 import type { SVGProps } from "react";
 
-type IconName = "search" | "bag" | "arrow" | "arrow-left" | "menu" | "x" | "plus" | "minus" | "filter" | "leaf" | "check" | "clock" | "truck" | "shield" | "heart" | "home" | "grid" | "chevron";
+type IconName = "search" | "bag" | "arrow" | "arrow-left" | "menu" | "x" | "plus" | "minus" | "filter" | "leaf" | "check" | "clock" | "truck" | "shield" | "heart" | "home" | "grid" | "chevron" | "message";
 
 export function Icon({ name, size = 20, ...props }: SVGProps<SVGSVGElement> & { name: IconName; size?: number }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -22,6 +22,7 @@ export function Icon({ name, size = 20, ...props }: SVGProps<SVGSVGElement> & { 
     home: <><path d="m3 11 9-8 9 8v10H3Z"/><path d="M9 21v-7h6v7"/></>,
     grid: <><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>,
     chevron: <path d="m7 10 5 5 5-5"/>,
+    message: <><path d="M20 11.5a8 8 0 0 1-8 8c-1.4 0-2.7-.3-3.9-.9L4 20l1.5-4a8 8 0 1 1 14.5-4.5Z"/><path d="M8 12h8M8 9h5"/></>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false" {...props}>{paths[name]}</svg>;
 }
