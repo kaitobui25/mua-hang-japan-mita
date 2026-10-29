@@ -103,6 +103,7 @@ test('daily sync contains no DDL and is limited to catalog transfer',()=>{
   assert.doesNotMatch(code,/\b(?:CREATE|ALTER|DROP)\s+(?:TABLE|SCHEMA|ROLE)\b/i);
   assert.doesNotMatch(code,/applySchema\s*\(/);
   assert.match(code,/catalog_sync_ledger/);
+  assert.match(code,/SYNC_ALREADY_COMPLETED/);
   assert.match(code,/DELETE FROM product_images WHERE asin=\$1/);
   // A queued/untranslated Windows item cannot erase an already usable VPS
   // warning candidate on a later daily transfer.

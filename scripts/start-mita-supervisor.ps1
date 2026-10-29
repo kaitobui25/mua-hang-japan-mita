@@ -26,7 +26,10 @@ function Check-OwnedListener([int]$port,[string]$expectedScript) {
 function Start-ManagedNode([string]$name,[string]$script,[int]$port,[string[]]$arguments) {
   if (Check-OwnedListener $port $script) { Write-Host "$name already active"; return }
   $scriptPath = Join-Path $PSScriptRoot $script
-  $args = @(('"' + $scriptPath + '"')) + $arguments
+  # PowerShell 5.1 turns an empty subexpression into $null; Start-Process
+  # rejects an ArgumentList array containing a null element.
+  $args = @(('"' + $scriptPath + '"'))
+  if ($arguments) { $args += @($arguments | Where-Object { $_ }) }
   $process = Start-Process node.exe -ArgumentList $args -WorkingDirectory $root -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $runtime "$name.launch.out.log") -RedirectStandardError (Join-Path $runtime "$name.launch.err.log")
   $ready = $false
   for ($attempt=0; $attempt -lt 40; $attempt++) {

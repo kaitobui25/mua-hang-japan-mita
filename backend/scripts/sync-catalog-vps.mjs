@@ -325,7 +325,14 @@ export async function main() {
       const claim=await to.query(`INSERT INTO catalog_sync_ledger(sync_day,run_id,state,jobs,watermark,source_hash)
         VALUES($1,$2,'running',$3,$4,$5) ON CONFLICT(sync_day) DO NOTHING
         RETURNING run_id`,[ledgerDay,runId,JSON.stringify(jobs),watermark,sourceHash]);
-      if (!claim.rowCount) throw Error('Daily batch already claimed for this JST day; no replay allowed');
+      if (!claim.rowCount) {
+        const existing=(await to.query('SELECT state FROM catalog_sync_ledger WHERE sync_day=$1', [ledgerDay])).rows[0];
+        if (existing?.state==='completed') {
+          console.log('SYNC_ALREADY_COMPLETED '+ledgerDay+'; no replay or data writes');
+          return; // The wrapper still runs --verify; no second batch is launched.
+        }
+        throw Error('Daily batch already claimed but not completed; manual inspection required');
+      }
       openedLedger=true;
       await to.query('BEGIN'); remoteTx=true;
       await to.query('SELECT pg_advisory_xact_lock(70400421)');
