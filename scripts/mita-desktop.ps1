@@ -67,7 +67,7 @@ $form.Controls.Add($status)
 $tabs = New-Object System.Windows.Forms.TabControl
 $tabs.Dock = 'Fill'; $form.Controls.Add($tabs); $tabs.BringToFront()
 $script:pages = @{}; $script:views = @{}
-foreach ($name in @('Overview','Orders','Products','Pricing','Workers','Logs')) {
+foreach ($name in @('Overview','Notifications','Orders','Products','Pricing','Workers','Logs')) {
     $page = New-Object System.Windows.Forms.TabPage
     $page.Text = $name; $page.BackColor = [System.Drawing.Color]::Black
     $page.ForeColor = [System.Drawing.Color]::White; $tabs.TabPages.Add($page)
@@ -81,7 +81,7 @@ function Add-TextView($name) {
     $script:pages[$name].Controls.Add($v); $script:views[$name] = $v
 }
 foreach ($name in @('Overview','Pricing','Workers','Logs')) { Add-TextView $name }
-foreach ($name in @('Orders','Products')) {
+foreach ($name in @('Notifications','Orders','Products')) {
     $grid = New-Object System.Windows.Forms.DataGridView
     $grid.Dock = 'Fill'; $grid.ReadOnly = $true; $grid.AllowUserToAddRows = $false
     $grid.AllowUserToDeleteRows = $false; $grid.MultiSelect = $false
@@ -102,6 +102,22 @@ function Add-Toolbar($name) {
     return $bar
 }
 $ordersBar = Add-Toolbar 'Orders'
+$notificationsBar = Add-Toolbar 'Notifications'
+$null = Add-Button $notificationsBar 'Mark selected alert as read' {
+    if (!(Can-Write)) { return }
+    $row = $script:views.Notifications.CurrentRow
+    if (!$row) { Set-Status 'Select a notification first.'; return }
+    $noticeId = [string]$row.Cells['id'].Value
+    if ($noticeId -notmatch '^(?:vps:)?[1-9][0-9]{0,18}$') {
+        Set-Status 'Invalid notification ID.'; return
+    }
+    if (Confirm-Write "Mark order notification $noticeId as read?") {
+        Start-Api 'POST' ('/notifications/' + [uri]::EscapeDataString($noticeId) + '/ack') @{} {
+            param($value)
+            Write-Completed
+        }
+    }
+}
 $orderAction = New-Object System.Windows.Forms.ComboBox
 $orderAction.DropDownStyle = 'DropDownList'; $orderAction.Width = 230
 $orderAction.Items.AddRange(@('confirmed','purchasing','purchased','shipping','completed','cancelled'))
@@ -178,7 +194,7 @@ function Clear-Session {
     $script:csrf=$null; $script:pricing=$null
     $script:client.Dispose(); New-Client
     $password.Clear(); $password.Enabled=$true; $login.Enabled=$true
-    foreach ($name in @('Orders','Products')) { $script:views[$name].DataSource=$null }
+    foreach ($name in @('Notifications','Orders','Products')) { $script:views[$name].DataSource=$null }
     foreach ($name in @('Overview','Pricing','Workers','Logs')) { $script:views[$name].Clear() }
 }
 function Can-Write {
@@ -246,12 +262,21 @@ function Refresh-View {
     if ($name -eq 'Logs') { Set-Status 'Session-only activity. Raw worker logs are intentionally not loaded (may contain secrets).'; return }
     $path='/' + $name.ToLowerInvariant()
     if ($name -in @('Orders','Products')) { $path += '?limit=50&page=' + $script:pageNumbers[$name] + '&q=' + [uri]::EscapeDataString($script:searches[$name].Text) }
+    if ($name -eq 'Notifications') { $path += '?limit=50&unread=1' }
     Start-Api 'GET' $path $null {
         param($value)
         $name=$tabs.SelectedTab.Text
         switch ($name) {
             'Orders' { Show-Table $name $value.items @('id','created_at','customer_name','status','payment_status','merchandise_vnd','item_count') }
             'Products' { Show-Table $name $value.items @('asin','name','hiddenAt') }
+            'Notifications' {
+                Show-Table $name $value.items @('id','source','orderId','eventType','createdAt','orderStatus')
+                $sourceStatus = if ($value.relayStatus -eq 'connected') { 'VPS relay connected' }
+                    elseif ($value.relayStatus -eq 'unavailable') { 'VPS relay unavailable; remote count unknown' }
+                    else { 'VPS relay not configured' }
+                $form.Text = "Mita Japan - Owner desktop ($($value.unreadCount) unread)"
+                Set-Status "$($value.unreadCount) unread order alerts. $sourceStatus. Order detail remains private on its source host."
+            }
             'Overview' { $script:views.Overview.Text=$value | ConvertTo-Json -Depth 12 }
             'Pricing' {
                 $script:pricing=$value
@@ -260,7 +285,7 @@ function Refresh-View {
             }
         }
         if ($name -in @('Orders','Products')) { Set-Status "API current: $name page $($value.page); $($value.total) total. Refresh every 30 seconds." }
-        else { Set-Status "API current: $name at $([datetime]::Now.ToString('T')). Refresh every 30 seconds." }
+        elseif ($name -ne 'Notifications') { Set-Status "API current: $name at $([datetime]::Now.ToString('T')). Refresh every 30 seconds." }
     }
 }
 $tabs.Add_SelectedIndexChanged({ Refresh-View })
