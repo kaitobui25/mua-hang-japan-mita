@@ -8,7 +8,7 @@ import {
   processOrderEmailDeliveries, retryDelayMs, seedOrderEmailDeliveries,
   type OutgoingOrderEmail
 } from '../src/notifications/email-delivery.js';
-import { gmailSmtpConfig } from '../src/notifications/email-scheduler.js';
+import { gmailSmtpConfig, MITA_GMAIL_SENDER } from '../src/notifications/email-scheduler.js';
 
 const asin = 'EMAIL00001';
 const from = 'operator@example.test';
@@ -47,8 +47,8 @@ test('Gmail SMTP requires explicit VPS opt-in + a separate sender identity and a
     NODE_ENV: 'production',
     MITA_EMAIL_ALERTS_ENABLED: '1',
     MITA_EMAIL_ALERTS_VPS: '1',
-    MITA_GMAIL_SMTP_USER: 'sender@example.test',
-    MITA_GMAIL_SMTP_FROM: 'sender@example.test',
+    MITA_GMAIL_SMTP_USER: MITA_GMAIL_SENDER,
+    MITA_GMAIL_SMTP_FROM: MITA_GMAIL_SENDER,
     MITA_GMAIL_SMTP_APP_PASSWORD: 'A'.repeat(16)
   };
   assert.equal(gmailSmtpConfig({}, 'linux'), null);
@@ -58,9 +58,17 @@ test('Gmail SMTP requires explicit VPS opt-in + a separate sender identity and a
   assert.equal(gmailSmtpConfig({ ...good, MITA_EMAIL_ALERTS_ENABLED: '0' }, 'linux'), null);
   assert.equal(gmailSmtpConfig({ ...good, MITA_GMAIL_SMTP_APP_PASSWORD: '' }, 'linux'), null);
   assert.equal(gmailSmtpConfig({ ...good, MITA_GMAIL_SMTP_FROM: 'other@example.test' }, 'linux'), null);
+  assert.equal(gmailSmtpConfig({ ...good, MITA_GMAIL_SMTP_USER: 'mitajapan@gmail.com' }, 'linux'), null);
+  assert.equal(gmailSmtpConfig({ ...good, MITA_GMAIL_SMTP_USER: '' }, 'linux'), null);
   assert.equal(gmailSmtpConfig({ ...good, MITA_GMAIL_SMTP_APP_PASSWORD: '123' }, 'linux'), null);
   assert.deepEqual(gmailSmtpConfig(good, 'linux'), {
-    user: 'sender@example.test', from: 'sender@example.test', password: 'A'.repeat(16)
+    user: MITA_GMAIL_SENDER, from: MITA_GMAIL_SENDER, password: 'A'.repeat(16)
+  });
+  assert.deepEqual(gmailSmtpConfig({
+    NODE_ENV: 'production', MITA_EMAIL_ALERTS_ENABLED: '1', MITA_EMAIL_ALERTS_VPS: '1',
+    MITA_GMAIL_SMTP_APP_PASSWORD: 'A'.repeat(16)
+  }, 'linux'), {
+    user: MITA_GMAIL_SENDER, from: MITA_GMAIL_SENDER, password: 'A'.repeat(16)
   });
   assert.equal(classifyEmailFailure({ responseCode: 550 }), 'smtp_permanent');
   assert.equal(classifyEmailFailure({ responseCode: 421 }), 'smtp_transient');

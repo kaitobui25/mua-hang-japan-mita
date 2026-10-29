@@ -4,16 +4,18 @@ import { activateEmailAlertDelivery, EMAIL_RECIPIENTS, processOrderEmailDeliveri
 
 const INTERVAL_MS = 15_000;
 const EMAIL_PATTERN = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
+/** Sender explicitly selected by the Mita Japan owner; recipients remain independent. */
+export const MITA_GMAIL_SENDER = 'nothink1315@gmail.com';
 
 /** Production-only explicit opt-in. Missing sender identity/password never sends. */
 export function gmailSmtpConfig(environment: NodeJS.ProcessEnv = process.env, platform = process.platform) {
   if (environment.MITA_EMAIL_ALERTS_ENABLED !== '1' || environment.MITA_EMAIL_ALERTS_VPS !== '1' ||
       environment.NODE_ENV !== 'production' || platform !== 'linux') return null;
-  const user = environment.MITA_GMAIL_SMTP_USER?.trim();
-  const from = environment.MITA_GMAIL_SMTP_FROM?.trim();
+  const user = environment.MITA_GMAIL_SMTP_USER?.trim() ?? MITA_GMAIL_SENDER;
+  const from = environment.MITA_GMAIL_SMTP_FROM?.trim() ?? MITA_GMAIL_SENDER;
   const password = environment.MITA_GMAIL_SMTP_APP_PASSWORD;
   if (!user || !from || !EMAIL_PATTERN.test(user) || !EMAIL_PATTERN.test(from) ||
-      from.toLowerCase() !== user.toLowerCase() ||
+      user.toLowerCase() !== MITA_GMAIL_SENDER || from.toLowerCase() !== MITA_GMAIL_SENDER ||
       !password || !/^[A-Za-z0-9]{16,128}$/.test(password)) return null;
   return { user, from, password };
 }

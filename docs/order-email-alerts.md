@@ -11,8 +11,9 @@ exactly these two recipient addresses:
 - `mitajapan@gmail.com`
 - `nothink1315@gmail.com`
 
-These are **recipients only**. No sender identity, Gmail account or app password
-has been supplied or assumed. Emails contain only the order UUID, current order
+The owner has selected **`nothink1315@gmail.com` as the sole SMTP sender**;
+it is also one of the two recipients. No Gmail app password has been supplied.
+Emails contain only the order UUID, current order
 status, creation timestamp in UTC, and an instruction to open the protected
 Admin through the existing SSH/localhost route. The email never contains buyer
 name/phone/address/email, item lines, payments or Admin/session credentials.
@@ -37,8 +38,8 @@ The message says an order was **placed**, not paid.
    | `NODE_ENV` | `production` |
    | `MITA_EMAIL_ALERTS_ENABLED` | `1` |
    | `MITA_EMAIL_ALERTS_VPS` | `1` (explicit VPS-only opt-in) |
-   | `MITA_GMAIL_SMTP_USER` | SMTP account's complete email address |
-   | `MITA_GMAIL_SMTP_FROM` | Same email address as SMTP user |
+   | `MITA_GMAIL_SMTP_USER` | Optional; defaults to `nothink1315@gmail.com`, other accounts rejected |
+   | `MITA_GMAIL_SMTP_FROM` | Optional; defaults to `nothink1315@gmail.com`, other addresses rejected |
    | `MITA_GMAIL_SMTP_APP_PASSWORD` | Gmail app password, **16 characters without spaces** |
 
    Use file permissions `0600` for secrets and `EnvironmentFile` as supported
@@ -48,7 +49,7 @@ The message says an order was **placed**, not paid.
 3. Review the VPS-only service configuration before restarting **only**
    `mita-api.service`. The worker starts in the real API entrypoint after
    Fastify is listening. It requires Linux, `NODE_ENV=production`, both
-   opt-in flags, valid sender/from equality and a nonempty valid app password.
+   opt-in flags, the designated sender address and a nonempty valid app password.
    If any condition fails it is disabled, and checkout still works.
 
 The sender uses Nodemailer via `smtp.gmail.com` port **465** with implicit TLS,
@@ -109,6 +110,6 @@ to stop mail promptly, change `MITA_EMAIL_ALERTS_ENABLED=0` and restart the
 API; queued events stay durable. Admin/GUI order alerts continue separately
 without relying on email.
 
-**Production status:** No Gmail credentials, live VPS systemd service details
+**Production status:** Sender address confirmed; no Gmail app password, live VPS systemd service details
 or successful Gmail delivery have been verified here. Secrets must be
 configured by the owner outside chat. No live email was sent.
