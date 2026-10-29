@@ -38,6 +38,21 @@ function jsonPropertySource(script: string, key: string): string | undefined {
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
+function initialGallery(script: string): unknown {
+  const colorImages = jsonPropertySource(script, 'colorImages') ?? '';
+  const initial = jsonProperty(colorImages, 'initial');
+  if (initial !== undefined) return initial;
+  // Accept only a quoted JSON argument, bounded by the selected colorImages
+  // object. Decode string escapes with JSON.parse; never evaluate source JS.
+  const match = /^\{\s*["']initial["']\s*:\s*A\.\$\.parseJSON\(\s*('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")\s*\)\s*(?=,|})/.exec(colorImages);
+  if (!match) return undefined;
+  try {
+    const literal = match[1];
+    const jsonString = literal[0] === '"' ? literal : '"' + literal.slice(1, -1)
+      .replace(/\\.|"/g, value => value === "\\'" ? "'" : value === '"' ? '\\"' : value) + '"';
+    return JSON.parse(JSON.parse(jsonString));
+  } catch { return undefined; }
+}
 export function amazonImageUrl(value: unknown): value is string {
   if (typeof value !== 'string') return false;
   try {
@@ -136,7 +151,7 @@ export function extractEnrichment($: CheerioAPI, asin: string, observedAt: strin
     const owner = node.closest('[data-asin]').attr('data-asin');
     const currentAsin = jsonProperty(script, 'currentAsin');
     if (!selectedNode(node) || (jsonPropertySource(script, 'currentAsin') !== undefined && currentAsin !== asin)) continue;
-    const initial = jsonProperty(jsonPropertySource(script, 'colorImages') ?? '', 'initial');
+    const initial = initialGallery(script);
     if (!Array.isArray(initial)) continue;
     const bound = owner === asin || currentAsin === asin || initial.some(image => {
       const item = record(image);

@@ -15,6 +15,68 @@ const extract = (body: string) => extractEnrichment(load(page(body)), asin, new 
 const initial = (images: unknown[], currentAsin = asin) => `<script>${JSON.stringify({ currentAsin, colorImages: { initial: images, blue: [{ hiRes: url('other-color') }] } })}</script>`;
 after(async () => { await db.end(); });
 
+const jsInitial = (images: unknown[], currentAsin?: string) => `<script>var gallery = {
+  ${currentAsin === undefined ? '' : `"currentAsin":${JSON.stringify(currentAsin)},`}
+  'colorImages': { 'initial': A.$.parseJSON('${JSON.stringify(images).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'),
+    'blue': [{"hiRes":"${url('other-color')}"}] }};</script>`;
+
+test('Amazon parseJSON selected initial gallery retains observed URLs, limit and provenance idempotently', () => {
+  const expected = ['front', 'back', 'side', 'label', 'top'].map(id => url(id));
+  const body = `<img id="landingImage" src="${url('front', 'AC_SR38,50')}">` +
+    jsInitial([...expected, url('sixth')].map(hiRes => ({ hiRes, thumb: url('tiny', 'AC_SR38,50') })));
+  const observedAt = '2026-10-29T00:00:00.000Z';
+  const sourceUrl = `https://www.amazon.co.jp/dp/${asin}`;
+  const item = extractEnrichment(load(page(body)), asin, observedAt, sourceUrl);
+  assert.deepEqual(item.imageUrls, expected);
+  assert.deepEqual(extractEnrichment(load(page(body)), asin, observedAt, sourceUrl), item);
+  assert.deepEqual(item.detail.provenance.sections, ['colorImages.initial', 'gallery:complete']);
+  assert.equal(item.detail.provenance.sourceUrl, sourceUrl);
+  assert.equal(item.detail.provenance.fieldObservedAt!.images, observedAt);
+});
+
+test('Amazon parseJSON retains ownership and variant restrictions without chaining script identities', () => {
+  const images = [{ hiRes: url('front') }, { hiRes: url('unrelated') }];
+  for (const body of [
+    jsInitial(images, 'G000000004'),
+    `<div data-asin="G000000004">${jsInitial(images, asin)}</div>`,
+    `<div id="variation_color_name">${jsInitial(images, asin)}</div>`,
+    `<div id="recommendations">${jsInitial(images, asin)}</div>`,
+    jsInitial([{ hiRes: url('unrelated') }]),
+    jsInitial([{ hiRes: url('bridge') }], asin) + jsInitial([{ hiRes: url('bridge') }, { hiRes: url('unrelated') }])
+  ]) {
+    const item = extract(`<img id="landingImage" src="${url('front', 'AC_SR38,50')}">${body}`);
+    assert.ok(!item.imageUrls.includes(url('unrelated')), body);
+    assert.ok(!item.imageUrls.includes(url('front')), body);
+  }
+  const owned = extract(`<div data-asin="${asin}">${jsInitial(images)}</div>`);
+  assert.deepEqual(owned.imageUrls, [url('front'), url('unrelated')]);
+});
+
+test('Amazon parseJSON decodes JSON string escapes but never executes malformed source or reads outside initial', () => {
+  const escaped = url("front's") + '?caption="quoted"&path=\\value';
+  assert.deepEqual(extract(jsInitial([{ hiRes: escaped }], asin)).imageUrls, [escaped]);
+  const sentinel = '__amazonGalleryExecuted';
+  assert.equal(Reflect.has(globalThis, sentinel), false);
+  for (const value of [
+    `A.$.parseJSON('[{"hiRes":"${url('bad')}"}]' + (globalThis.${sentinel} = true))`,
+    `A.$.parseJSON((globalThis.${sentinel} = true, '[]'))`,
+    `A.$.parseJSON('[{"hiRes":globalThis.${sentinel}=true}]')`,
+    `A.$.parseJSON('[{"hiRes":"${url('bad')}"}]') + (globalThis.${sentinel} = true)`,
+    `A.$.parseJSON('not JSON')`
+  ]) {
+    const item = extract(`<div data-asin="${asin}"><script>{'colorImages':{'initial':${value}}}</script></div>`);
+    assert.deepEqual(item.imageUrls, []);
+    assert.deepEqual(item.detail.provenance.sections, []);
+    assert.equal(Reflect.has(globalThis, sentinel), false);
+  }
+  const outside = extract(`<div data-asin="${asin}"><script>{'colorImages':{'blue':[]},
+    'recommendations':{'initial':A.$.parseJSON('[{"hiRes":"${url('bad')}"}]')}}</script></div>`);
+  assert.deepEqual(outside.imageUrls, []);
+  const tiny = extract(jsInitial([{ hiRes: url('tiny', 'AC_SR38,50') }], asin));
+  assert.deepEqual(tiny.imageUrls, []);
+  assert.deepEqual(tiny.detail.provenance.sections, []);
+});
+
 test('dynamic dictionary retains distinct gallery identities and highest observed resolution', () => {
   const images = { [url('front', 'SX300')]: [300, 300], [url('back')]: [1500, 1500], [url('front')]: [1500, 1500] };
   const item = parse(`<img id="landingImage" data-a-dynamic-image='${JSON.stringify(images)}'>`);
