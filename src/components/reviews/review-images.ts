@@ -1,0 +1,70 @@
+import { constants } from 'node:fs';
+import { lstat, open, readdir } from 'node:fs/promises';
+import path from 'node:path';
+
+const REVIEW_DIR = path.join(process.cwd(), 'public', 'reviews');
+const MAX_IMAGES = 120;
+const MAX_CANDIDATES = 300;
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+// Keep a single safe filename, but allow ordinary spaces and Vietnamese characters.
+const SAFE_IMAGE_NAME = /^(?![. ])[^<>:"/\\|?*\x00-\x1f\x7f]{1,180}\.(?:png|jpe?g|webp)$/i;
+const DEMO_IMAGE_NAME = /^review-demo-\d+\.(?:png|jpe?g|webp)$/i;
+
+export type ReviewImage = {
+  file: string;
+  src: string;
+  isDemo: boolean;
+};
+
+function matchesImageSignature(buffer: Buffer, filename: string): boolean {
+  const extension = path.extname(filename).toLowerCase();
+  if (extension === '.png') return buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  if (extension === '.jpg' || extension === '.jpeg') return buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  return extension === '.webp' && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP';
+}
+
+async function isValidImage(filename: string): Promise<boolean> {
+  const filepath = path.join(REVIEW_DIR, filename);
+  let file: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    if (!(await lstat(filepath)).isFile()) return false;
+    // O_NOFOLLOW prevents a symlink swap after lstat on Linux deployments.
+    file = await open(filepath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.size < 12 || stat.size > MAX_IMAGE_BYTES) return false;
+    const signature = Buffer.alloc(12);
+    const { bytesRead } = await file.read(signature, 0, signature.length, 0);
+    return bytesRead === signature.length && matchesImageSignature(signature, filename);
+  } catch {
+    return false;
+  } finally {
+    await file?.close();
+  }
+}
+
+/**
+ * Automatically publishes valid images placed in public/reviews on this server.
+ * This verifies file safety, not customer consent or redaction. The owner must
+ * approve/redact files before placing them in a publicly accessible folder.
+ */
+export async function loadReviewImages(): Promise<ReviewImage[]> {
+  try {
+    const entries = await readdir(REVIEW_DIR, { withFileTypes: true });
+    const filenames = entries
+      .filter(entry => entry.isFile() && SAFE_IMAGE_NAME.test(entry.name))
+      .map(entry => entry.name)
+      .sort((a, b) => Number(DEMO_IMAGE_NAME.test(a)) - Number(DEMO_IMAGE_NAME.test(b)) || a.localeCompare(b, 'vi', { numeric: true }))
+      .slice(0, MAX_CANDIDATES);
+
+    const images: ReviewImage[] = [];
+    for (const file of filenames) {
+      if (images.length >= MAX_IMAGES) break;
+      if (!(await isValidImage(file))) continue;
+      images.push({ file, src: `/reviews/${encodeURIComponent(file)}`, isDemo: DEMO_IMAGE_NAME.test(file) });
+    }
+    return images;
+  } catch {
+    // Missing/inaccessible review folder: display the honest empty state.
+    return [];
+  }
+}
