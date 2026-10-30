@@ -1,6 +1,6 @@
 # Invoked only after the three worker terminal states. Never runs migrations.
 [CmdletBinding()]
-param()
+param([switch]$DryRun)
 $ErrorActionPreference='Stop'
 $root=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $runtime=Join-Path $root '.agents/runtime'
@@ -54,9 +54,12 @@ try {
   if (!$ready) { throw 'Approved SSH tunnel did not become ready' }
   Push-Location (Join-Path $root 'backend')
   try {
-    $transfer=@(& node.exe scripts/sync-catalog-vps.mjs --apply)
-    if ($LASTEXITCODE -ne 0) { throw 'Daily sync failed; inspect remote ledger and private logs' }
+    $mode=if ($DryRun) { '--dry-run' } else { '--apply' }
+    $transfer=@(& node.exe scripts/sync-catalog-vps.mjs $mode)
+    $transferCode=$LASTEXITCODE
     $transfer | ForEach-Object { Write-Output $_ }
+    if ($transferCode -ne 0) { throw 'Daily sync failed; inspect remote ledger and private logs' }
+    if ($DryRun) { return }
     $partial=@($transfer | Where-Object { $_ -match '^SYNC_COMMIT_OK .*"state":"partial"' }).Count -gt 0
     & node.exe scripts/sync-catalog-vps.mjs --verify
     if ($LASTEXITCODE -ne 0) { throw 'Daily sync committed but content verification failed' }

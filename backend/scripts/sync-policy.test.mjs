@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   tableSpecs, insertSql, assertCompatibleSnapshots,
-  translationCoverageMissing, galleryNeedsSync, verifyContents,
+  translationCoverageMissing, galleryNeedsSync, verifyContents, assertTransferSchema,
 } from './sync-catalog-vps.mjs';
 
 const conflict = table => tableSpecs.find(([name]) => name === table)[2];
@@ -107,6 +107,43 @@ test('verification rejects a missing title despite extra published VPS rows', as
   const result=await verifyContents(source,catalogClient(remote));
   assert.equal(result.mismatched,1);
   assert.equal(result.report.find(row=>row.table==='product_translations').missing,1);
+});
+
+test('verification identifies missing concise title presentation by ASIN', async () => {
+  const source=emptyCatalog(), remote=emptyCatalog();
+  source.product_title_presentations=[{asin:'B08FTSH6KP',short_name:'Tên ngắn'}];
+  remote.product_title_presentations=[{asin:'B07BZ9NR18',short_name:'Tên khác'}];
+  const result=await verifyContents(source,catalogClient(remote));
+  assert.equal(result.mismatched,1);
+  assert.equal(result.report.find(row=>row.table==='product_title_presentations').missing,1);
+});
+
+test('schema preflight rejects an unmigrated table before the daily ledger', async () => {
+  const checked=[];
+  await assert.rejects(assertTransferSchema({query:async sql=>{
+    checked.push(sql);
+    if (sql.includes('FROM "product_title_presentations"')) throw Object.assign(new Error('missing'),{code:'42P01'});
+    return {rows:[]};
+  }},'Local'),/Local transfer schema incompatible: product_title_presentations \(42P01\)/);
+  assert.ok(checked.every(sql=>sql.endsWith('LIMIT 0')));
+  assert.equal(checked.some(sql=>sql.includes('catalog_sync_ledger')),false);
+});
+
+test('detail verifier accepts preserved remote fields and extra provenance keys', async () => {
+  const source=emptyCatalog(), remote=emptyCatalog();
+  const detail={asin:'B08FTSH6KP',features:[],ingredients:['new ingredient'],usage:[],specs:{},
+    cautions:[],variant_attributes:{},child_asins:[],source_observed_at:'2026-10-30',
+    provenance:{fieldObservedAt:{ingredients:'2026-10-30'},source:'amazon'}};
+  source.product_details=[detail];
+  remote.product_details=[{...detail,features:['older feature'],specs:{old:'preserved'},
+    provenance:{...detail.provenance,remoteOnly:'kept',
+      fieldObservedAt:{features:'2026-10-20',ingredients:'2026-10-30'}}}];
+  assert.equal((await verifyContents(source,catalogClient(remote))).mismatched,0);
+  remote.product_details[0].ingredients=['lost incoming'];
+  assert.equal((await verifyContents(source,catalogClient(remote))).mismatched,1);
+  remote.product_details[0].ingredients=['new ingredient'];
+  remote.product_details[0].provenance.fieldObservedAt.ingredients='2026-10-20';
+  assert.equal((await verifyContents(source,catalogClient(remote))).mismatched,1);
 });
 
 test('verification catches lost title coverage even with a newer VPS timestamp', async () => {

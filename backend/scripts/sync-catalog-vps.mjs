@@ -172,10 +172,45 @@ export function galleryNeedsSync(incoming, current) {
 const keyColumns = {
   categories:['slug'],products:['asin'],product_images:['asin','position'],
   product_details:['asin'],product_translations:['asin','locale'],
+  product_title_presentations:['asin'],
   local_detail_translations:['asin'],local_detail_translation_items:['asin','slot'],
   price_observations:['asin','observed_at'],product_detail_queue:['category_slug','asin']
 };
 const rowKey = (name,row) => digest(keyColumns[name].map(column=>row[column]));
+// A new transfer table/column must be migrated separately on both databases.
+// Fail before reserving the one-attempt-per-day VPS ledger entry.
+export async function assertTransferSchema(client, label) {
+  const tables = [...tableSpecs.map(([name,cols])=>[name,cols.map(([column])=>column)]),
+    ['product_images',['asin','position','source_url','source_observed_at']]];
+  for (const [name,columns] of tables) {
+    try {
+      await client.query(`SELECT ${columns.map(column=>'"'+column+'"').join(',')} FROM "${name}" LIMIT 0`);
+    } catch (error) {
+      throw Error(`${label} transfer schema incompatible: ${name} (${error.code??'query_failed'})`);
+    }
+  }
+}
+
+function mergedDetailMatches(incoming, current) {
+  const fields=['features','ingredients','usage','specs','cautions','variant_attributes','child_asins'];
+  for (const field of fields) {
+    const value=incoming[field];
+    // Upsert intentionally preserves old remote content when local snapshot is empty.
+    if (Array.isArray(value) && value.length===0) continue;
+    if (value && typeof value==='object' && !Object.keys(value).length) continue;
+    if (digest(value)!==digest(current[field])) return false;
+  }
+  const source=incoming.provenance??{}, target=current.provenance??{};
+  for (const [key,value] of Object.entries(source)) {
+    if (key==='fieldObservedAt') {
+      for (const [slot,stamp] of Object.entries(value??{})) {
+        if (digest(stamp)!==digest(target.fieldObservedAt?.[slot])) return false;
+      }
+    } else if (digest(value)!==digest(target[key])) return false;
+  }
+  return true;
+}
+
 export async function verifyContents(source, targetClient) {
   const report=[];
   let mismatched=0;
@@ -209,8 +244,9 @@ export async function verifyContents(source, targetClient) {
       if (significant.length &&
           (name==='local_detail_translations' || !row.updated_at || new Date(row.updated_at)>=new Date(remote.updated_at)) &&
           (name!=='product_details' || new Date(row.source_observed_at)>=new Date(remote.source_observed_at))) {
-        if (significant.some(field=>digest(row[field])!==digest(remote[field]) &&
-          !(name==='local_detail_translation_items' && field==='translated' && remote.translated && !remote.warning))) {
+        if (name==='product_details' ? !mergedDetailMatches(row,remote) :
+          significant.some(field=>digest(row[field])!==digest(remote[field]) &&
+            !(name==='local_detail_translation_items' && field==='translated' && remote.translated && !remote.warning))) {
           incorrect.push(rowKey(name,row));
         }
       }
@@ -296,6 +332,8 @@ export async function main() {
     if (srcDb.rows[0].db!=='postgres' || dstDb.rows[0].db!=='mita' || Number(versions.rows[0].server_version_num)<160000)
       throw Error('Database identity/version mismatch; no changes made');
     await from.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY'); localTx=true;
+    await assertTransferSchema(from, 'Local');
+    await assertTransferSchema(to, 'VPS');
     const watermark=(await from.query('SELECT transaction_timestamp() AS watermark')).rows[0].watermark;
     console.log('BEFORE '+JSON.stringify(await counts()));
     if (mode==='--dry-run') {
