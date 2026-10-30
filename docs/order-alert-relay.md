@@ -18,11 +18,13 @@ VPS customer checkout -> VPS orders + order_notification_outbox (one transaction
            -> HTTPS bearer POST to VPS -> VPS outbox acknowledged_at
 ```
 
-The relay returns only event sequence ID, opaque order UUID, event type,
-creation/acknowledgement timestamps and order processing status. It returns **no
-customer names, phone numbers, email, addresses, order items, financial amounts,
-Admin cookies or login credentials**. This deliberately does not make
-private order detail pages accessible publicly.
+The bearer-authenticated relay returns event sequence ID, opaque order UUID,
+event type, creation/acknowledgement timestamps, order processing status,
+**customer name** and locked **merchandise amount in VND** (excluding shipping).
+This extension contains personal data: only enable it with verified TLS and
+strong secrets protected on both hosts. It returns **no phone numbers, email,
+addresses, order items, Admin cookies or login credentials**. This deliberately
+does not make private order detail pages accessible publicly.
 
 VPS sequence IDs are mapped to `vps:<id>` in the local Admin response; local IDs
 remain decimal. IDs are deduplicated by source + event ID. Acknowledgements are
@@ -78,18 +80,22 @@ building the backend or by ordinary CI release.
   notifications and explicitly reports `relayStatus: unavailable`. The
   unread count may be incomplete while remote is unavailable.
 - **Configured:** local `GET /api/admin/notifications` joins local and VPS
-  events; the owner page polls every 15 seconds. Local
+  events; the Admin page polls every 15 seconds and the Admin sidebar polls its
+  unread badge every 30 seconds while mounted. Local
   `POST /api/admin/notifications/vps:<event-id>/ack` requires owner session,
   valid Origin and CSRF token; Fastify then sends the bearer-authenticated
   acknowledgement to VPS. The public relay has no CORS credential access and
   accepts neither Admin session cookies nor browser CSRF as authorization.
 - **Hard limit:** it is browser polling, so no notification when the browser
-  Admin page or PC is closed/offline. No employee account/role, SMS, Zalo or
-  Facebook push is provided. The local Admin overview's
+  Admin or PC is closed/offline. Staff login is read-only; only owner can
+  acknowledge a shared event. No SMS, Zalo or Facebook push is provided.
+  The local Admin overview's
   `newOrderAlertCount` includes the VPS unread count when the relay is
   connected, and shows an unavailable warning otherwise. The Windows GUI
-  Notifications tab polls the same owner-protected endpoint every 30 seconds
-  when selected. No VPS order snapshots/PII are copied.
+  desktop polls the same authenticated endpoint across all tabs at a configurable
+  interval (default 30 seconds). No VPS order snapshots are copied into local
+  PostgreSQL; the authenticated relay contains only the two requested summary
+  fields in process memory.
 
 After **authorized** deployment, verify via a safe staging event or new
 legitimate pending-confirmation order (no real customer details in test logs):
@@ -97,7 +103,8 @@ legitimate pending-confirmation order (no real customer details in test logs):
 1. Without bearer token, the public HTTPS GET and POST relay endpoints respond
    403; `/api/admin/*` still responds 404 on the public domain.
 2. With the secret supplied through secure process configuration, relay GET
-   returns event metadata only and never customer PII; authenticated POST
+   returns event metadata, customer name and locked merchandise amount only;
+   it must not expose phone, email, address, product items; authenticated POST
    acknowledges the event. Wrong or expired credentials cannot acknowledge it.
 3. Open the **local** Admin notification panel as owner; verify the VPS event
    appears within its next polling cycle, labelled VPS, with no local order-detail

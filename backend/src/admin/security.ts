@@ -32,8 +32,10 @@ export function readToken(cookie?: string) {
 export async function getSession(cookie?: string) {
   const token = readToken(cookie);
   if (!token) return null;
-  const result = await db.query('SELECT account_id,expires_at FROM admin_sessions WHERE token_hash=$1 AND expires_at>now()', [digest(token)]);
-  return result.rows[0] ? { actorId: result.rows[0].account_id as number, csrfToken: csrfToken(token), expiresAt: result.rows[0].expires_at as Date } : null;
+  const result = await db.query<{ account_id: number; role: 'owner' | 'staff'; expires_at: Date }>(
+    'SELECT s.account_id,a.role,s.expires_at FROM admin_sessions s JOIN admin_accounts a ON a.id=s.account_id WHERE s.token_hash=$1 AND s.expires_at>now() AND a.enabled=true',
+    [digest(token)]);
+  return result.rows[0] ? { actorId: result.rows[0].account_id, role: result.rows[0].role, csrfToken: csrfToken(token), expiresAt: result.rows[0].expires_at } : null;
 }
 export function setSessionCookie(reply: FastifyReply, token: string, secure: boolean) {
   reply.header('Set-Cookie', `${cookieName}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${token ? sessionSeconds : 0}${secure ? '; Secure' : ''}`);
@@ -48,28 +50,41 @@ export function validOrigin(request: FastifyRequest) {
   return [config.webPort, config.port].some(port => ['127.0.0.1', 'localhost'].some(host => request.headers.origin === `http://${host}:${port}`));
 }
 
-export async function login(password: unknown) {
+export async function login(password: unknown, username: unknown = 'owner') {
+  if (typeof username !== 'string' || !/^[a-z][a-z0-9_-]{2,31}$/.test(username)) return { status: 401 as const };
   // Reserve a bounded attempt in PostgreSQL before expensive password hashing.
-  // A global owner limit also prevents parallel attempts from bypassing the cap.
-  const reserved = await db.query(`UPDATE admin_login_limit SET
+  // The owner limit is independent: a staff login must never reset or consume it.
+  const reserved = username === 'owner' ? await db.query(`UPDATE admin_login_limit SET
     attempts=CASE WHEN window_started_at <= now()-interval '15 minutes' THEN 1 ELSE attempts+1 END,
     window_started_at=CASE WHEN window_started_at <= now()-interval '15 minutes' THEN now() ELSE window_started_at END
-    WHERE id=1 AND (attempts<5 OR window_started_at <= now()-interval '15 minutes') RETURNING id`);
-  if (!reserved.rowCount) return { status: 429 as const };
+    WHERE id=1 AND (attempts<5 OR window_started_at <= now()-interval '15 minutes') RETURNING id`) :
+    await db.query(`INSERT INTO admin_staff_login_limit(username,attempts,window_started_at)
+      SELECT username,1,now() FROM admin_accounts WHERE username=$1 AND role='staff' AND enabled=true
+      ON CONFLICT (username) DO UPDATE SET
+        attempts=CASE WHEN admin_staff_login_limit.window_started_at <= now()-interval '15 minutes' THEN 1 ELSE admin_staff_login_limit.attempts+1 END,
+        window_started_at=CASE WHEN admin_staff_login_limit.window_started_at <= now()-interval '15 minutes' THEN now() ELSE admin_staff_login_limit.window_started_at END
+      WHERE admin_staff_login_limit.attempts<5 OR admin_staff_login_limit.window_started_at <= now()-interval '15 minutes'
+      RETURNING username`, [username]);
+  // Unknown/disabled staff and locked staff all return 401; do not reveal accounts.
+  if (!reserved.rowCount) return { status: username === 'owner' ? 429 as const : 401 as const };
   if (!validPassword(password)) return { status: 401 as const };
   const client = await db.connect();
   try {
     await client.query('BEGIN');
     // Lock against a concurrent local password reset until this session is created.
-    const owner = await client.query('SELECT password_hash FROM admin_accounts WHERE id=1 FOR SHARE');
-    if (!owner.rows[0] || !await verifyPassword(password, owner.rows[0].password_hash)) {
+    const account = await client.query<{id: number; password_hash: string}>('SELECT id,password_hash FROM admin_accounts WHERE username=$1 AND enabled=true FOR SHARE', [username]);
+    if (!account.rows[0] || !await verifyPassword(password, account.rows[0].password_hash)) {
       await client.query('ROLLBACK');
       return { status: 401 as const };
     }
     await client.query('DELETE FROM admin_sessions WHERE expires_at<=now()');
     const token = randomBytes(32).toString('hex');
-    await client.query("INSERT INTO admin_sessions(token_hash,account_id,expires_at) VALUES($1,1,now()+interval '8 hours')", [digest(token)]);
-    await client.query('UPDATE admin_login_limit SET attempts=0,window_started_at=now() WHERE id=1');
+    await client.query("INSERT INTO admin_sessions(token_hash,account_id,expires_at) VALUES($1,$2,now()+interval '8 hours')", [digest(token),account.rows[0].id]);
+    if (username === 'owner') {
+      await client.query('UPDATE admin_login_limit SET attempts=0,window_started_at=now() WHERE id=1');
+    } else {
+      await client.query('UPDATE admin_staff_login_limit SET attempts=0,window_started_at=now() WHERE username=$1', [username]);
+    }
     await client.query('COMMIT');
     return { status: 200 as const, token };
   } catch (error) {

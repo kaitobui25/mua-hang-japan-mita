@@ -45,8 +45,8 @@ test('Admin translation settings require owner session, valid origin/CSRF and a 
     release: () => undefined,
   };
   mock.method(pool, 'query', async (sql: string, params: unknown[] = []) => {
-    if (sql.includes('SELECT account_id,expires_at FROM admin_sessions')) {
-      return params[0] === digest(token) ? ok([{ account_id: 1, expires_at: new Date(Date.now() + 60_000) }]) : ok();
+    if (sql.includes('FROM admin_sessions s JOIN admin_accounts a')) {
+      return params[0] === digest(token) ? ok([{ account_id: 1, role: 'owner', expires_at: new Date(Date.now() + 60_000) }]) : ok();
     }
     if (sql.includes('SELECT version,validate_translation_semantics FROM translation_settings')) return settings();
     if (sql.includes('FROM sync_errors') || sql.includes('FROM product_translations')) return ok();

@@ -63,7 +63,7 @@ test('real checkout creates one durable, owner-only Admin notification', async t
     }
   });
 
-  await t.test('authenticated owner can poll and acknowledge without exposing customer PII', async () => {
+  await t.test('authenticated owner can poll and acknowledge with customer summary but without contact details', async () => {
     await provisionOwner('Owner notification fixture password 123!', true);
     const login = await server.inject({ method: 'POST', url: '/api/admin/login',
       headers, payload: { password: 'Owner notification fixture password 123!' } });
@@ -81,7 +81,7 @@ test('real checkout creates one durable, owner-only Admin notification', async t
     assert.equal(data.externalPush, 'not_configured');
     assert.ok(data.unreadCount >= 1);
     assert.ok(data.items.some((item: { orderId: string }) => item.orderId === realId));
-    assert.equal(listed.body.includes(customer.name), false);
+    assert.equal(listed.body.includes(customer.name), true, 'authorized owner can see requested customer name');
     assert.equal(listed.body.includes(customer.phone), false);
     assert.equal(listed.body.includes(customer.address), false);
     assert.ok((await server.inject({ url: '/api/admin/overview', headers: auth })).json().newOrderAlertCount >= 1);

@@ -15,7 +15,7 @@ export async function provisionOwner(password: string, reset = false) {
       await client.query('UPDATE admin_login_limit SET attempts=0,window_started_at=now() WHERE id=1');
       await client.query("INSERT INTO admin_audit_events(actor_id,action,object_id) VALUES(1,'owner.password_reset','1')");
     } else {
-      const created = await client.query('INSERT INTO admin_accounts(id,password_hash) VALUES(1,$1) ON CONFLICT DO NOTHING RETURNING id', [hash]);
+      const created = await client.query("INSERT INTO admin_accounts(id,username,role,password_hash) VALUES(1,'owner','owner',$1) ON CONFLICT DO NOTHING RETURNING id", [hash]);
       if (!created.rowCount) throw new Error('Owner đã tồn tại. Không tạo hoặc ghi đè tài khoản.');
       await client.query("INSERT INTO admin_audit_events(actor_id,action,object_id) VALUES(1,'owner.created','1')");
     }
@@ -26,7 +26,7 @@ export async function provisionOwner(password: string, reset = false) {
   } finally { client.release(); }
 }
 
-function secretPrompt(label: string): Promise<string> {
+export function secretPrompt(label: string): Promise<string> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('Cần terminal tương tác để nhập kín; không pipe mật khẩu.');
   process.stdout.write(label);
   emitKeypressEvents(process.stdin);

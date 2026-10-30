@@ -27,9 +27,11 @@ export async function listLocalOrderNotifications(query: Record<string, string |
     created_at: Date;
     acknowledged_at: Date | null;
     order_status: string;
+    customer_name: string;
+    merchandise_vnd: number;
   }>(
     `SELECT e.id,e.order_id,e.event_type,e.created_at,e.acknowledged_at,
-      o.status AS order_status
+      o.status AS order_status,o.customer_name,o.merchandise_vnd
       FROM order_notification_outbox e JOIN orders o ON o.id=e.order_id
       WHERE e.recipient='owner' AND e.channel='admin'
         AND o.status<>'simulation_created'
@@ -43,7 +45,8 @@ export async function listLocalOrderNotifications(query: Record<string, string |
     items: rows.rows.map(row => ({
       id: row.id, orderId: row.order_id, eventType: row.event_type,
       createdAt: row.created_at, acknowledgedAt: row.acknowledged_at,
-      orderStatus: row.order_status, source: 'local' as const
+      orderStatus: row.order_status, source: 'local' as const,
+      customerName: row.customer_name, merchandiseVnd: Number(row.merchandise_vnd)
     })),
     unreadCount
   };

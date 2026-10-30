@@ -26,6 +26,8 @@ export type OrderNotice = {
   acknowledgedAt: Date | string | null;
   orderStatus: string;
   source: 'local' | 'vps';
+  customerName: string;
+  merchandiseVnd: number;
 };
 type RelayStatus = 'disabled' | 'connected' | 'unavailable';
 type RelayResult = { items: OrderNotice[]; unreadCount: number; status: RelayStatus };
@@ -101,6 +103,8 @@ function validRemoteNotice(value: unknown): value is Omit<OrderNotice, 'source'>
     typeof row.createdAt === 'string' && Number.isFinite(Date.parse(row.createdAt)) &&
     (row.acknowledgedAt === null || typeof row.acknowledgedAt === 'string' &&
       Number.isFinite(Date.parse(row.acknowledgedAt))) &&
+    typeof row.customerName === 'string' && row.customerName.length > 0 && row.customerName.length <= 200 &&
+    Number.isSafeInteger(row.merchandiseVnd) && Number(row.merchandiseVnd) >= 0 &&
     typeof row.orderStatus === 'string' &&
     ['pending_confirmation', 'confirmed', 'purchasing', 'purchased', 'shipping', 'completed', 'cancelled']
       .includes(row.orderStatus);
@@ -157,7 +161,8 @@ export async function fetchVpsNotifications(query: { limit: number; unread: bool
       ids.add(source.id);
       return { id: `vps:${source.id}`, orderId: source.orderId, eventType: 'order_placed',
         createdAt: source.createdAt, acknowledgedAt: source.acknowledgedAt,
-        orderStatus: source.orderStatus, source: 'vps' };
+        orderStatus: source.orderStatus, source: 'vps',
+        customerName: source.customerName, merchandiseVnd: source.merchandiseVnd };
     });
     return { status: 'connected', unreadCount: result.unreadCount as number, items };
   } catch {

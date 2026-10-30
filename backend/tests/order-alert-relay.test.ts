@@ -62,7 +62,10 @@ test('public VPS relay is bearer-only and returns minimal persisted real-order a
   assert.equal(listed.statusCode, 200, listed.body);
   assert.ok(listed.json().items.some((item: { orderId: string }) => item.orderId === real.orderId));
   assert.ok(!listed.json().items.some((item: { orderId: string }) => item.orderId === simulation.orderId));
-  for (const sensitive of [customer.name, customer.phone, customer.address]) {
+  const alert = listed.json().items.find((item: { orderId: string }) => item.orderId === real.orderId);
+  assert.equal(alert.customerName, customer.name, 'authenticated relay includes requested customer name');
+  assert.equal(alert.merchandiseVnd, real.merchandiseVnd, 'authenticated relay includes locked merchandise total');
+  for (const sensitive of [customer.phone, customer.address]) {
     assert.equal(listed.body.includes(sensitive), false);
   }
   assert.equal((await server.inject({ url: `${path}?limit=101`, headers })).statusCode, 400);
@@ -100,7 +103,8 @@ test('Windows local owner sees and acknowledges a separate VPS source via authen
     unreadCount: acknowledgedAt ? 0 : 1,
     items: acknowledgedAt ? [] : [{
       id: '987', orderId: vpsOrderId, eventType: 'order_placed',
-      createdAt: new Date().toISOString(), acknowledgedAt: null, orderStatus: 'pending_confirmation'
+      createdAt: new Date().toISOString(), acknowledgedAt: null, orderStatus: 'pending_confirmation',
+      customerName: 'Khách thử nghiệm VPS', merchandiseVnd: 245000
     }]
   }));
   fakeServer.post('/api/order-alert-relay/987/ack', async () => {
@@ -129,6 +133,8 @@ test('Windows local owner sees and acknowledges a separate VPS source via authen
     assert.equal(data.relayStatus, 'connected');
     assert.equal(data.items.filter((item: { id: string }) => item.id === 'vps:987').length, 1);
     assert.equal(data.items.find((item: { id: string }) => item.id === 'vps:987').source, 'vps');
+    assert.equal(data.items.find((item: { id: string }) => item.id === 'vps:987').customerName, 'Khách thử nghiệm VPS');
+    assert.equal(data.items.find((item: { id: string }) => item.id === 'vps:987').merchandiseVnd, 245000);
     assert.ok(data.unreadCount >= 1);
     assert.ok(data.items.some((item: { source: string }) => item.source === 'local'));
     const overview = await server.inject({ url: '/api/admin/overview', headers: owner });

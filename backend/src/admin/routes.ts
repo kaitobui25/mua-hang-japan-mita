@@ -23,8 +23,12 @@ export async function adminRoutes(server: FastifyInstance) {
     const loginRoute = request.routeOptions.url === '/api/admin/login' && request.method === 'POST';
     if (loginRoute) return;
     request.adminSession = await getSession(request.headers.cookie);
-    if (!request.adminSession) return reply.code(401).send({ error: 'Vui lòng đăng nhập owner.' });
+    if (!request.adminSession) return reply.code(401).send({ error: 'Vui lòng đăng nhập.' });
     if (write && request.headers['x-csrf-token'] !== request.adminSession.csrfToken) return reply.code(403).send({ error: 'Phiên xác nhận không hợp lệ. Tải lại trang.' });
+    // Staff may only read. Logout is the sole state-changing exception.
+    if (write && request.adminSession.role !== 'owner' && request.routeOptions.url !== '/api/admin/logout') {
+      return reply.code(403).send({ error: 'Chỉ chủ cửa hàng được thay đổi dữ liệu.' });
+    }
   });
   server.setErrorHandler((error, _request, reply) => {
     if (error instanceof AdminError) return reply.code(error.status).send({ error: error.message });
@@ -35,11 +39,11 @@ export async function adminRoutes(server: FastifyInstance) {
     return reply.code(500).send({ error: 'Không thể xử lý. Kiểm tra cơ sở dữ liệu và thử lại.' });
   });
   server.post('/login', { bodyLimit: 2048 }, async (request, reply) => {
-    const body = request.body as { password?: unknown } | null;
-    const result = await login(body?.password);
+    const body = request.body as { password?: unknown; username?: unknown } | null;
+    const result = await login(body?.password, body?.username);
     if (result.status !== 200) {
       if (result.status === 429) reply.header('Retry-After', '900');
-      return reply.code(result.status).send({ error: result.status === 429 ? 'Quá nhiều lần thử. Vui lòng chờ 15 phút.' : 'Không thể đăng nhập. Kiểm tra mật khẩu owner.' });
+      return reply.code(result.status).send({ error: result.status === 429 ? 'Quá nhiều lần thử. Vui lòng chờ 15 phút.' : 'Không thể đăng nhập. Kiểm tra tài khoản và mật khẩu.' });
     }
     setSessionCookie(reply, result.token, request.protocol === 'https');
     return { csrfToken: csrfToken(result.token) };

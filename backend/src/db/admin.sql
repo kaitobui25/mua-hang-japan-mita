@@ -6,6 +6,24 @@ CREATE TABLE IF NOT EXISTS admin_accounts (
   password_hash text NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+-- Owner is always id=1; authorized staff have distinct accounts and no write rights.
+ALTER TABLE admin_accounts DROP CONSTRAINT IF EXISTS admin_accounts_id_check;
+ALTER TABLE admin_accounts ADD COLUMN IF NOT EXISTS username text;
+ALTER TABLE admin_accounts ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'owner';
+ALTER TABLE admin_accounts ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true;
+UPDATE admin_accounts SET username='owner',role='owner' WHERE id=1 AND (username IS DISTINCT FROM 'owner' OR role IS DISTINCT FROM 'owner');
+ALTER TABLE admin_accounts ALTER COLUMN username SET DEFAULT 'owner';
+ALTER TABLE admin_accounts ALTER COLUMN username SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS admin_accounts_username_idx ON admin_accounts(username);
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='admin_accounts'::regclass AND conname='admin_accounts_roles_valid') THEN
+    ALTER TABLE admin_accounts ADD CONSTRAINT admin_accounts_roles_valid CHECK (
+      (id=1 AND role='owner' AND username='owner')
+      OR (id>1 AND role='staff' AND username ~ '^[a-z][a-z0-9_-]{2,31}$')
+    );
+  END IF;
+END $$;
 CREATE TABLE IF NOT EXISTS admin_sessions (
   token_hash text PRIMARY KEY,
   account_id integer NOT NULL REFERENCES admin_accounts(id),
@@ -19,6 +37,12 @@ CREATE TABLE IF NOT EXISTS admin_login_limit (
   window_started_at timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO admin_login_limit(id) VALUES(1) ON CONFLICT DO NOTHING;
+-- Staff attempts cannot reset or consume the independent owner login limit.
+CREATE TABLE IF NOT EXISTS admin_staff_login_limit (
+  username text PRIMARY KEY REFERENCES admin_accounts(username) ON DELETE CASCADE,
+  attempts integer NOT NULL DEFAULT 0,
+  window_started_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS pricing_policy (
   id integer PRIMARY KEY CHECK (id = 1),
   version integer NOT NULL DEFAULT 1 CHECK (version > 0),
