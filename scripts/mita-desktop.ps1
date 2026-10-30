@@ -88,7 +88,7 @@ $sourceStatus.Text = 'NGUỒN API: 127.0.0.1:4000  |  VPS: chưa xác định'
 $tabs = New-Object System.Windows.Forms.TabControl
 $tabs.Dock = 'Fill'; $form.Controls.Add($tabs); $tabs.BringToFront()
 $script:pages = @{}; $script:views = @{}
-$script:pageLabels = @{Overview='Tổng quan'; Notifications='Thông báo [0]'; Orders='Đơn hàng'; Products='Sản phẩm'; Pricing='Cấu hình giá'; Workers='Workers'; Logs='Nhật ký'}
+$script:pageLabels = @{Overview='Tổng quan'; Notifications='Thông báo [0]'; Orders='Đơn hàng'; Products='Sản phẩm'; Pricing='Cấu hình giá'; Workers='Workers'; Ports='Cổng'; Logs='Nhật ký'}
 $tabs.DrawMode = 'OwnerDrawFixed'; $tabs.SizeMode = 'Fixed'; $tabs.ItemSize = New-Object System.Drawing.Size(118, 32)
 $tabs.Add_DrawItem({ param($sender, $e)
     $rect = $sender.GetTabRect($e.Index); $selected = $e.Index -eq $sender.SelectedIndex
@@ -96,7 +96,7 @@ $tabs.Add_DrawItem({ param($sender, $e)
     $e.Graphics.FillRectangle($brush, $rect); $e.Graphics.DrawRectangle([System.Drawing.Pens]::Gray, $rect)
     [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $sender.TabPages[$e.Index].Text, $sender.Font, $rect, [System.Drawing.Color]::White, ([System.Windows.Forms.TextFormatFlags]::HorizontalCenter -bor [System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor [System.Windows.Forms.TextFormatFlags]::EndEllipsis))
 })
-foreach ($name in @('Overview','Notifications','Orders','Products','Pricing','Workers','Logs')) {
+foreach ($name in @('Overview','Notifications','Orders','Products','Pricing','Workers','Ports','Logs')) {
     $page = New-Object System.Windows.Forms.TabPage
     $page.Text = $script:pageLabels[$name]; $page.Name = $name; $page.BackColor = [System.Drawing.Color]::Black
     $page.ForeColor = [System.Drawing.Color]::White; $tabs.TabPages.Add($page)
@@ -110,6 +110,8 @@ function Add-TextView($name) {
     $script:pages[$name].Controls.Add($v); $script:views[$name] = $v
 }
 foreach ($name in @('Pricing','Workers','Logs')) { Add-TextView $name }
+. (Join-Path $PSScriptRoot 'mita-desktop-ports.ps1')
+Initialize-PortTab $script:pages.Ports
 
 # Overview is a real, scrollable layout; values remain unknown until an API response arrives.
 $overviewPage = $script:pages.Overview
@@ -429,6 +431,7 @@ function Show-Overview($value) {
 function Refresh-View {
     if ($script:pending) { return }
     $script:nextRefresh=[datetime]::Now.AddSeconds(30)
+    if ($tabs.SelectedTab.Name -eq 'Ports') { Refresh-PortTopology; return }
     if (!$script:csrf) { Set-Status 'Owner login required. API must already be running.'; return }
     $name=$tabs.SelectedTab.Name
     if ($name -eq 'Workers') {
