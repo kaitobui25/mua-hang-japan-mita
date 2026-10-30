@@ -45,27 +45,64 @@ function Initialize-PortTab($page) {
 
     $bar = New-Object System.Windows.Forms.FlowLayoutPanel
     $bar.Dock='Top'; $bar.Height=42; $bar.Padding=New-Object System.Windows.Forms.Padding(6)
+    $bar.BackColor=[System.Drawing.Color]::Black; $bar.ForeColor=[System.Drawing.Color]::White
     $label = New-Object System.Windows.Forms.Label
     $label.Text='Bố cục (&B):'; $label.AutoSize=$true; $label.Margin=New-Object System.Windows.Forms.Padding(3,5,3,0)
+    $label.ForeColor=[System.Drawing.Color]::White
     $bar.Controls.Add($label)
     $t.Layout = New-Object System.Windows.Forms.ComboBox
     $t.Layout.DropDownStyle='DropDownList'; $t.Layout.Width=225
     $t.Layout.AccessibleName='Bố cục Cổng'; $t.Layout.TabIndex=0
     $t.Layout.Items.AddRange([object[]]@('Mạng nhện','Danh sách PC/VPS')); $t.Layout.SelectedIndex=0
     $bar.Controls.Add($t.Layout)
-    $note = New-Object System.Windows.Forms.Label
-    $note.Text='10 cổng Mita + hạ tầng chỉ đọc'; $note.AutoSize=$true; $note.Margin=New-Object System.Windows.Forms.Padding(12,5,0,0)
-    $bar.Controls.Add($note)
     $pollLabel=New-Object System.Windows.Forms.Label
     $pollLabel.Text='Chu kỳ (giây):'; $pollLabel.AutoSize=$true; $bar.Controls.Add($pollLabel)
+    $pollLabel.ForeColor=[System.Drawing.Color]::White
     $t.Interval=New-Object System.Windows.Forms.NumericUpDown
     $t.Interval.Minimum=15; $t.Interval.Maximum=300; $t.Interval.Value=15; $t.Interval.Width=60
     $t.Interval.AccessibleName='Chu kỳ giám sát Cổng (giây)'; $bar.Controls.Add($t.Interval)
+    $t.Motion=New-Object System.Windows.Forms.CheckBox
+    $t.Motion.AutoSize=$true; $t.Motion.Text='Mũi tên minh họa'; $t.Motion.Checked=$true
+    $t.Motion.BackColor=[System.Drawing.Color]::Black; $t.Motion.ForeColor=[System.Drawing.Color]::White
+    $t.Motion.AccessibleName='Bật hoặc tắt hoạt ảnh minh họa quan hệ kết nối'
+    $bar.Controls.Add($t.Motion); $t.MotionPhase=[single]0
     $t.NextPoll=[datetime]::MinValue; $t.Job=$null; $t.Closing=$false
     $t.Interval.Add_ValueChanged({ $script:portTopology.NextPoll=[datetime]::Now.AddSeconds([double]$script:portTopology.Interval.Value) })
+    $t.Control=New-Object System.Windows.Forms.Button
+    $t.Control.Text='Điều khiển PC'; $t.Control.AutoSize=$true; $t.Control.Enabled=$false
+    $t.Control.FlatStyle='Flat'; $t.Control.BackColor=[System.Drawing.Color]::Black; $t.Control.ForeColor=[System.Drawing.Color]::White
+    $t.Control.AccessibleName='Yêu cầu bật hoặc dừng dịch vụ Mita thuộc PC'; $bar.Controls.Add($t.Control)
+    $t.ActionJob=$null
+    $t.Control.Add_Click({
+        $state=$script:portTopology
+        if ($script:role -ne 'owner' -or $state.ActionJob -or $script:pending) { return }
+        $service=switch ($state.Selected) { 'gateway' { 'gateway' } 'supervisor' { 'supervisor' } default { return } }
+        $node=@($state.Nodes | Where-Object Id -eq $state.Selected)[0]
+        $action=switch ($node.State) { 'online' { 'stop' } 'offline' { 'start' } default { return } }
+        $description=if ($action -eq 'stop') { 'Yêu cầu dừng hợp tác, đợi inference hoặc workers hoàn tất. Không kill PID.' }
+            else { 'Chỉ khởi động đúng tiến trình Mita đã xác minh; nếu thiếu phụ thuộc sẽ từ chối.' }
+        $message="PC Windows / $($node.Port) / $($node.Service) / $action" + [Environment]::NewLine + $description +
+            [Environment]::NewLine + 'Có ghi nhật ký kiểm soát trên PC. Chỉ owner được thực hiện.'
+        $timer.Stop(); $portTimer.Stop()
+        try {
+            $confirmed=[System.Windows.Forms.MessageBox]::Show($form,$message,'Xác nhận điều khiển cổng Mita','YesNo','Warning','Button2')
+        } finally { $timer.Start(); $portTimer.Start() }
+        if ($confirmed -ne [System.Windows.Forms.DialogResult]::Yes -or !$script:csrf) { return }
+        # Confirmation may have remained open until the owner session expired.
+        # Recheck server authorization AFTER confirmation, immediately before
+        # dispatching the local action; fail closed if API 4000 is unavailable.
+        $script:portPlannedControl=@{ Service=$service; Action=$action }
+        Start-Api 'GET' '/session' $null {
+            param($session)
+            $plan=$script:portPlannedControl; $script:portPlannedControl=$null
+            if (!$plan -or $session.role -ne 'owner') { Set-Status 'Phiên owner không hợp lệ; không điều khiển PC.'; return }
+            Start-PortControlAction $plan.Service $plan.Action
+        }
+    })
 
     $legend = New-Object System.Windows.Forms.Label
     $legend.Dock='Top'; $legend.Height=52; $legend.Padding=New-Object System.Windows.Forms.Padding(8,2,8,0)
+    $legend.BackColor=[System.Drawing.Color]::Black; $legend.ForeColor=[System.Drawing.Color]::Silver
     $legend.Text="Sơ đồ quan hệ, không phải lưu lượng thực | Chỉ giám sát khi tab Cổng mở`r`nLiền → ứng dụng | Đứt → có điều kiện | Chấm → điều khiển/giám sát`r`nOnline = listener + ứng dụng; Warning = chưa đủ bằng chứng; Idle = theo nhu cầu. Tab / mũi tên để chọn."
     $legend.Font=New-Object System.Drawing.Font('Consolas',9)
     $t.Detail = New-Object System.Windows.Forms.TextBox
@@ -98,6 +135,15 @@ function Initialize-PortTab($page) {
         $button.FlatStyle='Flat'; $button.BackColor=[System.Drawing.Color]::Black; $button.ForeColor=[System.Drawing.Color]::White
         $button.Font=New-Object System.Drawing.Font('Consolas',8.5)
         $button.Tag=$node.Id; $button.AccessibleName="$($node.Host) $($node.Port) $($node.Service)"
+        $button.Add_Paint({
+            param($sender,$e)
+            $id=[string]$sender.Tag
+            $node=@($script:portTopology.Nodes | Where-Object Id -eq $id)[0]
+            $brush=if ($node.State -eq 'online') { [System.Drawing.Brushes]::White }
+                elseif ($node.State -eq 'idle') { [System.Drawing.Brushes]::Gray }
+                else { [System.Drawing.Brushes]::DimGray }
+            $e.Graphics.FillEllipse($brush,143,8,9,9)
+        })
         $button.Add_Click({ param($sender,$e) Select-PortNode ([string]$sender.Tag) })
         $button.Add_Enter({
             param($sender,$e)
@@ -126,10 +172,10 @@ function Initialize-PortTab($page) {
 function Get-PortStateText([string]$state) {
     switch ($state) {
         'online' { 'Online' }
-        'idle' { 'Idle' }
+        'idle' { 'Không chạy' }
         'offline' { 'Offline' }
         'warning' { 'Warning' }
-        default { 'Unknown' }
+        default { 'Chưa kiểm tra' }
     }
 }
 
@@ -151,6 +197,7 @@ function Refresh-PortTopology {
         $state=Get-PortStateText $node.State
         $t.Buttons[$node.Id].Text="$($node.Host) : $($node.Port)`r`n$($node.Service)`r`n$state"
         $t.Items[$node.Id].SubItems[3].Text=$state
+        $t.Buttons[$node.Id].Invalidate()
     }
     Select-PortNode $t.Selected
 }
@@ -188,6 +235,55 @@ function Select-PortNode([string]$Id) {
     if (!$relations.Count) { $lines += 'Hạ tầng chung chỉ đọc; không suy diễn thêm quan hệ ứng dụng.' }
     $t.Detail.Text=$lines -join "`r`n"
     $t.Graph.Invalidate()
+    Update-PortControlAvailability
+}
+
+function Update-PortControlAvailability {
+    $t=$script:portTopology
+    if (!$t -or !$t.Control) { return }
+    $node=@($t.Nodes | Where-Object Id -eq $t.Selected)
+    $valid=($node.Count -eq 1 -and $t.Selected -in @('gateway','supervisor'))
+    $operation=if ($valid -and $node[0].State -eq 'online') { 'Dừng an toàn' } else { 'Bật' }
+    $t.Control.Text=if ($valid) { "$operation $($node[0].Port)" } else { 'Chỉ xem / không điều khiển' }
+    $t.Control.Enabled=($valid -and $node[0].State -in @('online','offline') -and
+        $script:role -eq 'owner' -and !$script:pending -and !$t.ActionJob)
+}
+
+function Start-PortControlAction([string]$service,[string]$action) {
+    $t=$script:portTopology
+    if ($t.ActionJob -or $script:role -ne 'owner' -or $service -notin @('gateway','supervisor') -or $action -notin @('start','stop')) { return }
+    $ps=[powershell]::Create()
+    try {
+        $file=Join-Path $PSScriptRoot 'mita-port-control.ps1'
+        $null=$ps.AddScript('param($file,$service,$action); & $file -Service $service -Action $action').AddArgument($file).AddArgument($service).AddArgument($action)
+        $handle=$ps.BeginInvoke()
+        $t.ActionJob=@{ PowerShell=$ps; Handle=$handle; Service=$service; Operation=$action }
+        Set-Status "Đã gửi tác vụ $action cho $service trên PC; chờ xác nhận thực tế."
+    } catch {
+        $ps.Dispose()
+        Set-Status 'Không khởi chạy được tác vụ điều khiển. Chưa có xác nhận thay đổi dịch vụ.'
+    }
+    Update-PortControlAvailability
+}
+
+function Update-PortControlAction {
+    $t=$script:portTopology
+    if (!$t.ActionJob -or !$t.ActionJob.Handle.IsCompleted) { return }
+    $job=$t.ActionJob; $message='Tác vụ PC chưa được xác nhận.'
+    try {
+        $output=$job.PowerShell.EndInvoke($job.Handle)
+        if ($job.PowerShell.HadErrors -or $job.PowerShell.Streams.Error.Count) { throw 'Control script returned an error' }
+        $message=if ($output.Count) { ([string]$output[-1]) } else { 'Không có kết quả điều khiển được xác nhận.' }
+        $script:views.Logs.AppendText("$([datetime]::Now.ToString('s')) Owner PC control $($job.Service)/$($job.Operation) completed; verify observed port state." + [Environment]::NewLine)
+    } catch {
+        $message='Điều khiển PC bị từ chối hoặc lỗi. Xem nhật ký kiểm soát cục bộ; chưa xác nhận thay đổi.'
+        $script:views.Logs.AppendText("$([datetime]::Now.ToString('s')) Owner PC control $($job.Service)/$($job.Operation) not confirmed." + [Environment]::NewLine)
+    } finally {
+        $job.PowerShell.Dispose(); $t.ActionJob=$null
+        $t.NextPoll=[datetime]::MinValue
+    }
+    Set-Status $message
+    Update-PortControlAvailability
 }
 
 # UI timer only inspects completion; never waits for network, native processes or
@@ -278,6 +374,17 @@ function Draw-PortTopology($graphics) {
                 $graphics.DrawLines($pen,$points)
             } else {
                 $graphics.DrawLine($pen,[single]($ax+$dx*$start),[single]($ay+$dy*$start),[single]($bx-$dx*$end),[single]($by-$dy*$end))
+                # Moving dashes show a configured route, NOT observed traffic.
+                $from=@($t.Nodes | Where-Object Id -eq $edge.From)[0]
+                $to=@($t.Nodes | Where-Object Id -eq $edge.To)[0]
+                if ($t.Motion.Checked -and $from.State -eq 'online' -and $to.State -eq 'online') {
+                    $motionPen=New-Object System.Drawing.Pen([System.Drawing.Color]::White,[single]1)
+                    try {
+                        $motionPen.DashPattern=[single[]]@(1,6)
+                        $motionPen.DashOffset=$t.MotionPhase
+                        $graphics.DrawLine($motionPen,[single]($ax+$dx*$start),[single]($ay+$dy*$start),[single]($bx-$dx*$end),[single]($by-$dy*$end))
+                    } finally { $motionPen.Dispose() }
+                }
             }
         } finally { $pen.Dispose(); $cap.Dispose() }
     }

@@ -2,7 +2,7 @@
 $ErrorActionPreference='Stop'
 function Assert-Static($condition,$message) { if (!$condition) { throw $message } }
 $sources=@{}
-foreach ($name in @('mita-desktop.ps1','mita-desktop-ports.ps1','mita-desktop-probes.ps1')) {
+foreach ($name in @('mita-desktop.ps1','mita-desktop-ports.ps1','mita-desktop-probes.ps1','mita-port-control.ps1')) {
     $path=Join-Path $PSScriptRoot $name
     $tokens=$null; $errors=$null
     $ast=[System.Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$errors)
@@ -31,7 +31,16 @@ Assert-Static ($probe.Contains('$health.ok -is [bool] -and $health.ok -eq $true'
 Assert-Static ($ui.Contains('$t.Interval.Value=15')) 'Default interval must be 15 seconds'
 Assert-Static ($ui.Contains('$t.Job -or')) 'Missing overlap guard'
 Assert-Static ($ui.Contains('.BeginInvoke()') -and $ui.Contains('.BeginStop(')) 'Worker must start/stop asynchronously'
-Assert-Static (!$ui.Contains('.Stop()') -and !$ui.Contains('WaitForExit') -and !$ui.Contains('Get-NetTCPConnection')) 'UI must not perform blocking probe I/O'
-Assert-Static ($app.Contains('$portTimer.Add_Tick({ Update-PortMonitor')) 'Monitoring must use independent timer'
+Assert-Static (!$ui.Contains('PowerShell.Stop()') -and !$ui.Contains('WaitForExit') -and !$ui.Contains('Get-NetTCPConnection')) 'UI must not perform blocking probe I/O'
+Assert-Static ($app.Contains('$portTimer.Add_Tick({') -and $app.Contains('Update-PortMonitor ($tabs.SelectedTab.Name')) 'Monitoring must use independent timer'
 Assert-Static ($app.Contains('$portTimer.Dispose(); Close-PortMonitor')) 'Monitoring shutdown missing'
+Assert-Static ($ui.Contains("Start-Api 'GET' '/session'") -and $ui.Contains("session.role -ne 'owner'")) 'Missing fresh owner authorization before PC control'
+Assert-Static ($ui.IndexOf('Start-Api ''GET'' ''/session''') -gt $ui.IndexOf('MessageBox]::Show($form,$message')) 'Owner verification must occur after confirmation'
+Assert-Static ($ui.Contains('Update-PortControlAction') -and $app.Contains('Update-PortControlAction')) 'Control work must be handled asynchronously'
+$control=$sources['mita-port-control.ps1']
+Assert-Static ($control.Contains("ValidateSet('gateway','supervisor')") -and $control.Contains("ValidateSet('start','stop')")) 'Local control must be allowlisted'
+Assert-Static ($control.Contains('Get-OwnedNode') -and $control.Contains('StartTime') -and $control.Contains('CommandLine')) 'Missing ownership checks'
+Assert-Static ($control.Contains('mita-port-control-audit.jsonl') -and $control.Contains('Set-Content -LiteralPath $stopPath')) 'Missing audit or cooperative stop'
+Assert-Static (!$control.Contains('Stop-Process') -and $control.Contains('worker|translator|detail-translator')) 'No kill rollback or gateway shutdown with active workers'
+Assert-Static (!$control.Contains('Stop-Service') -and !$control.Contains('Invoke-Expression') -and !$control.Contains('Start-Job')) 'Forbidden generic control surface'
 Write-Output "PASS: PS $($PSVersionTable.PSVersion) parser/static monitoring contracts; no app or probes executed."

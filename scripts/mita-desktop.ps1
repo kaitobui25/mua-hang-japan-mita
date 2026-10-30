@@ -102,6 +102,13 @@ foreach ($name in @('Overview','Notifications','Orders','Products','Pricing','Wo
     $page.ForeColor = [System.Drawing.Color]::White; $tabs.TabPages.Add($page)
     $script:pages[$name] = $page
 }
+function Update-TabWidths {
+    if ($tabs.TabCount -le 0) { return }
+    $size=[Math]::Max(96,[Math]::Min(118,[Math]::Floor(($tabs.ClientSize.Width - 16) / $tabs.TabCount)))
+    if ($tabs.ItemSize.Width -ne $size) { $tabs.ItemSize=New-Object System.Drawing.Size([int]$size,32) }
+}
+$tabs.Add_Resize({ Update-TabWidths })
+Update-TabWidths
 function Add-TextView($name) {
     $v = New-Object System.Windows.Forms.TextBox
     $v.Multiline = $true; $v.ReadOnly = $true; $v.ScrollBars = 'Both'
@@ -334,6 +341,7 @@ $interval = New-Object System.Windows.Forms.NumericUpDown; $interval.Minimum=10;
 $interval.Add_ValueChanged({ $script:nextNotifications=[datetime]::Now.AddSeconds([double]$interval.Value) })
 function Update-WriteControls {
     foreach ($control in @($ackButton,$orderButton,$productButton,$priceButton,$fx,$fee)) { $control.Enabled = ($script:role -eq 'owner') }
+    Update-PortControlAvailability
 }
 function Set-Status([string]$message) { $status.Text = $message }
 function Clear-Session {
@@ -497,7 +505,14 @@ $tabs.Add_SelectedIndexChanged({ Refresh-View })
 # Independent of the authenticated API timer and its pending request/early returns.
 $portTimer=New-Object System.Windows.Forms.Timer
 $portTimer.Interval=250
-$portTimer.Add_Tick({ Update-PortMonitor ($tabs.SelectedTab.Name -eq 'Ports') })
+$portTimer.Add_Tick({
+    Update-PortControlAction
+    Update-PortMonitor ($tabs.SelectedTab.Name -eq 'Ports')
+    if ($tabs.SelectedTab.Name -eq 'Ports' -and $script:portTopology.Layout.SelectedIndex -eq 0 -and $script:portTopology.Motion.Checked) {
+        $script:portTopology.MotionPhase=[single]($script:portTopology.MotionPhase+0.65)
+        $script:portTopology.Graph.Invalidate()
+    }
+})
 $timer=New-Object System.Windows.Forms.Timer
 $timer.Interval=100
 $timer.Add_Tick({
@@ -532,6 +547,13 @@ $timer.Add_Tick({
         }
     } elseif ($script:csrf -and $script:role -and [datetime]::Now -ge $script:nextNotifications) { Refresh-Notifications }
     elseif ($script:csrf -and $script:role -and [datetime]::Now -ge $script:nextRefresh) { Refresh-View }
+})
+$form.Add_FormClosing({
+    param($sender,$e)
+    if ($script:portTopology.ActionJob) {
+        $e.Cancel=$true
+        [void][System.Windows.Forms.MessageBox]::Show($form,'Tác vụ điều khiển PC chưa hoàn tất; kiểm tra trạng thái trước khi đóng.','Mita Japan','OK','Information')
+    }
 })
 $form.Add_FormClosed({
     $portTimer.Stop(); $portTimer.Dispose(); Close-PortMonitor
