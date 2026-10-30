@@ -17,7 +17,7 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
       <h2>Trạng thái</h2><p>{orderStatus[order.status] ?? order.status} · {paymentStatus[order.payment_status] ?? order.payment_status}</p>
       <h2>Người nhận</h2><dl><dt>Tên</dt><dd>{order.customer_name}</dd><dt>Điện thoại</dt><dd>{order.customer_phone}</dd><dt>Email</dt><dd>{order.customer_email ?? 'Không cung cấp'}</dd><dt>Địa chỉ</dt><dd>{order.customer_address}</dd></dl>
     </section>
-    <OrderWorkflow id={order.id} csrf={session.csrfToken} status={order.status} payment={order.payment_status}/>
+    {session.role === 'owner' ? <OrderWorkflow id={order.id} csrf={session.csrfToken} status={order.status} payment={order.payment_status}/> : <p className="admin-notice">Tài khoản nhân viên chỉ được xem; liên hệ owner để cập nhật đơn hàng.</p>}
     <section className="admin-panel">
       <h2>Tiền hàng đã chốt</h2>
       <p>Tỷ giá: {order.fx_jpy_to_vnd} VND/JPY · Phụ phí: {order.service_fee_percent}% · Chính sách giá: {order.pricing_policy_version ?? 'cũ'}</p>

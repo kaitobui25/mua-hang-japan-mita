@@ -14,4 +14,4 @@ export async function adminRead<T>(path: string): Promise<T> {
   if (!response.ok) throw new Error('Không tải được dữ liệu quản trị. Kiểm tra backend rồi thử lại.');
   return response.json() as Promise<T>;
 }
-export type AdminSession = { actorId: number; csrfToken: string; expiresAt: string };
+export type AdminSession = { actorId: number; role: 'owner' | 'staff'; csrfToken: string; expiresAt: string };

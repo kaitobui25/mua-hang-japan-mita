@@ -5,6 +5,6 @@ export default async function NotificationsPage() {
   const session = await adminRead<AdminSession>('session');
   return <>
     <header><p className="overline">Quản trị cửa hàng</p><h1>Thông báo đơn hàng</h1></header>
-    <OrderNotifications csrf={session.csrfToken}/>
+    <OrderNotifications csrf={session.csrfToken} canAcknowledge={session.role === 'owner'}/>
   </>;
 }
