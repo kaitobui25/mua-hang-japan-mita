@@ -1,6 +1,6 @@
 ﻿# Dot-sourced at script scope by mita-desktop.ps1. All event state lives in
 # $script:portTopology; handlers never capture Initialize-PortTab local variables.
-# Static display only: no timers, sockets, HTTP, commands or service controls.
+# Probe I/O runs only in mita-desktop-probes.ps1 on a separate runspace.
 function Initialize-PortTab($page) {
     $script:portTopology = @{ Nodes=@(); Edges=@(); Selected='pc-web'; Buttons=@{}; Items=@{}; Updating=$false }
     $t = $script:portTopology
@@ -25,7 +25,7 @@ function Initialize-PortTab($page) {
         @('neo','PC','9010','Neo','MCP / HTTP','Topology được duyệt cho tab Cổng','Hạ tầng chung / chỉ đọc',380,430)
     )
     foreach ($d in $definitions) {
-        $t.Nodes += [pscustomobject]@{ Id=$d[0]; Host=$d[1]; Port=$d[2]; Service=$d[3]; Protocol=$d[4]; Source=$d[5]; Group=$d[6]; X=[int]$d[7]; Y=[int]$d[8]; State='unknown'; LastProbed=$null }
+        $t.Nodes += [pscustomobject]@{ Id=$d[0]; Host=$d[1]; Port=$d[2]; Service=$d[3]; Protocol=$d[4]; Source=$d[5]; Group=$d[6]; X=[int]$d[7]; Y=[int]$d[8]; State='unknown'; LastProbed=$null; Reason='Chưa kiểm tra'; ProbeSource='Chưa có' }
     }
     # Kind expresses relationship semantics, not observed connectivity/traffic.
     foreach ($d in @(
@@ -56,10 +56,17 @@ function Initialize-PortTab($page) {
     $note = New-Object System.Windows.Forms.Label
     $note.Text='10 cổng Mita + hạ tầng chỉ đọc'; $note.AutoSize=$true; $note.Margin=New-Object System.Windows.Forms.Padding(12,5,0,0)
     $bar.Controls.Add($note)
+    $pollLabel=New-Object System.Windows.Forms.Label
+    $pollLabel.Text='Chu kỳ (giây):'; $pollLabel.AutoSize=$true; $bar.Controls.Add($pollLabel)
+    $t.Interval=New-Object System.Windows.Forms.NumericUpDown
+    $t.Interval.Minimum=15; $t.Interval.Maximum=300; $t.Interval.Value=15; $t.Interval.Width=60
+    $t.Interval.AccessibleName='Chu kỳ giám sát Cổng (giây)'; $bar.Controls.Add($t.Interval)
+    $t.NextPoll=[datetime]::MinValue; $t.Job=$null; $t.Closing=$false
+    $t.Interval.Add_ValueChanged({ $script:portTopology.NextPoll=[datetime]::Now.AddSeconds([double]$script:portTopology.Interval.Value) })
 
     $legend = New-Object System.Windows.Forms.Label
     $legend.Dock='Top'; $legend.Height=52; $legend.Padding=New-Object System.Windows.Forms.Padding(8,2,8,0)
-    $legend.Text="Sơ đồ quan hệ, không phải lưu lượng thực`r`nLiền → ứng dụng | Đứt → có điều kiện | Chấm → điều khiển/giám sát`r`nCấu hình/giao thức đã biết; chưa kiểm tra kết nối. Tab / phím mũi tên để chọn."
+    $legend.Text="Sơ đồ quan hệ, không phải lưu lượng thực | Chỉ giám sát khi tab Cổng mở`r`nLiền → ứng dụng | Đứt → có điều kiện | Chấm → điều khiển/giám sát`r`nOnline = listener + ứng dụng; Warning = chưa đủ bằng chứng; Idle = theo nhu cầu. Tab / mũi tên để chọn."
     $legend.Font=New-Object System.Drawing.Font('Consolas',9)
     $t.Detail = New-Object System.Windows.Forms.TextBox
     $t.Detail.Dock='Bottom'; $t.Detail.Height=148; $t.Detail.Multiline=$true; $t.Detail.ReadOnly=$true
@@ -118,22 +125,24 @@ function Initialize-PortTab($page) {
 
 function Get-PortStateText([string]$state) {
     switch ($state) {
-        'reachable' { 'Có phản hồi' }
-        'unreachable' { 'Không có phản hồi' }
-        'error' { 'Lỗi kiểm tra' }
-        default { 'Chưa kiểm tra' }
+        'online' { 'Online' }
+        'idle' { 'Idle' }
+        'offline' { 'Offline' }
+        'warning' { 'Warning' }
+        default { 'Unknown' }
     }
 }
 
-# Future read-only monitoring calls this on the UI thread with an actual probe
+# Read-only monitoring calls this on the UI thread with an actual probe
 # timestamp. This function itself performs no I/O and never invents a probe time.
 function Set-PortStatus {
-    param([string]$Id, [ValidateSet('unknown','reachable','unreachable','error')][string]$State='unknown', [Nullable[datetime]]$LastProbed=$null)
+    param([string]$Id, [ValidateSet('unknown','online','idle','offline','warning')][string]$State='unknown', [Nullable[datetime]]$LastProbed=$null,
+        [string]$Reason='Chưa kiểm tra', [string]$ProbeSource='Chưa có', [switch]$DeferRefresh)
     $node=$script:portTopology.Nodes | Where-Object { $_.Id -eq $Id } | Select-Object -First 1
     if (!$node) { throw "Unknown topology node: $Id" }
     if ($State -ne 'unknown' -and $null -eq $LastProbed) { throw 'A checked state requires LastProbed.' }
-    $node.State=$State; $node.LastProbed=$LastProbed
-    Refresh-PortTopology
+    $node.State=$State; $node.LastProbed=$LastProbed; $node.Reason=$Reason; $node.ProbeSource=$ProbeSource
+    if (!$DeferRefresh) { Refresh-PortTopology }
 }
 
 function Refresh-PortTopology {
@@ -169,7 +178,7 @@ function Select-PortNode([string]$Id) {
     } finally { $t.Updating=$false }
     $last=if ($null -eq $node.LastProbed) { 'Chưa kiểm tra' } else { ([datetime]$node.LastProbed).ToString('yyyy-MM-dd HH:mm:ss K') }
     $lines=@("$($node.Host) | $($node.Service) | Cổng: $($node.Port) | $(Get-PortStateText $node.State)",
-        "Kiểm tra gần nhất: $last", "Giao thức: $($node.Protocol)", "Nguồn tĩnh: $($node.Source)", "Nhóm: $($node.Group)")
+        "Kiểm tra gần nhất: $last", "Lý do: $($node.Reason)", "Nguồn probe: $($node.ProbeSource)", "Giao thức: $($node.Protocol)", "Nguồn tĩnh: $($node.Source)", "Nhóm: $($node.Group)")
     foreach ($edge in $relations) {
         $from=$t.Nodes | Where-Object { $_.Id -eq $edge.From } | Select-Object -First 1
         $to=$t.Nodes | Where-Object { $_.Id -eq $edge.To } | Select-Object -First 1
@@ -179,6 +188,56 @@ function Select-PortNode([string]$Id) {
     if (!$relations.Count) { $lines += 'Hạ tầng chung chỉ đọc; không suy diễn thêm quan hệ ứng dụng.' }
     $t.Detail.Text=$lines -join "`r`n"
     $t.Graph.Invalidate()
+}
+
+# UI timer only inspects completion; never waits for network, native processes or
+# runspace Stop/Dispose. One job at a time, even after a watchdog cancellation.
+function Update-PortMonitor([bool]$Active) {
+    $t=$script:portTopology
+    if ($t.Closing) { return }
+    if ($t.Job) {
+        $job=$t.Job
+        if ($job.Handle.IsCompleted -and (!$job.StopHandle -or $job.StopHandle.IsCompleted)) {
+            try {
+                if ($job.StopHandle) { $job.PowerShell.EndStop($job.StopHandle) }
+                $results=$job.PowerShell.EndInvoke($job.Handle)
+                if (!$job.Cancelled) {
+                    foreach ($r in $results) { Set-PortStatus -Id $r.Id -State $r.State -LastProbed $r.LastProbed -Reason $r.Reason -ProbeSource $r.ProbeSource -DeferRefresh }
+                }
+            } catch {
+                foreach ($node in $t.Nodes) { Set-PortStatus $node.Id unknown $null 'Probe không hoàn tất; chưa xác định.' 'Dedicated monitoring runspace' -DeferRefresh }
+            } finally {
+                $job.PowerShell.Dispose(); $t.Job=$null
+            }
+            Refresh-PortTopology
+        } elseif (!$job.Cancelled -and [datetime]::Now -ge $job.Deadline) {
+            $job.Cancelled=$true
+            $job.StopHandle=$job.PowerShell.BeginStop($null,$null)
+            foreach ($node in $t.Nodes) { Set-PortStatus $node.Id unknown $node.LastProbed 'Quá hạn probe; chờ worker kết thúc, không chạy chồng.' 'Runspace watchdog (30s)' -DeferRefresh }
+            Refresh-PortTopology
+        }
+    }
+    if (!$Active -or $t.Job -or [datetime]::Now -lt $t.NextPoll) { return }
+    $t.NextPoll=[datetime]::Now.AddSeconds([double]$t.Interval.Value)
+    $ps=[powershell]::Create()
+    try {
+        $null=$ps.AddScript('param($file); . $file; Invoke-PortProbes').AddArgument((Join-Path $PSScriptRoot 'mita-desktop-probes.ps1'))
+        $handle=$ps.BeginInvoke()
+        $t.Job=@{ PowerShell=$ps; Handle=$handle; StopHandle=$null; Cancelled=$false; Deadline=[datetime]::Now.AddSeconds(30) }
+    } catch {
+        $ps.Dispose()
+        foreach ($node in $t.Nodes) { Set-PortStatus $node.Id unknown $null 'Không tạo được worker an toàn.' 'Dedicated monitoring runspace' -DeferRefresh }
+        Refresh-PortTopology
+    }
+}
+
+function Close-PortMonitor {
+    $t=$script:portTopology; $t.Closing=$true
+    if ($t.Job -and !$t.Job.Cancelled) {
+        $t.Job.Cancelled=$true
+        $t.Job.StopHandle=$t.Job.PowerShell.BeginStop($null,$null)
+    }
+    # Do not synchronously Dispose a running pipeline during form shutdown.
 }
 
 function Draw-PortTopology($graphics) {

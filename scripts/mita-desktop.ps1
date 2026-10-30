@@ -494,6 +494,10 @@ function Refresh-Notifications {
 }
 Update-WriteControls
 $tabs.Add_SelectedIndexChanged({ Refresh-View })
+# Independent of the authenticated API timer and its pending request/early returns.
+$portTimer=New-Object System.Windows.Forms.Timer
+$portTimer.Interval=250
+$portTimer.Add_Tick({ Update-PortMonitor ($tabs.SelectedTab.Name -eq 'Ports') })
 $timer=New-Object System.Windows.Forms.Timer
 $timer.Interval=100
 $timer.Add_Tick({
@@ -530,9 +534,11 @@ $timer.Add_Tick({
     elseif ($script:csrf -and $script:role -and [datetime]::Now -ge $script:nextRefresh) { Refresh-View }
 })
 $form.Add_FormClosed({
+    $portTimer.Stop(); $portTimer.Dispose(); Close-PortMonitor
     $timer.Stop(); $timer.Dispose()
     $script:client.CancelPendingRequests(); $script:client.Dispose()
     $password.Clear(); $script:csrf=$null
 })
 $timer.Start()
+$portTimer.Start()
 [System.Windows.Forms.Application]::Run($form)
