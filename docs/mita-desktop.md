@@ -7,11 +7,15 @@ by the desktop client. The launcher uses a process-local execution policy bypass
 it does not change machine policy. Organization policy may still block it.
 
 The existing backend must already be running at `http://127.0.0.1:4000` with its
-owner account configured. Enter that owner's password and click **Owner login**.
+owner account configured. Leave the username blank for the owner, or enter a
+staff username when the backend supports it, then click **Đăng nhập**. The
+client reads the role from `/session`; staff can view data but cannot use owner
+write controls.
 The desktop never starts/restarts the backend, database, gateway or workers.
 Closing the window leaves existing processes alone.
 
-Authentication uses `POST /api/admin/login` with `{password}`, the backend's
+Authentication uses `POST /api/admin/login` with `{password}` for the owner or
+`{username,password}` for staff, the backend's
 `mita_admin` cookie in an in-memory CookieContainer, and the returned CSRF token
 in `X-CSRF-Token`. Every request sends `Origin: http://127.0.0.1:4000`.
 Redirects and proxies are disabled. There is no configurable remote API and no
@@ -21,12 +25,20 @@ exist temporarily in process memory; .NET strings cannot be reliably zeroed.
 Use **Logout** to revoke the server session. Closing discards local credentials;
 the server session expires according to the existing backend's eight-hour policy.
 
-- **Overview:** authenticated `/overview` snapshot, including sync warnings.
-- **Notifications:** owner-only unread order notifications from local and (if
-  explicitly configured) VPS sources, 30-second refresh while selected, with
+- **Overview:** authenticated `/overview` snapshot with unread alerts and recent
+  orders alongside sync and relay status. Pending, processing and merchandise
+  value tiles are calculated from the returned recent orders (up to five), not
+  from all orders. Processing includes confirmed, purchasing, purchased and
+  shipping states. A `+` on the unread count means the VPS relay is unavailable
+  and its count is unknown. At narrower window sizes the tiles and panels stack;
+  scroll the overview to reach the lower panel.
+- **Notifications:** unread order notifications from local and (if
+  explicitly configured) VPS sources, refreshed independently of the selected tab, with
   source identifiers and a confirmed `Đã xem` acknowledgement via the same
-  Admin API. VPS notifications contain metadata only and cannot open private
-  remote order details from the local Orders tab.
+  Admin API. The authenticated VPS relay includes the customer's name and
+  locked merchandise amount in VND (shipping excluded), but never phone,
+  email or address; private remote order details cannot be opened from
+  the local Orders tab.
 - **Orders:** paged `/orders`, search by ID/phone, and single order state changes.
   Before each write the client fetches `/orders/:id`, checks the allowed transition
   and payment prerequisite, then asks for confirmation showing the origin and
@@ -35,7 +47,9 @@ the server session expires according to the existing backend's eight-hour policy
   An exact ASIN is re-fetched before confirming and PATCHing visibility.
 - **Pricing:** `/pricing` view and editable JPY/VND rate (four decimals), service
   fee (two decimals). Saving re-fetches the current policy and rejects a changed
-  version. The PUT includes the original version for backend optimistic locking.
+  version. The PUT includes the original version and the current expiry policy
+  for backend optimistic locking. Refresh preserves edited inputs; **Bỏ bản
+  nháp** discards them and reloads the policy.
 - **Workers:** read-only current JST day's `.agents/runtime/mita-daily-YYYY-MM-DD.json`
   snapshot with modification time, job states and sync state. Missing/malformed
   status is shown as unavailable. A snapshot is not a process health check.
@@ -44,8 +58,9 @@ the server session expires according to the existing backend's eight-hour policy
   Overview exposes existing authenticated sync diagnostics on screen only.
 
 Refresh reloads the selected tab; automatic refresh runs every 30 seconds while
-authenticated. Pricing inputs are replaced by authoritative values on refresh;
-save edits before that interval. HTTP tasks are asynchronous and polled by a
+authenticated. Notifications have a separate interval, defaulting to 30 seconds
+and adjustable from 10 to 300 seconds for the current process only. A `+` in the
+count means the VPS is unavailable and its unread count is unknown. HTTP tasks are asynchronous and polled by a
 WinForms timer, with a 12-second timeout and one request at a time. Controls are
 disabled while requests run. Confirmation defaults to No. Failed writes are never
 automatically retried; after a timeout, re-fetch before deciding whether to retry.
@@ -54,7 +69,7 @@ have a visible recovery message. There is no persistent local cache or second DB
 
 This is the bounded desktop implementation of plan 13 / ADR 0017. Payment/refund
 and shipping-fee edits, imports, catalog/translation settings, OS push
-notifications, employee roles and external Zalo/Facebook push are not implemented
+notifications, staff account management and external Zalo/Facebook push are not implemented
 here. Durable order alerts and acknowledgement work only when the connected
 Admin API can read the correct local or configured VPS source. See
 `docs/order-alert-relay.md` for optional VPS configuration.
