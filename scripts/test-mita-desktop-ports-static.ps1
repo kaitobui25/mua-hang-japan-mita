@@ -43,4 +43,12 @@ Assert-Static ($control.Contains('Get-OwnedNode') -and $control.Contains('StartT
 Assert-Static ($control.Contains('mita-port-control-audit.jsonl') -and $control.Contains('Set-Content -LiteralPath $stopPath')) 'Missing audit or cooperative stop'
 Assert-Static (!$control.Contains('Stop-Process') -and $control.Contains('worker|translator|detail-translator')) 'No kill rollback or gateway shutdown with active workers'
 Assert-Static (!$control.Contains('Stop-Service') -and !$control.Contains('Invoke-Expression') -and !$control.Contains('Start-Job')) 'Forbidden generic control surface'
+Assert-Static ($ui.Contains("'pc-api'") -and $ui.Contains('Update-BackendControlAvailability') -and $ui.Contains('Request-BackendAction') -and $ui.Contains('Update-BackendAction')) 'Backend 4000 detail controls missing'
+foreach ($marker in @('BackendStart','BackendStop','BackendRestart','BackendMode','-OnlyIfSessionOwned','InstallDependenciesConfirmed','AddScript(','Button2')) {
+    Assert-Static ($ui.Contains($marker)) "Backend UI authorization/confirmation/asynchronous contract missing: $marker"
+}
+Assert-Static ($app.Contains('$script:backendDesktopSession = [guid]::NewGuid()') -and $app.Contains('Request-BackendAction stop -OnClose')) 'Backend close must be guarded by current desktop session'
+Assert-Static ($app.Contains('Update-BackendAction') -and $app.Contains('Update-PortMonitor')) 'Backend job completion must have independent UI polling'
+Assert-Static ($ui.Contains('$package.dependencies.PSObject.Properties.Name') -and
+    $ui.Contains('$package.devDependencies.PSObject.Properties.Name')) 'Missing complete backend dependency-install consent preflight'
 Write-Output "PASS: PS $($PSVersionTable.PSVersion) parser/static monitoring contracts; no app or probes executed."

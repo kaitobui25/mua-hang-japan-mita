@@ -8,6 +8,7 @@ Add-Type -AssemblyName System.Data
 [System.Windows.Forms.Application]::EnableVisualStyles()
 $script:origin = 'http://127.0.0.1:4000'
 $script:root = Split-Path $PSScriptRoot -Parent
+$script:backendDesktopSession = [guid]::NewGuid().ToString('N')
 $script:csrf = $null
 $script:pending = $null
 $script:nextRefresh = [datetime]::Now
@@ -342,6 +343,7 @@ $interval.Add_ValueChanged({ $script:nextNotifications=[datetime]::Now.AddSecond
 function Update-WriteControls {
     foreach ($control in @($ackButton,$orderButton,$productButton,$priceButton,$fx,$fee)) { $control.Enabled = ($script:role -eq 'owner') }
     Update-PortControlAvailability
+    Update-BackendControlAvailability
 }
 function Set-Status([string]$message) { $status.Text = $message }
 function Clear-Session {
@@ -507,6 +509,7 @@ $portTimer=New-Object System.Windows.Forms.Timer
 $portTimer.Interval=250
 $portTimer.Add_Tick({
     Update-PortControlAction
+    Update-BackendAction
     Update-PortMonitor ($tabs.SelectedTab.Name -eq 'Ports')
     if ($tabs.SelectedTab.Name -eq 'Ports' -and $script:portTopology.Layout.SelectedIndex -eq 0 -and $script:portTopology.Motion.Checked) {
         $script:portTopology.MotionPhase=[single]($script:portTopology.MotionPhase+0.65)
@@ -550,6 +553,17 @@ $timer.Add_Tick({
 })
 $form.Add_FormClosing({
     param($sender,$e)
+    if ($script:portTopology.BackendJob) {
+        $e.Cancel=$true
+        Set-Status 'Đang xử lý backend 4000; hoàn tất thao tác trước khi đóng cửa sổ.'
+        return
+    }
+    if ($script:portTopology.BackendSession) {
+        $e.Cancel=$true
+        $script:portTopology.BackendClosing=$true
+        Request-BackendAction stop -OnClose
+        return
+    }
     if ($script:portTopology.ActionJob) {
         $e.Cancel=$true
         [void][System.Windows.Forms.MessageBox]::Show($form,'Tác vụ điều khiển PC chưa hoàn tất; kiểm tra trạng thái trước khi đóng.','Mita Japan','OK','Information')

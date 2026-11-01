@@ -7,7 +7,7 @@ function Initialize-PortTab($page) {
     # ID, host, port, service, protocol, source, group, graph X/Y.
     $definitions = @(
         @('pc-web','PC','3000','Web','HTTP','scripts/start-local.ps1','PC / Mita',20,40),
-        @('pc-api','PC','4000','API','HTTP','scripts/start-local.ps1','PC / Mita',200,40),
+        @('pc-api','PC','4000','API','HTTP','scripts/mita-backend-control.ps1','PC / Mita',200,40),
         @('pc-db','PC','5433','PostgreSQL Mita','PostgreSQL / TCP','scripts/start-local.ps1','PC / Mita',380,40),
         @('supervisor','PC','19978','Supervisor','TCP status; không phải HTTP','scripts/start-mita-supervisor.ps1','PC / Mita',20,170),
         @('gateway','PC','8080','Gateway','HTTP','docs/mita-workers-runbook.md','PC / Mita',380,170),
@@ -67,6 +67,7 @@ function Initialize-PortTab($page) {
     $t.Motion.AccessibleName='Bật hoặc tắt hoạt ảnh minh họa quan hệ kết nối'
     $bar.Controls.Add($t.Motion); $t.MotionPhase=[single]0
     $t.NextPoll=[datetime]::MinValue; $t.Job=$null; $t.Closing=$false
+    $t.BackendJob=$null; $t.BackendSession=$null; $t.BackendClosing=$false
     $t.Interval.Add_ValueChanged({ $script:portTopology.NextPoll=[datetime]::Now.AddSeconds([double]$script:portTopology.Interval.Value) })
     $t.Control=New-Object System.Windows.Forms.Button
     $t.Control.Text='Điều khiển PC'; $t.Control.AutoSize=$true; $t.Control.Enabled=$false
@@ -109,6 +110,48 @@ function Initialize-PortTab($page) {
     $t.Detail.Dock='Bottom'; $t.Detail.Height=148; $t.Detail.Multiline=$true; $t.Detail.ReadOnly=$true
     $t.Detail.ScrollBars='Vertical'; $t.Detail.BackColor=[System.Drawing.Color]::Black; $t.Detail.ForeColor=[System.Drawing.Color]::White
     $t.Detail.AccessibleName='Chi tiết cổng và quan hệ'; $t.Detail.TabIndex=2
+    # Both layouts share this control strip; merely choosing a node changes nothing.
+    $t.BackendBar=New-Object System.Windows.Forms.FlowLayoutPanel
+    $t.BackendBar.Dock='Bottom'; $t.BackendBar.Height=48
+    $t.BackendBar.Padding=New-Object System.Windows.Forms.Padding(6,4,4,4)
+    $t.BackendBar.BackColor=[System.Drawing.Color]::Black
+    $t.BackendBar.Visible=$false
+    $modeLabel=New-Object System.Windows.Forms.Label
+    $modeLabel.Text='Backend 4000:'; $modeLabel.AutoSize=$true
+    $modeLabel.ForeColor=[System.Drawing.Color]::White
+    $modeLabel.Margin=New-Object System.Windows.Forms.Padding(3,10,5,0)
+    $t.BackendBar.Controls.Add($modeLabel)
+    $t.BackendMode=New-Object System.Windows.Forms.ComboBox
+    $t.BackendMode.DropDownStyle='DropDownList'; $t.BackendMode.Width=125
+    $t.BackendMode.AccessibleName='Chế độ backend 4000'
+    $t.BackendMode.Items.AddRange([object[]]@('Dev','Start'))
+    $t.BackendMode.SelectedIndex=0
+    $t.BackendBar.Controls.Add($t.BackendMode)
+    foreach ($entry in @(@('Start','Chạy'),@('Stop','Dừng'),@('Restart','Restart'))) {
+        $button=New-Object System.Windows.Forms.Button
+        $button.Name='Backend'+$entry[0]
+        $button.Text=$entry[1]; $button.Width=88; $button.Height=30
+        $button.FlatStyle='Flat'; $button.BackColor=[System.Drawing.Color]::Black
+        $button.ForeColor=[System.Drawing.Color]::White
+        $button.FlatAppearance.BorderColor=[System.Drawing.Color]::DimGray
+        # System disabled-button text is nearly black on the monochrome black
+        # background. Paint a readable silver caption without enabling action.
+        $button.Add_Paint({
+            param($sender,$e)
+            if (!$sender.Enabled) {
+                $flags=[System.Windows.Forms.TextFormatFlags]::HorizontalCenter -bor
+                    [System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor
+                    [System.Windows.Forms.TextFormatFlags]::SingleLine
+                [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics,$sender.Text,$sender.Font,
+                    $sender.ClientRectangle,[System.Drawing.Color]::Silver,$flags)
+            }
+        })
+        $button.Tag=$entry[0].ToLowerInvariant()
+        $button.AccessibleName="$($entry[1]) backend Mita 4000"
+        $button.Add_Click({param($sender,$e) Request-BackendAction ([string]$sender.Tag)})
+        $t.BackendBar.Controls.Add($button)
+        $t['Backend'+$entry[0]]=$button
+    }
     $t.Body = New-Object System.Windows.Forms.Panel
     $t.Body.Dock='Fill'; $t.Body.TabIndex=1
     $t.Scroll = New-Object System.Windows.Forms.Panel
@@ -163,7 +206,7 @@ function Initialize-PortTab($page) {
         Select-PortNode $state.Selected
     })
     $t.Body.Controls.Add($t.Scroll); $t.Body.Controls.Add($t.List)
-    $page.Controls.Add($t.Body); $page.Controls.Add($t.Detail); $page.Controls.Add($legend); $page.Controls.Add($bar)
+    $page.Controls.Add($t.Body); $page.Controls.Add($t.Detail); $page.Controls.Add($t.BackendBar); $page.Controls.Add($legend); $page.Controls.Add($bar)
     # Explicit z-order keeps docked header/detail outside the scrollable canvas.
     $t.Body.BringToFront(); $t.Detail.SendToBack(); $legend.SendToBack(); $bar.SendToBack()
     Refresh-PortTopology
@@ -236,6 +279,127 @@ function Select-PortNode([string]$Id) {
     $t.Detail.Text=$lines -join "`r`n"
     $t.Graph.Invalidate()
     Update-PortControlAvailability
+    Update-BackendControlAvailability
+}
+
+function Update-BackendControlAvailability {
+    $t=$script:portTopology
+    if (!$t -or !$t.BackendBar) { return }
+    $selected=$t.Selected -eq 'pc-api'
+    $t.BackendBar.Visible=$selected
+    if (!$selected) { return }
+    $api=@($t.Nodes | Where-Object Id -eq 'pc-api')[0]
+    $busy=[bool]$t.BackendJob -or [bool]$t.BackendClosing
+    $t.BackendStart.Text=if ($api.State -eq 'online' -or $t.BackendSession) { 'Đang chạy' } else { 'Chạy' }
+    # Mode can be changed for the next Restart; it never changes a running job.
+    $t.BackendMode.Enabled=(!$busy)
+    $t.BackendStart.Enabled=(!$busy -and !$t.BackendSession -and $api.State -eq 'offline')
+    $owned=[bool]$t.BackendSession
+    $t.BackendStop.Enabled=(!$busy -and $owned)
+    $t.BackendRestart.Enabled=(!$busy -and $owned)
+}
+
+# Local bootstrap is intentionally independent of the Admin API: when 4000 is
+# down, /session is unreachable. Staff is allowed to request this Windows-local
+# operation; API write permissions remain unchanged.
+function Request-BackendAction([ValidateSet('start','stop','restart')][string]$Action,[switch]$OnClose) {
+    $t=$script:portTopology
+    if ($t.BackendJob -or (!$OnClose -and $t.Selected -ne 'pc-api')) { return }
+    if ($Action -in @('stop','restart') -and !$t.BackendSession) { return }
+    if ($Action -eq 'start' -and $t.BackendSession) { return }
+    $mode=if ($t.BackendMode.SelectedIndex -eq 0) { 'Dev' } else { 'Start' }
+    $install=$false
+    if (!$OnClose) {
+        $description=switch ($Action) {
+            'start' { "Chạy backend Mita trên PC, mode $mode, cổng 4000." }
+            'stop' { 'Dừng an toàn backend do cửa sổ này khởi động; không dừng PostgreSQL 5433.' }
+            'restart' { "Khởi động lại backend do cửa sổ này quản lý ở mode $mode. Kết nối quản trị có thể gián đoạn." }
+        }
+        $timer.Stop(); $portTimer.Stop()
+        try {
+            $yes=[System.Windows.Forms.MessageBox]::Show($form,
+                "$description"+[Environment]::NewLine+'Thao tác chỉ ảnh hưởng backend local, không tác động VPS/worker.',
+                'Xác nhận backend Mita 4000','YesNo','Warning','Button2')
+            if ($yes -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+            # Match the helper's full direct-dependency check. Missing a package
+            # other than fastify/tsx must still trigger explicit install consent.
+            $missingDeps=$false
+            if ($Action -in @('start','restart')) {
+                $backend=Join-Path $script:root 'backend'
+                $package=Get-Content -LiteralPath (Join-Path $backend 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+                $missingDeps=!(Test-Path -LiteralPath (Join-Path $backend 'node_modules/.bin/tsx.cmd'))
+                foreach ($dependency in @(@($package.dependencies.PSObject.Properties.Name)+@($package.devDependencies.PSObject.Properties.Name))) {
+                    if (!(Test-Path -LiteralPath (Join-Path $backend ('node_modules/'+$dependency+'/package.json')))) {
+                        $missingDeps=$true; break
+                    }
+                }
+            }
+            if ($missingDeps) {
+                $answer=[System.Windows.Forms.MessageBox]::Show($form,
+                    'Thiếu dependencies backend. Cho phép chạy npm install trong thư mục backend? Không thực hiện migration.',
+                    'Xác nhận cài dependencies','YesNo','Warning','Button2')
+                if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+                $install=$true
+            }
+        } finally { $timer.Start(); $portTimer.Start() }
+    }
+    $ps=[powershell]::Create()
+    try {
+        $helper=Join-Path $PSScriptRoot 'mita-backend-control.ps1'
+        $null=$ps.AddScript('param($file,$action,$mode,$session,$install); & $file -Action $action -Mode $mode -SessionId $session -OnlyIfSessionOwned -InstallDependenciesConfirmed:$install').
+            AddArgument($helper).AddArgument($Action).AddArgument($mode).
+            AddArgument($script:backendDesktopSession).AddArgument($install)
+        $handle=$ps.BeginInvoke()
+        $t.BackendJob=@{ PowerShell=$ps; Handle=$handle; Action=$Action; Closing=[bool]$OnClose }
+        Set-Status "Backend 4000: đang $Action (mode $mode); chờ xác minh."
+        $script:views.Logs.AppendText("$([datetime]::Now.ToString('s')) Backend 4000 $Action requested ($mode); pending verification."+[Environment]::NewLine)
+    } catch {
+        $ps.Dispose()
+        $t.BackendClosing=$false
+        Set-Status 'Không thể tạo tiến trình điều khiển backend 4000.'
+    }
+    Update-BackendControlAvailability
+}
+
+function Update-BackendAction {
+    $t=$script:portTopology
+    if (!$t.BackendJob -or !$t.BackendJob.Handle.IsCompleted) { return }
+    $job=$t.BackendJob
+    $success=$false; $message=''
+    try {
+        $results=@($job.PowerShell.EndInvoke($job.Handle))
+        if ($job.PowerShell.HadErrors -or $job.PowerShell.Streams.Error.Count) {
+            throw ([string]$job.PowerShell.Streams.Error[0])
+        }
+        if ($job.Action -eq 'stop') {
+            $t.BackendSession=$null
+            $message='Backend 4000: yêu cầu dừng hoàn tất; đang làm mới health.'
+        } elseif ($results.Count -and $results[-1].State -in @('ready','already-running')) {
+            $result=$results[-1]
+            if ($result.Owner.SessionId -cne $script:backendDesktopSession) {
+                throw 'Backend thuộc phiên khác; không nhận quyền dừng.'
+            }
+            $t.BackendSession=$result.Owner
+            $message="Backend 4000: $($result.State); đang làm mới health."
+        } else { throw 'Backend chưa được xác minh sẵn sàng.' }
+        $success=$true
+    } catch {
+        $message='Backend 4000 thất bại hoặc không xác minh được. Xem log .agents/runtime/backend-4000; không kill tiến trình lạ.'
+    } finally {
+        $job.PowerShell.Dispose()
+        $t.BackendJob=$null; $t.BackendClosing=$false
+        $t.NextPoll=[datetime]::MinValue
+    }
+    Set-Status $message
+    $auditResult=if ($success) { 'completed' } else { 'not verified; inspect local audit' }
+    $script:views.Logs.AppendText("$([datetime]::Now.ToString('s')) Backend 4000 $($job.Action) $auditResult."+[Environment]::NewLine)
+    Update-BackendControlAvailability
+    if ($job.Closing -and $success) { $form.BeginInvoke([Action]{ $form.Close() }) | Out-Null }
+    elseif ($job.Closing) {
+        [void][System.Windows.Forms.MessageBox]::Show($form,
+            'Không xác nhận được backend đã dừng an toàn. Cửa sổ vẫn mở để bạn kiểm tra log và thử lại.',
+            'Mita Japan','OK','Warning')
+    }
 }
 
 function Update-PortControlAvailability {

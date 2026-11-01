@@ -6,15 +6,17 @@ background and white Consolas text. No Node, browser, or PowerShell 7 is require
 by the desktop client. The launcher uses a process-local execution policy bypass;
 it does not change machine policy. Organization policy may still block it.
 
-The existing backend must already be running at `http://127.0.0.1:4000` with its
-owner account configured. Leave the username blank for the owner, or enter a
-staff username when the backend supports it, then click **Đăng nhập**. The
-client reads the role from `/session`; staff can view data but cannot use owner
-write controls.
-The desktop does not start/restart the backend or database. The **Cổng** tab
-can request a start or cooperative stop of two verified Mita-owned PC services
-(gateway and supervisor), only for a freshly authenticated **owner**. Closing
-the window does not stop services; an in-flight control must finish first.
+To log in, the backend must be running at `http://127.0.0.1:4000` with its
+owner account configured. If it is offline, select PC API `4000` in **Cổng**
+and explicitly confirm **Chạy** (Dev or Start); opening Desktop never starts
+the backend by itself. Leave the username blank for the owner, or enter a staff
+username when supported, then click **Đăng nhập**. The client reads the role
+from `/session`; staff can view data but cannot use owner write controls.
+The **Cổng** tab also allows a freshly authenticated owner to request a start
+or cooperative stop of verified Mita PC gateway and supervisor. Those services
+are independent of backend 4000. Closing Desktop attempts to stop only backend
+4000 launched by this exact Desktop session, never another instance or the DB;
+in-flight controls must finish first.
 
 Authentication uses `POST /api/admin/login` with `{password}` for the owner or
 `{username,password}` for staff, the backend's
@@ -74,14 +76,25 @@ the server session expires according to the existing backend's eight-hour policy
   refused while supervisor or known workers are active. Audit outcomes are
   written without credentials to
   `.agents/runtime/mita-port-control-audit.jsonl`. The UI never claims an
-  immediate change before a follow-up probe. PC API `4000`, PostgreSQL,
-  temporary sync tunnel `15432`, VPS web/API and shared infrastructure are
-  **monitoring only**, without buttons to terminate those services.
-  When local API `4000` is unavailable, port monitoring still works, but
-  owner controls are disabled because the application cannot securely refresh
-  the owner session. Start the existing backend separately from `backend`
-  with `npm run dev`, then log in. No unauthenticated local-control fallback
-  is provided.
+  immediate change before a follow-up probe. PostgreSQL, temporary sync tunnel
+  `15432`, VPS web/API and shared infrastructure remain **monitoring only**.
+  Selecting PC API `4000` in either layout also reveals **Dev / Start**, **Chạy**,
+  **Dừng**, and **Restart** in that node's detail area. This Windows-local control
+  is independent of Admin login: Owner and Staff may start the local backend,
+  without gaining any additional API permissions. Nothing starts on Desktop open.
+  Each interactive action requires confirmation (default No). Missing backend
+  dependencies require a second explicit confirmation before `npm install`.
+  Dev runs `npm run dev` (tsx watch); Start runs `npm run start` (tsx).
+  PostgreSQL 5433 is started only if an existing Mita local cluster is present
+  and inactive; it is never initialized, migrated, reset or stopped by this UI.
+  The new backend is verified with `/api/health` and launch ownership, with a
+  30-second readiness window after preflight. Only the creating Desktop session
+  can Stop/Restart it; Desktop close attempts to stop only its own instance.
+  Unknown port-4000 listeners are never adopted or killed. UI status, session
+  log and `.agents/runtime/backend-4000/audit.jsonl` show the outcomes. See
+  `docs/backend-4000-lifecycle.md` for containment and failure behavior.
+  If API `4000` is unavailable, Cổng monitoring still works; old 8080/19978
+  Owner controls remain disabled until `/session` can be revalidated.
 - **Logs:** session-only accepted-write activity. No raw worker logs, arbitrary
   server response bodies, customer records, passwords or session values are logged.
   Overview exposes existing authenticated sync diagnostics on screen only.
