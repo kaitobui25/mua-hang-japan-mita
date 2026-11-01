@@ -66,8 +66,17 @@ function Initialize-PortTab($page) {
     $t.Motion.BackColor=[System.Drawing.Color]::Black; $t.Motion.ForeColor=[System.Drawing.Color]::White
     $t.Motion.AccessibleName='Bật hoặc tắt hoạt ảnh minh họa quan hệ kết nối'
     $bar.Controls.Add($t.Motion); $t.MotionPhase=[single]0
+    $t.DetailToggle=New-Object System.Windows.Forms.Button
+    $t.DetailToggle.Text='Chi tiết >'; $t.DetailToggle.Width=108; $t.DetailToggle.Height=28
+    $t.DetailToggle.FlatStyle='Flat'; $t.DetailToggle.BackColor=[System.Drawing.Color]::Black
+    $t.DetailToggle.ForeColor=[System.Drawing.Color]::White
+    $t.DetailToggle.AccessibleName='Mở hoặc thu gọn chi tiết node'
+    $t.DetailToggle.Add_Click({ Set-PortDetailsVisible ([bool]$script:portTopology.Split.Panel2Collapsed) })
+    $bar.Controls.Add($t.DetailToggle)
     $t.NextPoll=[datetime]::MinValue; $t.Job=$null; $t.Closing=$false
     $t.BackendJob=$null; $t.BackendSession=$null; $t.BackendClosing=$false
+    $t.TunnelJob=$null; $t.TunnelSession=$null; $t.TunnelClosing=$false
+    $t.SyncJob=$null
     $t.Interval.Add_ValueChanged({ $script:portTopology.NextPoll=[datetime]::Now.AddSeconds([double]$script:portTopology.Interval.Value) })
     $t.Control=New-Object System.Windows.Forms.Button
     $t.Control.Text='Điều khiển PC'; $t.Control.AutoSize=$true; $t.Control.Enabled=$false
@@ -101,13 +110,8 @@ function Initialize-PortTab($page) {
         }
     })
 
-    $legend = New-Object System.Windows.Forms.Label
-    $legend.Dock='Top'; $legend.Height=52; $legend.Padding=New-Object System.Windows.Forms.Padding(8,2,8,0)
-    $legend.BackColor=[System.Drawing.Color]::Black; $legend.ForeColor=[System.Drawing.Color]::Silver
-    $legend.Text="Sơ đồ quan hệ, không phải lưu lượng thực | Chỉ giám sát khi tab Cổng mở`r`nLiền → ứng dụng | Đứt → có điều kiện | Chấm → điều khiển/giám sát`r`nOnline = listener + ứng dụng; Warning = chưa đủ bằng chứng; Idle = theo nhu cầu. Tab / mũi tên để chọn."
-    $legend.Font=New-Object System.Drawing.Font('Consolas',9)
     $t.Detail = New-Object System.Windows.Forms.TextBox
-    $t.Detail.Dock='Bottom'; $t.Detail.Height=148; $t.Detail.Multiline=$true; $t.Detail.ReadOnly=$true
+    $t.Detail.Dock='Fill'; $t.Detail.Multiline=$true; $t.Detail.ReadOnly=$true
     $t.Detail.ScrollBars='Vertical'; $t.Detail.BackColor=[System.Drawing.Color]::Black; $t.Detail.ForeColor=[System.Drawing.Color]::White
     $t.Detail.AccessibleName='Chi tiết cổng và quan hệ'; $t.Detail.TabIndex=2
     # Both layouts share this control strip; merely choosing a node changes nothing.
@@ -152,8 +156,56 @@ function Initialize-PortTab($page) {
         $t.BackendBar.Controls.Add($button)
         $t['Backend'+$entry[0]]=$button
     }
+    $t.TunnelBar=New-Object System.Windows.Forms.FlowLayoutPanel
+    $t.TunnelBar.Dock='Bottom'; $t.TunnelBar.Height=44
+    $t.TunnelBar.BackColor=[System.Drawing.Color]::Black
+    $t.TunnelBar.Padding=New-Object System.Windows.Forms.Padding(6,4,4,4)
+    $t.TunnelBar.Visible=$false
+    $t.TunnelHint=New-Object System.Windows.Forms.Label
+    $t.TunnelHint.Text='Tunnel chẩn đoán (5 phút)'; $t.TunnelHint.AutoSize=$true
+    $t.TunnelHint.ForeColor=[System.Drawing.Color]::Silver
+    $t.TunnelHint.Margin=New-Object System.Windows.Forms.Padding(3,9,6,0)
+    $t.TunnelBar.Controls.Add($t.TunnelHint)
+    $t.TunnelStart=New-Object System.Windows.Forms.Button
+    $t.TunnelStart.Text='Mở tunnel'; $t.TunnelStart.Width=110
+    $t.TunnelStop=New-Object System.Windows.Forms.Button
+    $t.TunnelStop.Text='Đóng tunnel'; $t.TunnelStop.Width=110
+    foreach ($control in @($t.TunnelStart,$t.TunnelStop)) {
+        $control.Height=30; $control.FlatStyle='Flat'
+        $control.BackColor=[System.Drawing.Color]::Black; $control.ForeColor=[System.Drawing.Color]::White
+        $control.FlatAppearance.BorderColor=[System.Drawing.Color]::DimGray
+        $t.TunnelBar.Controls.Add($control)
+    }
+    $t.TunnelStart.Add_Click({ Request-TunnelAction 'Start' })
+    $t.TunnelStop.Add_Click({ Request-TunnelAction 'Stop' })
+    $t.SyncBar=New-Object System.Windows.Forms.FlowLayoutPanel
+    $t.SyncBar.Dock='Bottom'; $t.SyncBar.Height=44
+    $t.SyncBar.Padding=New-Object System.Windows.Forms.Padding(6,4,4,4)
+    $t.SyncBar.BackColor=[System.Drawing.Color]::Black; $t.SyncBar.Visible=$false
+    $t.SyncHint=New-Object System.Windows.Forms.Label
+    $t.SyncHint.Text='Sync chỉ chạy khi an toàn'; $t.SyncHint.ForeColor=[System.Drawing.Color]::Silver
+    $t.SyncHint.AutoSize=$true; $t.SyncHint.Margin=New-Object System.Windows.Forms.Padding(3,9,6,0)
+    $t.SyncBar.Controls.Add($t.SyncHint)
+    $t.SyncNow=New-Object System.Windows.Forms.Button
+    $t.SyncNow.Text='Đồng bộ ngay'; $t.SyncNow.Width=128; $t.SyncNow.Height=30
+    $t.SyncNow.FlatStyle='Flat'; $t.SyncNow.BackColor=[System.Drawing.Color]::Black
+    $t.SyncNow.ForeColor=[System.Drawing.Color]::White
+    $t.SyncNow.FlatAppearance.BorderColor=[System.Drawing.Color]::DimGray
+    $t.SyncNow.Add_Click({ Request-SyncNow })
+    $t.SyncBar.Controls.Add($t.SyncNow)
     $t.Body = New-Object System.Windows.Forms.Panel
     $t.Body.Dock='Fill'; $t.Body.TabIndex=1
+    $t.Split=New-Object System.Windows.Forms.SplitContainer
+    $t.Split.Dock='Fill'; $t.Split.Orientation='Vertical'
+    $t.Split.BackColor=[System.Drawing.Color]::Black
+    $t.Split.SplitterWidth=6; $t.Split.Panel2Collapsed=$true
+    $t.DetailWidth=350
+    $t.Split.Add_SplitterMoved({
+        if (!$script:portTopology.Split.Panel2Collapsed) {
+            $script:portTopology.DetailWidth=$script:portTopology.Split.Panel2.Width
+        }
+    })
+    $t.Split.AccessibleName='Sơ đồ và khung chi tiết kéo thay đổi chiều rộng'
     $t.Scroll = New-Object System.Windows.Forms.Panel
     $t.Scroll.Dock='Fill'; $t.Scroll.AutoScroll=$true
     $t.Graph = New-Object System.Windows.Forms.Panel
@@ -187,18 +239,25 @@ function Initialize-PortTab($page) {
                 else { [System.Drawing.Brushes]::DimGray }
             $e.Graphics.FillEllipse($brush,143,8,9,9)
         })
-        $button.Add_Click({ param($sender,$e) Select-PortNode ([string]$sender.Tag) })
+        $button.Add_Click({ param($sender,$e) Select-PortNode ([string]$sender.Tag) -ShowDetails })
         $button.Add_Enter({
             param($sender,$e)
+            # Focus alone can be assigned during initial window layout.
             Select-PortNode ([string]$sender.Tag)
             $script:portTopology.Scroll.ScrollControlIntoView($sender)
+        })
+        $button.Add_KeyDown({
+            param($sender,$e)
+            if ($e.KeyCode -in @([System.Windows.Forms.Keys]::Enter,[System.Windows.Forms.Keys]::Space)) {
+                Select-PortNode ([string]$sender.Tag) -ShowDetails
+            }
         })
         $t.Graph.Controls.Add($button); $t.Buttons[$node.Id]=$button
     }
     $t.Graph.Add_Paint({ param($sender,$e) Draw-PortTopology $e.Graphics })
     $t.List.Add_SelectedIndexChanged({
         $state=$script:portTopology
-        if (!$state.Updating -and $state.List.SelectedItems.Count -eq 1) { Select-PortNode ([string]$state.List.SelectedItems[0].Tag) }
+        if (!$state.Updating -and $state.List.SelectedItems.Count -eq 1) { Select-PortNode ([string]$state.List.SelectedItems[0].Tag) -ShowDetails }
     })
     $t.Layout.Add_SelectedIndexChanged({
         $state=$script:portTopology
@@ -206,9 +265,10 @@ function Initialize-PortTab($page) {
         Select-PortNode $state.Selected
     })
     $t.Body.Controls.Add($t.Scroll); $t.Body.Controls.Add($t.List)
-    $page.Controls.Add($t.Body); $page.Controls.Add($t.Detail); $page.Controls.Add($t.BackendBar); $page.Controls.Add($legend); $page.Controls.Add($bar)
-    # Explicit z-order keeps docked header/detail outside the scrollable canvas.
-    $t.Body.BringToFront(); $t.Detail.SendToBack(); $legend.SendToBack(); $bar.SendToBack()
+    $t.Split.Panel1.Controls.Add($t.Body)
+    $t.Split.Panel2.Controls.Add($t.Detail)
+    $page.Controls.Add($t.Split); $page.Controls.Add($t.BackendBar); $page.Controls.Add($t.TunnelBar); $page.Controls.Add($t.SyncBar); $page.Controls.Add($bar)
+    $t.Split.BringToFront(); $t.BackendBar.SendToBack(); $t.TunnelBar.SendToBack(); $t.SyncBar.SendToBack(); $bar.SendToBack()
     Refresh-PortTopology
 }
 
@@ -245,7 +305,22 @@ function Refresh-PortTopology {
     Select-PortNode $t.Selected
 }
 
-function Select-PortNode([string]$Id) {
+function Set-PortDetailsVisible([bool]$Visible) {
+    $t=$script:portTopology
+    if (!$t -or !$t.Split) { return }
+    if ($Visible -and $t.Split.Panel2Collapsed) {
+        $available=$t.Split.ClientSize.Width
+        if ($available -gt (300+235+$t.Split.SplitterWidth)) {
+            $t.Split.Panel2Collapsed=$false
+            $width=[Math]::Min([int]$t.DetailWidth,[Math]::Max(235,$available-300-$t.Split.SplitterWidth))
+            $t.Split.SplitterDistance=$available-$width-$t.Split.SplitterWidth
+            $t.Split.Panel1MinSize=300; $t.Split.Panel2MinSize=235
+        }
+    } elseif (!$Visible) { $t.Split.Panel2Collapsed=$true }
+    $t.DetailToggle.Text=if ($t.Split.Panel2Collapsed) { 'Chi tiết >' } else { 'Thu gọn <' }
+}
+
+function Select-PortNode([string]$Id,[switch]$ShowDetails) {
     $t=$script:portTopology
     $node=$t.Nodes | Where-Object { $_.Id -eq $Id } | Select-Object -First 1
     if (!$node) { return }
@@ -277,9 +352,168 @@ function Select-PortNode([string]$Id) {
     }
     if (!$relations.Count) { $lines += 'Hạ tầng chung chỉ đọc; không suy diễn thêm quan hệ ứng dụng.' }
     $t.Detail.Text=$lines -join "`r`n"
+    if ($ShowDetails) { Set-PortDetailsVisible $true }
     $t.Graph.Invalidate()
     Update-PortControlAvailability
     Update-BackendControlAvailability
+    Update-TunnelControlAvailability
+    Update-SyncControlAvailability
+}
+
+function Update-SyncControlAvailability {
+    $t=$script:portTopology
+    if (!$t -or !$t.SyncBar) { return }
+    $t.SyncBar.Visible=($t.Selected -eq 'sync')
+    if (!$t.SyncBar.Visible) { return }
+    $sync=@($t.Nodes | Where-Object Id -eq 'sync')[0]
+    # The authoritative supervisor/remote-ledger preflight still rejects every
+    # unsafe dispatch. These controls never bypass a same-day ledger claim.
+    $t.SyncNow.Enabled=($script:role -eq 'owner' -and !$script:pending -and !$t.SyncJob -and
+        $sync.State -in @('idle','warning'))
+    $t.SyncHint.Text=if ($t.SyncJob) { 'Đang xác minh yêu cầu Sync...' }
+        elseif ($sync.State -eq 'online') { 'Sync đang chạy; không thể dừng.' }
+        else { 'Chỉ Owner; không chạy lại ledger đã ghi.' }
+}
+
+function Request-SyncNow {
+    $t=$script:portTopology
+    if ($script:role -ne 'owner' -or !$script:csrf -or $t.SyncJob -or $t.Selected -ne 'sync') { return }
+    $timer.Stop(); $portTimer.Stop()
+    try {
+        $yes=[System.Windows.Forms.MessageBox]::Show($form,
+            'Yêu cầu đồng bộ catalog PC sang VPS ngay hôm nay (JST). Cần ba worker đã kết thúc, không có lock bận, và ledger chưa được sử dụng. Không dừng Sync đang chạy, không tự retry. Tiếp tục?',
+            'Xác nhận đồng bộ dữ liệu VPS','YesNo','Warning','Button2')
+    } finally { $timer.Start(); $portTimer.Start() }
+    if ($yes -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+    # Owner must still have a current API session after the modal is dismissed.
+    Start-Api 'GET' '/session' $null {
+        param($session)
+        if ($session.role -ne 'owner' -or !$script:csrf) { Set-Status 'Owner không hợp lệ; Sync bị từ chối.'; return }
+        Start-SyncAction
+    }
+}
+
+function Start-SyncAction {
+    $t=$script:portTopology
+    if ($t.SyncJob) { return }
+    $cookie=$script:cookieJar.GetCookieHeader([uri]$script:origin)
+    $csrf=[string]$script:csrf
+    $ps=[powershell]::Create()
+    try {
+        $file=Join-Path $PSScriptRoot 'mita-sync-control.ps1'
+        $null=$ps.AddScript('param($file,$session,$cookie,$csrf); & $file -Action SyncNow -SessionId $session -Confirmed -CookieHeader $cookie -CsrfToken $csrf').
+            AddArgument($file).AddArgument($script:backendDesktopSession).AddArgument($cookie).AddArgument($csrf)
+        $handle=$ps.BeginInvoke()
+        $t.SyncJob=@{PowerShell=$ps;Handle=$handle}
+        Set-Status 'Đang xác minh quyền Owner, trạng thái worker, khóa và ledger Sync...'
+    } catch {
+        $ps.Dispose(); Set-Status 'Không tạo được yêu cầu Sync.'
+    } finally { $cookie=$null; $csrf=$null }
+    Update-SyncControlAvailability
+}
+
+function Update-SyncAction {
+    $t=$script:portTopology
+    if (!$t -or !$t.SyncJob -or !$t.SyncJob.Handle.IsCompleted) { return }
+    $job=$t.SyncJob
+    try {
+        $result=@($job.PowerShell.EndInvoke($job.Handle))
+        if ($job.PowerShell.HadErrors -or $job.PowerShell.Streams.Error.Count -or !$result.Count -or
+            $result[-1].state -cne 'accepted' -or $result[-1].owner.sessionId -cne $script:backendDesktopSession) {
+            throw 'Sync rejected by supervisor or not verified.'
+        }
+        Set-Status 'Supervisor đã nhận yêu cầu Sync. Theo dõi trạng thái node và lịch sử; không tự chạy lại.'
+        $script:views.Logs.AppendText("$([datetime]::Now.ToString('s')) Sync accepted by supervisor; monitoring outcome."+[Environment]::NewLine)
+    } catch {
+        Set-Status 'Sync không được thực hiện: không đủ điều kiện, đã có ledger ngày, hoặc coordinator chưa cập nhật. Kiểm tra nhật ký Supervisor.'
+    } finally {
+        $job.PowerShell.Dispose(); $t.SyncJob=$null; $t.NextPoll=[datetime]::MinValue
+    }
+    Update-SyncControlAvailability
+}
+
+function Update-TunnelControlAvailability {
+    $t=$script:portTopology
+    if (!$t -or !$t.TunnelBar) { return }
+    $t.TunnelBar.Visible=($t.Selected -eq 'tunnel')
+    if (!$t.TunnelBar.Visible) { return }
+    $busy=[bool]$t.TunnelJob -or [bool]$t.TunnelClosing
+    $owned=[bool]$t.TunnelSession
+    $expired=$owned -and ([datetime]::UtcNow -ge [datetime]::Parse($t.TunnelSession.ExpiresAt).ToUniversalTime())
+    # Expiry triggers wrapper cleanup but is NOT proof that its SSH child exited.
+    # Keep ownership until a verified Stop/Status confirms the exact child gone.
+    $t.TunnelStart.Enabled=(!$busy -and !$owned -and $script:role -eq 'owner' -and !$script:pending -and
+        (@($t.Nodes | Where-Object Id -eq 'tunnel')[0].State -eq 'idle'))
+    $t.TunnelStop.Enabled=(!$busy -and $owned -and $script:role -eq 'owner' -and !$script:pending)
+    $t.TunnelHint.Text=if ($expired) { 'Hết hạn: cần xác minh đã đóng' }
+        elseif ($owned) { 'Tunnel chẩn đoán của phiên này' } else { 'Tunnel chẩn đoán (5 phút)' }
+}
+
+# Owner-only action: the live Admin session is revalidated after confirmation.
+# The helper independently checks exact OS/process ownership and refuses foreign listeners.
+function Request-TunnelAction([ValidateSet('Start','Stop')][string]$Action,[switch]$OnClose) {
+    $t=$script:portTopology
+    if ($t.TunnelJob -or (!$OnClose -and ($t.Selected -ne 'tunnel' -or $script:role -ne 'owner'))) { return }
+    if ($Action -eq 'Stop' -and !$t.TunnelSession) { return }
+    if (!$OnClose) {
+        $timer.Stop(); $portTimer.Stop()
+        try {
+            $description=if ($Action -eq 'Start') {
+                'Mở SSH tunnel chẩn đoán 15432 tối đa 5 phút; KHÔNG đồng bộ hoặc ghi VPS. Có thể chặn Sync theo lịch trong thời gian này.'
+            } else { 'Đóng chỉ tunnel chẩn đoán do phiên Desktop này tạo; không dừng tunnel Sync.' }
+            $choice=[System.Windows.Forms.MessageBox]::Show($form,$description,'Xác nhận Tunnel 15432','YesNo','Warning','Button2')
+        } finally { $timer.Start(); $portTimer.Start() }
+        if ($choice -ne [System.Windows.Forms.DialogResult]::Yes -or !$script:csrf) { return }
+        $script:plannedTunnelAction=$Action
+        Start-Api 'GET' '/session' $null {
+            param($session)
+            $planned=$script:plannedTunnelAction; $script:plannedTunnelAction=$null
+            if (!$planned -or $session.role -ne 'owner') { Set-Status 'Chỉ Owner đã xác thực được điều khiển tunnel chẩn đoán.'; return }
+            Start-TunnelAction $planned
+        }
+    } else { Start-TunnelAction 'Stop' -OnClose }
+}
+
+function Start-TunnelAction([ValidateSet('Start','Stop')][string]$Action,[switch]$OnClose) {
+    $t=$script:portTopology
+    if ($t.TunnelJob) { return }
+    $ps=[powershell]::Create()
+    try {
+        $file=Join-Path $PSScriptRoot 'mita-tunnel-diagnostic.ps1'
+        $null=$ps.AddScript('param($file,$action,$session); & $file -Action $action -SessionId $session').
+            AddArgument($file).AddArgument($Action).AddArgument($script:backendDesktopSession)
+        $handle=$ps.BeginInvoke()
+        $t.TunnelJob=@{PowerShell=$ps;Handle=$handle;Action=$Action;Closing=[bool]$OnClose}
+        Set-Status "Tunnel chẩn đoán: đang $Action; chờ xác minh."
+    } catch {
+        $ps.Dispose(); $t.TunnelClosing=$false
+        Set-Status 'Không tạo được yêu cầu điều khiển tunnel.'
+    }
+    Update-TunnelControlAvailability
+}
+
+function Update-TunnelAction {
+    $t=$script:portTopology
+    if (!$t -or !$t.TunnelJob -or !$t.TunnelJob.Handle.IsCompleted) { return }
+    $job=$t.TunnelJob; $success=$false
+    try {
+        $result=@($job.PowerShell.EndInvoke($job.Handle))
+        if ($job.PowerShell.HadErrors -or $job.PowerShell.Streams.Error.Count) { throw ([string]$job.PowerShell.Streams.Error[0]) }
+        if ($job.Action -eq 'Start') {
+            if (!$result.Count -or $result[-1].SessionId -cne $script:backendDesktopSession) { throw 'Tunnel owner is not verified.' }
+            $t.TunnelSession=$result[-1]
+        } else { $t.TunnelSession=$null }
+        $success=$true
+        Set-Status "Tunnel chẩn đoán $($job.Action) hoàn tất; thời hạn tự đóng 5 phút."
+    } catch {
+        Set-Status 'Tunnel chẩn đoán bị từ chối hoặc không xác minh được; không can thiệp listener lạ.'
+    } finally {
+        $job.PowerShell.Dispose(); $t.TunnelJob=$null; $t.TunnelClosing=$false
+        $t.NextPoll=[datetime]::MinValue
+    }
+    Update-TunnelControlAvailability
+    if ($job.Closing -and $success) { $form.BeginInvoke([Action]{ $form.Close() }) | Out-Null }
+    elseif ($job.Closing) { [void][System.Windows.Forms.MessageBox]::Show($form,'Tunnel chưa xác minh đã đóng; cửa sổ vẫn mở.','Mita Japan','OK','Warning') }
 }
 
 function Update-BackendControlAvailability {

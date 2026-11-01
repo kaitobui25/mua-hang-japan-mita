@@ -24,8 +24,11 @@ $script:smokeTimer.Add_Tick({
             $form.Size=New-Object Drawing.Size($case.Width,$case.Height)
             $form.Location=New-Object Drawing.Point(30,30)
             $t.Layout.SelectedIndex=$case.Layout
-            Select-PortNode 'pc-api'
+            if ($script:smokeStage -eq 0 -and !$t.Split.Panel2Collapsed) { throw 'Details should start collapsed.' }
+            Select-PortNode 'pc-api' -ShowDetails
             [System.Windows.Forms.Application]::DoEvents()
+            if ($t.Split.Panel2Collapsed -or $t.Detail.Parent -ne $t.Split.Panel2) { throw 'Right details pane did not open.' }
+            if ($t.Split.SplitterDistance -lt 300 -or $t.Split.Panel2.Width -lt 235) { throw 'Resizable detail pane is too narrow.' }
             if (!$t.BackendBar.Visible) { throw 'Backend controls not visible for 4000.' }
             if ($t.BackendBar.Bottom -gt $script:pages.Ports.ClientSize.Height -or $t.BackendBar.Top -lt 0) { throw 'Backend bar clipped.' }
             if (!$t.BackendBar.Controls.Contains($t.BackendStart) -or !$t.BackendBar.Controls.Contains($t.BackendStop) -or !$t.BackendBar.Controls.Contains($t.BackendRestart)) { throw 'Missing backend controls.' }
@@ -44,6 +47,19 @@ $script:smokeTimer.Add_Tick({
         } else {
             Select-PortNode 'pc-db'
             if ($t.BackendBar.Visible) { throw 'Backend controls visible on DB node.' }
+            $t.DetailToggle.PerformClick()
+            if (!$t.Split.Panel2Collapsed) { throw 'Details collapse button did not work.' }
+            Select-PortNode 'tunnel' -ShowDetails
+            if (!$t.TunnelBar.Visible -or $t.SyncBar.Visible) { throw 'Tunnel controls not restricted to tunnel node.' }
+            if ($t.TunnelBar.Bottom -gt $script:pages.Ports.ClientSize.Height) { throw 'Tunnel control bar clipped.' }
+            Select-PortNode 'sync' -ShowDetails
+            if (!$t.SyncBar.Visible -or $t.TunnelBar.Visible) { throw 'Sync controls not restricted to sync node.' }
+            if ($t.SyncBar.Bottom -gt $script:pages.Ports.ClientSize.Height) { throw 'Sync control bar clipped.' }
+            if (!$script:authStatus.Visible -or [string]::IsNullOrWhiteSpace($script:authStatus.Text)) { throw 'Authentication status label missing.' }
+            Set-AuthFeedback 'Đã đăng nhập: Owner' 'success'
+            if ($script:authStatus.Text -notmatch 'Owner') { throw 'Owner success status did not persist.' }
+            Set-AuthFeedback 'Không thể đăng nhập. Kiểm tra tài khoản và mật khẩu.' 'error'
+            if ($script:authStatus.Text -notmatch 'mật khẩu') { throw 'Login failure feedback missing.' }
             $script:smokeResults.Add('Non-4000 node hides controls.')
             $script:smokeTimer.Stop(); $form.Close()
         }

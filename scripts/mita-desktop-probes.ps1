@@ -119,7 +119,46 @@ function Invoke-PortProbes {
             else { New-PortObservation tunnel warning 'SSH forward đã xác minh; chưa chứng minh PostgreSQL khỏe.' "$source + pg_isready" }
         } else { New-PortObservation tunnel warning 'Listener chưa xác minh thuộc SSH forward được duyệt; không gửi probe DB.' $source }
     }
-    foreach ($id in @('workers','sync')) { New-PortObservation $id unknown 'Không suy diễn tiến trình từ cổng; chưa có probe vòng đời an toàn.' 'Không probe tiến trình' }
+    New-PortObservation workers unknown 'Không suy diễn tiến trình worker từ cổng; xem trạng thái Supervisor riêng.' 'Không probe tiến trình'
+    # The Sync node is a finite daily job, not a port. Use the actual daily
+    # supervisor state and a verified local process observation, never infer
+    # running merely from a stale JSON marker or SSH monitoring connectivity.
+    $syncSource='Verified Supervisor IPC + JST snapshot + process inventory'
+    try {
+        $root=Split-Path $PSScriptRoot -Parent
+        $today=[datetime]::UtcNow.AddHours(9).ToString('yyyy-MM-dd')
+        $statePath=Join-Path $root ('.agents/runtime/mita-daily-'+$today+'.json')
+        $daily=if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
+        $syncState=if ($daily -and $daily.sync) { [string]$daily.sync.state } else { 'unknown' }
+        $syncAt=if ($daily -and $daily.sync -and $daily.sync.at) { [string]$daily.sync.at } else { 'chưa có' }
+        $running=@(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction Stop | Where-Object {
+            [string]$_.CommandLine -match '(?i)(?:^|[\s"])(?:[A-Z]:[^"\s]*[\\/])?nightly-vps-sync\.ps1(?:["\s]|$)' -and
+            [string]$_.CommandLine -match [regex]::Escape((Join-Path $root 'scripts/nightly-vps-sync.ps1'))
+        })
+        $coordinator=$null
+        try { $coordinator=& (Join-Path $PSScriptRoot 'mita-sync-control.ps1') -Action Status } catch { }
+        $verified=$false
+        if ($running.Count -eq 1 -and $coordinator -and $coordinator.state -eq 'running' -and
+            $coordinator.inFlight -and $coordinator.owner -and
+            [int]$coordinator.owner.pid -eq [int]$running[0].ProcessId -and
+            [int]$coordinator.owner.supervisorPid -eq [int]$running[0].ParentProcessId -and
+            $coordinator.owner.runId -match '^[a-f0-9-]{36}$') {
+            $verified=$true
+        }
+        if ($verified) { New-PortObservation sync online "Supervisor xác nhận Sync đang chạy (PID $($running[0].ProcessId))." $syncSource }
+        elseif ($running.Count -eq 1) { New-PortObservation sync warning 'Có tiến trình Sync nhưng Supervisor chưa xác minh được PID/run ID của lượt chạy.' $syncSource }
+        elseif ($running.Count -gt 1) { New-PortObservation sync warning 'Có nhiều tiến trình Sync; không xác minh được quyền sở hữu.' $syncSource }
+        else {
+            $status=switch ($syncState) {
+                'completed' {'idle'} 'pending' {'idle'} 'skipped' {'idle'}
+                'partial' {'warning'} 'failed' {'warning'} 'running' {'warning'}
+                default {'unknown'}
+            }
+            $reason=if ($syncState -eq 'running') { 'Snapshot ghi running nhưng chưa thấy tiến trình Sync tương ứng; cần kiểm tra.' }
+                else { "Sync JST $today : $syncState; cập nhật: $syncAt. Không có tiến trình đồng bộ đang xác minh." }
+            New-PortObservation sync $status $reason $syncSource
+        }
+    } catch { New-PortObservation sync unknown 'Không đọc/xác minh được nhật ký hoặc tiến trình Sync.' $syncSource }
 
     # Existing approved identity only; no password, host-key enrollment, tunnel,
     # agent modification, HTTP exposure, shell config, sudo or service controls.

@@ -60,7 +60,10 @@ the server session expires according to the existing backend's eight-hour policy
 - **Cổng:** switch between **Mạng nhện** (default) and **Danh sách PC/VPS**,
   both backed by the same node/edge topology. This shows 10 Mita PC/VPS ports,
   separately labelled process nodes, and read-only shared infrastructure.
-  Selecting a node highlights its relationships and opens details. Read-only
+  Selecting a node highlights its relationships and opens the resizable right
+  detail pane. It starts collapsed, opens on node activation, and can be
+  collapsed again; its width and state remain in the current Desktop session.
+  Read-only
   TCP, HTTP health, PostgreSQL readiness and SSH checks run independently of
   authenticated Admin requests. Polling defaults to 15 seconds, adjustable to
   15–300 seconds in Cổng, and runs only while this tab is selected. Lost SSH
@@ -76,8 +79,8 @@ the server session expires according to the existing backend's eight-hour policy
   refused while supervisor or known workers are active. Audit outcomes are
   written without credentials to
   `.agents/runtime/mita-port-control-audit.jsonl`. The UI never claims an
-  immediate change before a follow-up probe. PostgreSQL, temporary sync tunnel
-  `15432`, VPS web/API and shared infrastructure remain **monitoring only**.
+  immediate change before a follow-up probe. PostgreSQL, VPS web/API and
+  shared infrastructure remain **monitoring only**.
   Selecting PC API `4000` in either layout also reveals **Dev / Start**, **Chạy**,
   **Dừng**, and **Restart** in that node's detail area. This Windows-local control
   is independent of Admin login: Owner and Staff may start the local backend,
@@ -95,6 +98,27 @@ the server session expires according to the existing backend's eight-hour policy
   `docs/backend-4000-lifecycle.md` for containment and failure behavior.
   If API `4000` is unavailable, Cổng monitoring still works; old 8080/19978
   Owner controls remain disabled until `/session` can be revalidated.
+  Selecting **Sync** shows the latest JST daily state (`pending`, `running`,
+  `completed`, `partial` or `failed`) and whether a matching local process is
+  actually observable; a stale `running` snapshot is never treated as proof of
+  a running job. **Đồng bộ ngay** requires Owner authentication revalidated
+  after confirmation, three terminal worker outcomes from the same JST day,
+  free advisory locks, verified Supervisor IPC and no existing conflicting
+  tunnel/worker. The Supervisor alone dispatches the finite sync using the
+  original protected 15432 tunnel and remote daily ledger; Desktop never
+  starts a second worker or directly calls the transfer. No Stop or automatic
+  retry exists. **Forced same-day rerun is not available** until remote ledger
+  attempt history and idempotency can prove it safe; completed, partial,
+  running and uncertain claims remain protected. The updated Supervisor must
+  be restarted by the existing safe operator procedure before its new IPC can
+  accept requests; Desktop never restarts that service automatically.
+  Selecting **Tunnel 15432** allows Owner to request a separate diagnostic SSH
+  forwarding session, only when the port is free and the approved SSH identity
+  and agent are ready. It expires within five minutes or is stopped on closing
+  the Desktop session. It is not a catalog sync and does not send DB queries;
+  it never adopts or kills a tunnel belonging to the scheduled Sync.
+  Owner/Staff login now shows a persistent role/failure message beside the
+  form, distinguishing invalid credentials, 429 lockout and local API outage.
 - **Logs:** session-only accepted-write activity. No raw worker logs, arbitrary
   server response bodies, customer records, passwords or session values are logged.
   Overview exposes existing authenticated sync diagnostics on screen only.

@@ -1,8 +1,10 @@
 import { createRequire } from 'node:module';
-import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { spawn, execFile } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { promisify } from 'node:util';
+import { request } from 'node:http';
 import { createServer } from 'node:net';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, renameSync, appendFileSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, renameSync, appendFileSync, unlinkSync, openSync, closeSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -14,7 +16,65 @@ const node=process.execPath;
 const logger=path.join(runtime,'mita-supervisor.jsonl');
 const STATUS_PORT=19978;
 const STOP_FILE=path.join(runtime,'mita-supervisor.stop');
+const TUNNEL_LEASE=path.join(runtime,'tunnel-15432.lease');
+function reserveTunnel(runId){
+  // Atomic cross-process exclusion with diagnostic PowerShell. A stale lease
+  // after a crash fails closed and requires identity-checked manual recovery.
+  const fd=openSync(TUNNEL_LEASE,'wx',0o600);
+  try{writeFileSync(fd,`sync:${runId}`);}catch(error){closeSync(fd);throw error;}
+  let released=false;
+  return ()=>{
+    if(released)return;
+    released=true;
+    closeSync(fd);
+    try{if(readFileSync(TUNNEL_LEASE,'utf8')===`sync:${runId}`)unlinkSync(TUNNEL_LEASE);}
+    catch{record('tunnel_reservation_cleanup_uncertain',{runId});}
+  };
+}
 const LOCKS={amazon:70400200,names:70400300,detail:70400301};
+const execFileAsync=promisify(execFile);
+const terminalStates=['completed','skipped','partial','failed'];
+export function assertManualSyncReady(snapshot,today) {
+  if(snapshot?.day!==today || snapshot.sync?.state!=='pending')throw Error('Sync is not pending; replay/retry is unsupported. Inspect the daily state and remote ledger.');
+  if(!['amazon','names','detail'].every(name=>snapshot.jobs?.[name]?.day===today && terminalStates.includes(snapshot.jobs[name].state)))
+    throw Error('All three terminal worker states must belong to the current JST date.');
+  if(Object.values(snapshot.jobs).every(job=>job.state==='skipped'))throw Error('All workers were skipped.');
+}
+export function assertOwnerSession(session,csrf,now=Date.now()) {
+  if(session?.role!=='owner' || !Number.isFinite(Date.parse(session.expiresAt)) || Date.parse(session.expiresAt)<=now ||
+     !/^[a-f0-9]{64}$/.test(csrf??'') || session.csrfToken!==csrf)throw Error('Fresh Owner session and matching CSRF token required.');
+}
+async function authorizeSync(cookie,csrf) {
+  if(!/^mita_admin=[a-f0-9]{64}$/.test(cookie??''))throw Error('Owner session cookie required.');
+  const session=await new Promise((resolve,reject)=>{
+    const req=request('http://127.0.0.1:4000/api/admin/session',{headers:{Cookie:cookie,Origin:'http://127.0.0.1:4000'}},res=>{
+      let body='';
+      res.on('data',chunk=>{body+=chunk;if(body.length>8192)res.destroy(Error('Session response too large'));});
+      res.on('error',reject);
+      res.on('end',()=>{try{if(res.statusCode!==200)throw Error('Session rejected');resolve(JSON.parse(body));}catch{reject(Error('Owner authorization unavailable or rejected.'));}});
+    });
+    req.setTimeout(3000,()=>req.destroy(Error('Owner authorization timed out.')));
+    req.on('error',()=>reject(Error('Owner authorization unavailable.')));req.end();
+  });
+  assertOwnerSession(session,csrf);
+}
+export function assertSyncInventory(inventory,workerPids) {
+  if(!inventory || !Array.isArray(inventory.processes) || !Array.isArray(inventory.tunnels))throw Error('Process/tunnel inventory unavailable.');
+  if(inventory.tunnels.length)throw Error('Port 15432 occupied; no tunnel adoption.');
+  for(const process of inventory.processes){
+    const command=process.CommandLine??'';
+    if(!command)throw Error('Cannot inspect a possible worker/sync/tunnel process.');
+    if(/(?:nightly-vps-sync\.ps1|sync-catalog-vps\.mjs|sync-mita-reviews\.ps1|start-vps-worker\.ps1)/i.test(command) ||
+       (/ssh(?:\.exe)?$/i.test(process.Name) && /15432/.test(command)))throw Error('Existing sync or tunnel process detected.');
+    if(/src[\\/](?:worker|translator|detail-translator)\.ts(?:["\s]|$)/i.test(command) && !workerPids.includes(Number(process.ProcessId)))
+      throw Error('Unmanaged or duplicate worker detected.');
+  }
+}
+async function syncInventory(workerPids) {
+  const command="$ErrorActionPreference='Stop'; $p=@(Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(node|powershell|pwsh|ssh)\\.exe$' } | Select-Object Name,ProcessId,CommandLine); $t=@(Get-NetTCPConnection -State Listen | Where-Object LocalPort -eq 15432 | Select-Object OwningProcess); @{processes=$p;tunnels=$t} | ConvertTo-Json -Depth 4 -Compress";
+  const {stdout}=await execFileAsync('powershell.exe',['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(command,'utf16le').toString('base64')],{windowsHide:true,timeout:5000,maxBuffer:1024*1024});
+  assertSyncInventory(JSON.parse(stdout.replace(/^\uFEFF/,'')),workerPids);
+}
 export const windows={amazon:4*60,names:5*60,detail:5*60+15};
 export const REVIEW_SYNC_INTERVAL_MS=5*60*1000;
 export function canRunReviewSync(time=new Date()) {
@@ -103,6 +163,24 @@ async function withWorkerLease(name,action){
     await client.end().catch(()=>{});
   }
 }
+export async function acquireSyncLease(client=new Client({connectionString:process.env.MITA_LOCAL_DATABASE_URL||
+    'postgresql://mita_local@127.0.0.1:5433/postgres',connectionTimeoutMillis:2500})){
+  const acquired=[];
+  let lost=false;
+  client.on('error',()=>{lost=true;});
+  const release=async()=>{
+    for(const key of acquired)await client.query('SELECT pg_advisory_unlock($1)',[key]).catch(()=>{});
+    await client.end().catch(()=>{});
+  };
+  try{
+    await client.connect();
+    for(const key of Object.values(LOCKS)){
+      if(!(await client.query('SELECT pg_try_advisory_lock($1) AS ok',[key])).rows[0].ok)throw Error('Worker lock is busy; sync rejected.');
+      acquired.push(key);
+    }
+    return {client,release,get lost(){return lost;}};
+  }catch(error){await release();throw error;}
+}
 const tails=new Map();
 function appendOutput(name,chunk,handler){
   // Preserve worker console logs separately. The supervisor log contains states only.
@@ -116,6 +194,8 @@ export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
   mkdirSync(runtime,{recursive:true});
   let exiting=false,ticking=false,status=null,day=null,plannedSync=false,syncInFlight=false;
   let reviewSyncInFlight=false,lastReviewSyncAttempt=0;
+  let syncDispatching=false,syncOwner=null;
+  const supervisorRunId=randomUUID();
   const children=new Map(),pending=new Map();
   const statePath=()=>path.join(runtime,`mita-daily-${day}.json`);
   function setState(name,state,details={}){
@@ -190,41 +270,72 @@ export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
       return true;
     });
   }
-  async function triggerSync(){
+  async function triggerSync(manual=null){
+    if(syncDispatching || syncInFlight || reviewSyncInFlight || exiting || existsSync(STOP_FILE)){
+      if(manual)throw Error('Coordinator busy or draining.');
+      return;
+    }
+    if(manual)assertManualSyncReady(status,jstClock().day);
     if(plannedSync || !keys.every(name=>status.jobs[name] && ['completed','skipped','partial','failed'].includes(status.jobs[name].state)))return;
     // Never sync while a job has outstanding work or if all work was missed.
     if(keys.length!==3 || Object.values(status.jobs).every(job=>job.state==='skipped')) {
       plannedSync=true;status.sync={state:'skipped',at:new Date().toISOString()};
       atomicJson(statePath(),status);return;
     }
-    plannedSync=true;status.sync={state:'running',at:new Date().toISOString()};
-    atomicJson(statePath(),status);
+    syncDispatching=true;
+    let lease,releaseTunnel;
+    try{
+      if(keys.length!==3)throw Error('All three supervisor workers are required.');
+      // The same leases used by workers close the check/dispatch race. Hold
+      // all three until the sync child exits; never stop a worker to get them.
+      lease=await acquireSyncLease();
+      await syncInventory([...children.values()].map(info=>info.child.pid));
+      assertManualSyncReady(status,jstClock().day);
+      if(manual)await authorizeSync(manual.cookie,manual.csrf); // after all slow checks
+      assertManualSyncReady(status,jstClock().day); // reject a JST rollover during authorization
+      if(lease.lost)throw Error('Worker lease connection lost; manual inspection required.');
+      if(reviewSyncInFlight || exiting || existsSync(STOP_FILE))throw Error('Coordinator busy or draining.');
+      releaseTunnel=reserveTunnel(randomUUID());
+    }catch(error){if(releaseTunnel)releaseTunnel();if(lease)await lease.release();syncDispatching=false;throw error;}
+    const runId=randomUUID();
+    plannedSync=true;status.sync={state:'running',at:new Date().toISOString(),runId,sessionId:manual?.sessionId??null};
     const runningDay=day,runningPath=statePath();
-    syncInFlight=true;
     const env={...process.env,MITA_SYNC_JOBS:JSON.stringify(status.jobs)};
     const script=path.join(root,'scripts','nightly-vps-sync.ps1');
-    const child=spawn('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',script],{
-      windowsHide:true,cwd:root,env,stdio:['ignore','pipe','pipe']
-    });
+    let child;
+    try{
+      atomicJson(runningPath,status);
+      child=spawn('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',script],{
+        windowsHide:true,cwd:root,env,stdio:['ignore','pipe','pipe']
+      });
+    }catch(error){syncDispatching=false;releaseTunnel();await lease.release();throw error;} // claim stays blocked; never retry
+    syncInFlight=true;
+    syncOwner={runId,pid:child.pid??null,script,supervisorPid:process.pid,supervisorRunId,sessionId:manual?.sessionId??null,startedAt:new Date().toISOString()};
+    // Loss of a lease cannot be repaired by retrying. Keep this run claimed,
+    // record the uncertainty, and never terminate an in-flight transfer.
+    lease.client.on('error',()=>record('sync_lease_lost',{runId}));
     child.stdout.on('data',chunk=>appendFileSync(path.join(runtime,'nightly-sync.out.log'),chunk));
     child.stderr.on('data',chunk=>appendFileSync(path.join(runtime,'nightly-sync.err.log'),chunk));
     let finalized=false;
     const complete=code=>{
       if(finalized)return;
       finalized=true;
-      const saved=JSON.parse(readFileSync(runningPath,'utf8'));
-      saved.sync={state:code===0?'completed':code===2?'partial':'failed',at:new Date().toISOString()};
-      atomicJson(runningPath,saved);
-      if(day===runningDay)status.sync=saved.sync;
-      syncInFlight=false;
-      record('sync_finished',{day:runningDay,exitCode:code});
+      try{
+        const saved=JSON.parse(readFileSync(runningPath,'utf8'));
+        saved.sync={state:lease.lost?'unknown':code===0?'completed':code===2?'partial':'failed',at:new Date().toISOString(),runId,sessionId:manual?.sessionId??null};
+        atomicJson(runningPath,saved);
+        if(day===runningDay)status.sync=saved.sync;
+        record('sync_finished',{day:runningDay,exitCode:code});
+      }catch{record('sync_state_unknown',{day:runningDay,runId});}
+      finally{syncInFlight=false;syncDispatching=false;releaseTunnel();void lease.release();}
     };
     child.once('exit',complete);
     child.once('error',()=>complete(-1));
     record('sync_started',{day});
+    return syncOwner;
   }
   function triggerReviewSync(observed){
-    if(process.env.MITA_REVIEW_SYNC_ENABLED!=='1' || reviewSyncInFlight || syncInFlight ||
+    if(process.env.MITA_REVIEW_SYNC_ENABLED!=='1' || reviewSyncInFlight || syncInFlight || syncDispatching ||
        Object.values(observed.busy).some(Boolean) || !canRunReviewSync() ||
        Date.now()-lastReviewSyncAttempt<REVIEW_SYNC_INTERVAL_MS)return;
     lastReviewSyncAttempt=Date.now();
@@ -260,7 +371,7 @@ export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
       try{observed=await activeLocks();}
       catch(error){record('database_unavailable',{reason:error.code??'connection_failed'});return;}
       if(existsSync(STOP_FILE)){
-        if(syncInFlight || reviewSyncInFlight || Object.values(observed.busy).some(Boolean) ||
+        if(syncInFlight || syncDispatching || reviewSyncInFlight || Object.values(observed.busy).some(Boolean) ||
            keys.some(name=>!canRestart(name,new Date(),false))){
           return; // Owner requested stop; allow in-flight work and dispatch to drain.
         }
@@ -303,7 +414,44 @@ export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
     }catch(error){record('supervisor_error',{reason:error.message});}
     finally{ticking=false;}
   }
-  const control=createServer(socket=>{socket.end('Mita supervisor active\n');});
+  const control=createServer(socket=>{
+    // Retain the banner consumed by existing read-only desktop probes.
+    socket.write('Mita supervisor active\n');
+    socket.setTimeout(15000,()=>socket.destroy());
+    socket.on('error',()=>{});
+    let input='',handled=false;
+    socket.on('data',chunk=>{
+      if(handled)return;
+      input+=chunk.toString('utf8');
+      if(input.length>8192){handled=true;socket.destroy();return;}
+      if(!input.includes('\n'))return;
+      handled=true;
+      void (async()=>{
+        try{
+          let message;
+          try{message=JSON.parse(input.slice(0,input.indexOf('\n')));}catch{throw Error('Invalid sync request JSON.');}
+          if(message.protocol!=='mita-sync-v1')throw Error('Unsupported sync protocol.');
+          let result;
+          if(message.action==='Status'){
+            const observed=await activeLocks();
+            const state=syncInFlight?'running':status?.sync?.state==='running'?'unknown':status?.sync?.state??'unknown';
+            result={day,state,status,workerLocks:observed.busy,inFlight:syncInFlight,dispatching:syncDispatching,reviewSyncInFlight,owner:syncInFlight?syncOwner:null,lastRun:syncOwner,
+              ledger:'not-observed; remote atomic daily claim remains authoritative',forceRerunSupported:false,canStop:false};
+          }else if(message.action==='SyncNow'){
+            if(!/^[a-zA-Z0-9-]{1,80}$/.test(message.sessionId??''))throw Error('Desktop session ID required.');
+            if(message.force)throw Error('Forced rerun is unsupported: ledger claims must never be replaced.');
+            await authorizeSync(message.cookie,message.csrf);
+            if(ticking)throw Error('Coordinator refreshing; retry manually after status refresh.');
+            updateDay();
+            const owner=await triggerSync(message);
+            if(!owner)throw Error('Daily sync already planned; no replay.');
+            result={state:'accepted',owner,canStop:false,forceRerunSupported:false};
+          }else throw Error('Only Status and SyncNow are supported; no stop or retry.');
+          socket.end(JSON.stringify({ok:true,protocol:'mita-sync-v1',root,pid:process.pid,supervisorRunId,observedAt:new Date().toISOString(),...result})+'\n');
+        }catch(error){socket.end(JSON.stringify({ok:false,protocol:'mita-sync-v1',error:error.message})+'\n');}
+      })();
+    });
+  });
   await new Promise((resolve,reject)=>{
     control.once('error',reject);
     control.listen(STATUS_PORT,'127.0.0.1',resolve);

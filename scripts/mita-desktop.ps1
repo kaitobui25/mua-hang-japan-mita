@@ -24,6 +24,7 @@ function New-Client {
     $handler.UseProxy = $false
     $handler.AllowAutoRedirect = $false
     $handler.CookieContainer = New-Object System.Net.CookieContainer
+    $script:cookieJar = $handler.CookieContainer
     $script:client = New-Object System.Net.Http.HttpClient($handler)
     $script:client.Timeout = [timespan]::FromSeconds(12)
 }
@@ -38,7 +39,7 @@ $form.BackColor = [System.Drawing.Color]::Black
 $form.ForeColor = [System.Drawing.Color]::White
 $form.Font = New-Object System.Drawing.Font('Consolas', 10)
 $top = New-Object System.Windows.Forms.FlowLayoutPanel
-$top.Dock = 'Top'; $top.Height = 82; $top.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 0); $top.WrapContents = $true
+$top.Dock = 'Top'; $top.Height = 110; $top.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 0); $top.WrapContents = $true
 $brand = New-Object System.Windows.Forms.Label
 $brand.Text = 'MITA JAPAN  |  ADMIN TERMINAL'; $brand.AutoSize = $true; $brand.Margin = New-Object System.Windows.Forms.Padding(3, 8, 16, 0); $top.Controls.Add($brand)
 $username = New-Object System.Windows.Forms.TextBox
@@ -58,6 +59,7 @@ $password.UseSystemPasswordChar = $true; $password.Width = 140; $password.MaxLen
 $top.Controls.Add($password)
 $login = Add-Button $top 'Đăng nhập' {
     if ($script:pending) { return }
+    Set-AuthFeedback 'Đang xác thực...' 'pending'
     $body = @{password=$password.Text}; if ($username.Text.Trim()) { $body.username = $username.Text.Trim() }; $password.Clear()
     Start-Api 'POST' '/login' $body {
         param($value)
@@ -67,11 +69,28 @@ $login = Add-Button $top 'Đăng nhập' {
             param($session)
             if ($session.role -notin @('owner','staff')) { Clear-Session; Set-Status 'Không xác định được vai trò phiên đăng nhập.'; return }
             $script:role = $session.role; Update-WriteControls
+            $roleName=if ($session.role -eq 'owner') { 'Owner' } else { 'Staff' }
+            Set-AuthFeedback "Đã đăng nhập: $roleName" 'success'
+            Set-Status "Đăng nhập thành công: $roleName."
             $script:nextNotifications = [datetime]::MinValue; Refresh-View
         }
     }
     $body.Clear()
 }
+$password.Add_KeyDown({
+    param($sender,$e)
+    if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Enter) {
+        $e.Handled=$true; $e.SuppressKeyPress=$true
+        if ($login.Enabled) { $login.PerformClick() }
+    }
+})
+$script:authStatus=New-Object System.Windows.Forms.Label
+$authStatus.Text='Chưa đăng nhập'; $authStatus.AutoSize=$false
+$authStatus.Width=260; $authStatus.Height=27
+$authStatus.Margin=New-Object System.Windows.Forms.Padding(9,6,3,0)
+$authStatus.ForeColor=[System.Drawing.Color]::Silver
+$authStatus.AccessibleName='Trạng thái xác thực Owner hoặc Staff'
+$top.Controls.Add($authStatus)
 $refresh = Add-Button $top 'Làm mới' { Refresh-View }
 $logout = Add-Button $top 'Đăng xuất' {
     if (!$script:pending -and $script:csrf) {
@@ -344,6 +363,16 @@ function Update-WriteControls {
     foreach ($control in @($ackButton,$orderButton,$productButton,$priceButton,$fx,$fee)) { $control.Enabled = ($script:role -eq 'owner') }
     Update-PortControlAvailability
     Update-BackendControlAvailability
+    Update-TunnelControlAvailability
+    Update-SyncControlAvailability
+}
+function Set-AuthFeedback([string]$message,[string]$kind='idle') {
+    $authStatus.Text=$message
+    $authStatus.ForeColor=switch ($kind) {
+        'success' { [System.Drawing.Color]::White }
+        'error' { [System.Drawing.Color]::White }
+        default { [System.Drawing.Color]::Silver }
+    }
 }
 function Set-Status([string]$message) { $status.Text = $message }
 function Clear-Session {
@@ -352,6 +381,7 @@ function Clear-Session {
     $sourceStatus.Text='NGUỒN API: 127.0.0.1:4000  |  VPS: chưa xác định'
     $script:client.Dispose(); New-Client
     $password.Clear(); $password.Enabled=$true; $username.Enabled=$true; $login.Enabled=$true
+    Set-AuthFeedback 'Chưa đăng nhập' 'idle'
     foreach ($name in @('Overview','Notifications','Orders','Products')) { $script:views[$name].DataSource=$null }
     foreach ($name in @('Pricing','Workers','Logs')) { $script:views[$name].Clear() }
     foreach ($key in @('unread','pending','processing','value')) { $script:metricValues[$key].Text='—' }
@@ -376,9 +406,10 @@ function Start-Api($method, $path, $body, [scriptblock]$done) {
     if ($script:csrf) { $null = $request.Headers.TryAddWithoutValidation('X-CSRF-Token', $script:csrf) }
     if ($null -ne $body) { $request.Content = New-Object System.Net.Http.StringContent(($body | ConvertTo-Json -Compress), [System.Text.Encoding]::UTF8, 'application/json') }
     try {
-        $script:pending = @{task=$script:client.SendAsync($request); request=$request; response=$null; phase='send'; done=$done}
+        $script:pending = @{task=$script:client.SendAsync($request); request=$request; response=$null; phase='send'; done=$done; path=$path}
     } catch {
         $request.Dispose()
+        if ($path -eq '/login') { Set-AuthFeedback 'Không kết nối được API local.' 'error'; $password.Focus() }
         Set-Status 'Could not start local API request. Check backend availability and refresh.'
         return
     }
@@ -510,6 +541,8 @@ $portTimer.Interval=250
 $portTimer.Add_Tick({
     Update-PortControlAction
     Update-BackendAction
+    Update-TunnelAction
+    Update-SyncAction
     Update-PortMonitor ($tabs.SelectedTab.Name -eq 'Ports')
     if ($tabs.SelectedTab.Name -eq 'Ports' -and $script:portTopology.Layout.SelectedIndex -eq 0 -and $script:portTopology.Motion.Checked) {
         $script:portTopology.MotionPhase=[single]($script:portTopology.MotionPhase+0.65)
@@ -533,8 +566,19 @@ $timer.Add_Tick({
             $script:pending=$null; $top.Enabled=$true; $tabs.Enabled=$true
             if (!$p.response.IsSuccessStatusCode) {
                 if ($code -eq 401 -or ($script:csrf -and !$script:role)) { Clear-Session }
-                # Do not echo arbitrary response bodies, request bodies, cookies or exceptions.
-                Set-Status "Admin API HTTP $code. 400: invalid input; 401: login required; 403: session/origin rejected; 409: conflict, refresh; 429: wait 15 minutes; 5xx: backend error. No write retry."
+                if ($p.path -in @('/login','/session') -and (!$script:role)) {
+                    $hint=switch ($code) {
+                        401 { 'Không thể đăng nhập. Kiểm tra tài khoản và mật khẩu.' }
+                        429 { 'Quá nhiều lần thử. Chờ 15 phút rồi thử lại.' }
+                        403 { 'Yêu cầu xác thực bị từ chối.' }
+                        default { "Xác thực thất bại (HTTP $code)." }
+                    }
+                    Set-AuthFeedback $hint 'error'; Set-Status $hint
+                    if ($password.Enabled) { $password.Focus() }
+                } else {
+                    # Never echo server body, credentials or cookies to status/log.
+                    Set-Status "Admin API HTTP $code. 400: invalid input; 401: login required; 403: session/origin rejected; 409: conflict, refresh; 429: wait 15 minutes; 5xx: backend error. No write retry."
+                }
             } else {
                 $value=$text | ConvertFrom-Json
                 & $p.done $value
@@ -542,6 +586,10 @@ $timer.Add_Tick({
         } catch {
             $script:pending=$null; $top.Enabled=$true; $tabs.Enabled=$true
             if ($script:csrf -and !$script:role) { Clear-Session }
+            if ($p.path -in @('/login','/session') -and !$script:role) {
+                Set-AuthFeedback 'Không kết nối được hoặc API phản hồi lỗi.' 'error'
+                if ($password.Enabled) { $password.Focus() }
+            }
             Set-Status 'API unavailable, timed out, or returned invalid data. Check the existing backend at 127.0.0.1:4000, then Refresh. Write outcome may be unknown; inspect current state before retrying.'
         } finally {
             if ($script:pending -ne $p) {
@@ -553,6 +601,22 @@ $timer.Add_Tick({
 })
 $form.Add_FormClosing({
     param($sender,$e)
+    if ($script:portTopology.SyncJob) {
+        $e.Cancel=$true
+        Set-Status 'Đang xác minh yêu cầu Sync. Chờ kết quả tiếp nhận để không gửi trùng.'
+        return
+    }
+    if ($script:portTopology.TunnelJob) {
+        $e.Cancel=$true
+        Set-Status 'Đang xác minh tunnel 15432; hoàn tất thao tác trước khi đóng Desktop.'
+        return
+    }
+    if ($script:portTopology.TunnelSession) {
+        $e.Cancel=$true
+        $script:portTopology.TunnelClosing=$true
+        Request-TunnelAction Stop -OnClose
+        return
+    }
     if ($script:portTopology.BackendJob) {
         $e.Cancel=$true
         Set-Status 'Đang xử lý backend 4000; hoàn tất thao tác trước khi đóng cửa sổ.'
