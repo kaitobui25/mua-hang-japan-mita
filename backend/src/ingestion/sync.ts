@@ -54,7 +54,7 @@ export async function seedExistingDetails(connection: Connection = db): Promise<
 export async function processCategoryDetails(category: string, options: {
   connection?: Connection; collect?: DetailCollector; save?: (items: Observation[]) => Promise<number>;
   delay?: (milliseconds: number) => Promise<void>;
-  limit?: number; pilot?: boolean; onIssue?: (issue: DiscoveryIssue & { asin?: string }) => Promise<void>;
+  limit?: number; pilot?: boolean; enqueueChildren?: boolean; onIssue?: (issue: DiscoveryIssue & { asin?: string }) => Promise<void>;
 } = {}) {
   const connection = options.connection ?? db;
   const collect = options.collect ?? collectEnrichedDetail;
@@ -86,7 +86,7 @@ export async function processCategoryDetails(category: string, options: {
       }
       saved += await save([item]);
       if (saved % 25 === 0) console.log(`Detail backfill ${category}: ${saved} saved, ${attempted.length}/${limit} ASINs attempted`);
-      if (!options.pilot) await enqueueDetails(category, (item.detail?.childAsins ?? []).map(asin => ({ asin, parentAsin: item.parentAsin, sourceUrl: item.sourceUrl })), connection);
+      if (!options.pilot && options.enqueueChildren !== false) await enqueueDetails(category, (item.detail?.childAsins ?? []).map(asin => ({ asin, parentAsin: item.parentAsin, sourceUrl: item.sourceUrl })), connection);
       await connection.query(`UPDATE product_detail_queue SET state='success',last_success_at=now() WHERE category_slug=$1 AND asin=$2`, [category, candidate.asin]);
       if (item.priceJpy == null) await options.onIssue?.({ asin: candidate.asin, adapter: item.sourceAdapter.startsWith('scrapling') ? 'scrapling' : item.sourceAdapter.startsWith('browseros-neo') ? 'browseros-neo' : 'http', state: 'parse_error', message: 'Detail read without a current price; previous price observation retained' });
     } catch (error) {
@@ -108,8 +108,10 @@ export async function processCategoryDetails(category: string, options: {
 
 export async function syncCatalog(options: {
   discover?: typeof collectCategory; collect?: DetailCollector; limit?: number; connection?: PoolClient;
-  categories?: string[]; scheduled?: boolean; galleryPilotDate?: string;
+  categories?: string[]; scheduled?: boolean; galleryPilotDate?: string; totalLimit?: number;
 } = {}) {
+  if (options.totalLimit !== undefined && (!Number.isInteger(options.totalLimit) ||
+      options.totalLimit < 1 || options.totalLimit > 300)) throw Error('invalid_manual_amazon_limit');
   if (options.galleryPilotDate !== undefined && !galleryPilotDue(options.galleryPilotDate, options.scheduled === true)) {
     return { state: 'pilot_outside_window' };
   }
@@ -132,7 +134,9 @@ export async function syncCatalog(options: {
   try {
     const runResult = await lock.query<{ id: string }>('INSERT INTO sync_runs DEFAULT VALUES RETURNING id');
     id = Number(runResult.rows[0].id);
-    await seedExistingDetails(lock);
+    // Manual bounded runs must not queue the entire existing catalog before
+    // the limit is applied. The scheduled job still seeds the full backlog.
+    if (options.totalLimit === undefined) await seedExistingDetails(lock);
     if (!await amazonGate(lock, options.scheduled === true)) {
       const note = 'Amazon source cooldown; waiting for the next eligible daily 04:00 JST scan';
       await lock.query(`UPDATE sync_runs SET finished_at=now(),state='failed',error_count=1,note=$2 WHERE id=$1`, [id, note]);
@@ -146,6 +150,7 @@ export async function syncCatalog(options: {
       }
     }
     for (const seed of seeds) {
+      if (options.totalLimit !== undefined && attempted >= options.totalLimit) break;
       if (isScraplingStopping()) { errors++; break; }
       if (pilot && seed.categorySlug !== galleryPilotCategory) continue;
       if (!pilot && options.categories && !options.categories.includes(seed.categorySlug)) continue;
@@ -167,14 +172,18 @@ export async function syncCatalog(options: {
           discovered += new Set(result.observations.map(o => o.asin)).size;
           // Persist access denial before any downstream queue work can fail.
           for (const issue of result.issues) await report(issue);
-          await enqueueDetails(seed.categorySlug, result.observations, lock);
+          await enqueueDetails(seed.categorySlug, options.totalLimit === undefined ? result.observations :
+            result.observations.slice(0, Math.max(0, options.totalLimit-attempted)), lock);
         } catch (error) {
           const failure = error instanceof SourceError ? error : new SourceError('temporary', String(error));
           await report({ adapter: failure.adapter, state: failure.state, message: failure.message });
         }
         if (blocked) break;
         const result = await processCategoryDetails(seed.categorySlug, {
-          connection: lock, collect: options.collect ?? ((asin, category) => session.detail(asin, category)), limit: pilot ? 5 : options.limit, pilot, onIssue: report,
+          connection: lock, collect: options.collect ?? ((asin, category) => session.detail(asin, category)),
+          limit: pilot ? 5 : options.totalLimit !== undefined
+            ? Math.min(options.limit ?? options.totalLimit, options.totalLimit - attempted) : options.limit,
+          pilot, enqueueChildren: options.totalLimit === undefined, onIssue: report,
           save: async items => {
             await lock.query('BEGIN');
             try {

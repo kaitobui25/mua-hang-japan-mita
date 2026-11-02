@@ -5,10 +5,16 @@ import { db } from './db/pool.js';
 import { importObservedSnapshot, syncCatalog, seedExistingDetails } from './ingestion/sync.js';
 import { processNextImport } from './admin/imports.js';
 import { dailyCron, dailyTimezone, shouldRunDaily } from './ingestion/schedule.js';
+import { cronAtJst, readWorkerSettingsOrLegacy } from './workers/settings.js';
 
 const command = process.argv[2];
 if (command === 'once') {
-  try { await syncCatalog(); }
+  try {
+    const raw = process.env.MITA_AMAZON_MANUAL_MAX_PRODUCTS;
+    if (raw !== undefined && (!/^[1-9][0-9]{0,2}$/.test(raw) || Number(raw)>300))
+      throw Error('invalid_manual_amazon_limit');
+    await syncCatalog(raw === undefined ? {} : { totalLimit: Number(raw) });
+  }
   finally { await db.end(); }
 } else if (command === 'import') {
   try { console.log('Imported observed products:', await importObservedSnapshot()); }
@@ -54,6 +60,7 @@ if (command === 'once') {
   let stopping = false;
   let importWork: Promise<void> = Promise.resolve();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let schedulePoll: ReturnType<typeof setInterval> | undefined;
   const pollImports = () => {
     importWork = (async () => {
       try {
@@ -69,17 +76,30 @@ if (command === 'once') {
     await boss.createQueue('catalog.daily');
     await boss.work('catalog.daily', { includeMetadata: true }, async jobs => {
       for (const job of jobs) {
-        if (shouldRunDaily(job.createdOn, startedAt)) {
+        const current = await readWorkerSettingsOrLegacy();
+        if (shouldRunDaily(job.createdOn, startedAt, new Date(), current.schedules.amazon)) {
           await syncCatalog({ scheduled: true, galleryPilotDate: process.env.AMAZON_GALLERY_PILOT_DATE === 'verified'
             ? undefined : process.env.AMAZON_GALLERY_PILOT_DATE });
         } else console.log('Skipped daily scan from downtime/outside the scheduled window.');
       }
     });
-    await boss.schedule('catalog.daily', dailyCron, {}, { tz: dailyTimezone });
+    let scheduledTime = '';
+    const refreshSchedule = async () => {
+      const settings = await readWorkerSettingsOrLegacy();
+      const desired = settings.schedules.amazon;
+      if (desired !== scheduledTime) {
+        await boss.schedule('catalog.daily', cronAtJst(desired), {}, { tz: dailyTimezone });
+        scheduledTime = desired;
+      }
+    };
+    await refreshSchedule();
+    schedulePoll = setInterval(() => { void refreshSchedule().catch(() =>
+      console.error('Amazon schedule refresh failed; previous schedule retained.')); }, 60000);
     pollImports();
     console.log('Mita catalog worker active, Scrapling FetcherSession + BeautifulSoup, 04:00 Asia/Tokyo daily');
     const halt = async () => {
       stopping = true;
+      if (schedulePoll) clearInterval(schedulePoll);
       stopScraplingSessions();
       if (timer) clearTimeout(timer);
       await importWork;
@@ -87,7 +107,7 @@ if (command === 'once') {
     };
     process.once('SIGINT', () => void halt());
     process.once('SIGTERM', () => void halt());
-  } catch (error) { await boss.stop(); await db.end(); throw error; }
+  } catch (error) { if (schedulePoll) clearInterval(schedulePoll); await boss.stop(); await db.end(); throw error; }
 } else {
   console.error('Usage: tsx src/worker.ts once|import|backfill:seed|backfill:status|backfill|daily');
   process.exitCode = 1;

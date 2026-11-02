@@ -3,6 +3,33 @@ import assert from 'node:assert/strict';
 import { validateTitlePresentation, proposeCompactTitle, saveCompactTitle, isCompactTitleProductIssue, compactPendingTitles } from '../src/translation/compact-title.js';
 import type { PoolClient } from 'pg';
 
+test('manual short-title candidates cannot expand beyond the full-name cohort', async () => {
+  const original = process.env.OPENROUTER_API_KEY;
+  process.env.OPENROUTER_API_KEY = 'test-only';
+  let allowed: unknown[] | undefined;
+  let released = false;
+  const connection = {
+    query: async (sql: string, params: unknown[] = []) => {
+      if (sql.includes('pg_try_advisory_lock')) return { rows: [{ ok: true }] };
+      if (sql.includes('FROM products p JOIN product_translations')) {
+        assert.match(sql, /p\.asin=ANY\(\$2::varchar\(10\)\[\]\)/);
+        allowed = params;
+      }
+      return { rows: [] };
+    }, release: () => { released = true; }
+  } as unknown as PoolClient;
+  try {
+    assert.deepEqual(await compactPendingTitles({ connect: async () => connection,
+      quota: async () => ({ remaining: 30, limit: 30, used: 0 }),
+      maxProducts: 3, allowedAsins: ['B000000001','B000000002'] }), { saved: 0, deferred: 0 });
+    assert.deepEqual(allowed, [3,['B000000001','B000000002']]);
+    assert.equal(released,true);
+  } finally {
+    if (original === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = original;
+  }
+});
+
 const input = {
   asin: 'B000000001', sourceName: 'DHC 300mg 60 tablets Japanese item',
   translatedName: 'DHC 300mg 60 viên thực phẩm bổ sung nhập từ Nhật Bản', brand: 'DHC'

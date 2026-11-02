@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultWorkerSettings, nextWorkerWindow, validateWorkerSettings, writeWorkerSettings } from '../src/workers/settings.js';
+import { cronAtJst, defaultWorkerSettings, lastDueAtJst, nextWorkerWindow, validateWorkerSettings, writeWorkerSettings } from '../src/workers/settings.js';
 
 test('Worker settings validate chronological JST hours and no overlap', () => {
   assert.deepEqual(validateWorkerSettings(defaultWorkerSettings), defaultWorkerSettings);
@@ -21,6 +21,13 @@ test('Next schedule is UTC ISO but uses JST clock and never catches up', () => {
     '2026-11-02T20:00:00.000Z');
   assert.equal(nextWorkerWindow('names', defaultWorkerSettings, new Date('2026-11-02T20:30:00Z')),
     '2026-11-03T20:00:00.000Z');
+});
+test('Custom cron and due-time calculations handle JST rollover', () => {
+  assert.equal(cronAtJst('06:45'), '45 6 * * *');
+  assert.equal(lastDueAtJst(new Date('2026-11-02T22:00:00Z'), '06:45').toISOString(),
+    '2026-11-02T21:45:00.000Z');
+  assert.equal(lastDueAtJst(new Date('2026-11-02T21:00:00Z'), '06:45').toISOString(),
+    '2026-11-01T21:45:00.000Z');
 });
 
 test('Versioned Owner config uses transaction and rolls back on audit failure', async () => {

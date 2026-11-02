@@ -72,3 +72,27 @@ export function nextWorkerWindow(job: WorkerKey, settings: WorkerSettings, now =
   if (due.getTime() <= now.getTime()) due.setUTCDate(due.getUTCDate() + 1);
   return due.toISOString();
 }
+
+export function cronAtJst(hhmm: string): string {
+  if (!timeRe.test(hhmm)) throw Error('invalid_worker_schedules');
+  return Number(hhmm.slice(3)) + ' ' + Number(hhmm.slice(0,2)) + ' * * *';
+}
+
+export function lastDueAtJst(now: Date, hhmm: string): Date {
+  if (!timeRe.test(hhmm)) throw Error('invalid_worker_schedules');
+  const day = new Date(now.getTime() + 9 * 3600000).toISOString().slice(0, 10);
+  const due = new Date(day + 'T' + hhmm + ':00+09:00');
+  if (due > now) due.setUTCDate(due.getUTCDate() - 1);
+  return due;
+}
+
+/** Compatibility only for a database that has not received this optional schema. */
+export async function readWorkerSettingsOrLegacy(): Promise<WorkerSettings> {
+  try { return await readWorkerSettings(); }
+  catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === '42P01') {
+      return defaultWorkerSettings;
+    }
+    throw error;
+  }
+}

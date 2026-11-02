@@ -9,6 +9,7 @@ import { fetchVpsNotifications } from '../order-alert-relay.js';
 import { csrfToken, digest, getSession, isLocalRequest, login, readToken, setSessionCookie, validOrigin } from './security.js';
 import { workerOverview } from '../workers/status.js';
 import { writeWorkerSettings } from '../workers/settings.js';
+import { requestManualWorker } from '../workers/manual.js';
 
 declare module 'fastify' {
   interface FastifyRequest { adminSession: Awaited<ReturnType<typeof getSession>> }
@@ -121,10 +122,19 @@ export async function adminRoutes(server: FastifyInstance) {
       throw error;
     }
   });
-  // Manual execution is a coordinator-only operation. This safe default rejects
-  // requests until the Supervisor has an authenticated, race-free protocol.
-  server.post('/workers/run', { bodyLimit: 2048 }, async (_request, reply) => {
-    return reply.code(409).send({ error: 'Điều phối chạy thủ công chưa kích hoạt. Không có worker nào được chạy.' });
+  server.post('/workers/run', { bodyLimit: 2048 }, async (request, reply) => {
+    try {
+      const result = await requestManualWorker(request.body, request.headers.cookie,
+        request.adminSession!.csrfToken);
+      return reply.code(202).send(result);
+    } catch(error) {
+      if(error instanceof Error && error.message==='invalid_manual_worker_request') {
+        throw new AdminError(400,'Yêu cầu worker không hợp lệ.');
+      }
+      // A timeout after sending is explicitly uncertain: do not claim the
+      // process did not start and do not automatically repeat its request ID.
+      throw new AdminError(409,'Không xác nhận được lệnh chạy. Kiểm tra Supervisor và nhật ký theo request ID trước khi gửi yêu cầu khác.');
+    }
   });
   server.put('/translation-settings', async request => {
     const body = request.body as Parameters<typeof saveTranslationSettings>[0] | null;
