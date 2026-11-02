@@ -325,7 +325,7 @@ foreach ($name in @('Orders','Products')) {
     $null = Add-Button $bar 'Trang sau' { $n=$tabs.SelectedTab.Name; if ($script:pageNumbers[$n] * 50 -lt $script:pageTotals[$n]) { $script:pageNumbers[$n]++; Refresh-View } }
 }
 $pricingBar = Add-Toolbar 'Pricing'
-foreach ($name in @('Workers','Logs')) {
+foreach ($name in @('Logs')) {
     $title = New-Object System.Windows.Forms.Label
     $title.Text = $script:pageLabels[$name]; $title.Dock = 'Top'; $title.Height = 40
     $title.Padding = New-Object System.Windows.Forms.Padding(10, 8, 0, 0)
