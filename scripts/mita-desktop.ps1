@@ -136,7 +136,8 @@ function Add-TextView($name) {
     $v.BorderStyle = 'FixedSingle'; $v.BackColor = [System.Drawing.Color]::Black; $v.ForeColor = [System.Drawing.Color]::White
     $script:pages[$name].Controls.Add($v); $script:views[$name] = $v
 }
-foreach ($name in @('Pricing','Workers','Logs')) { Add-TextView $name }
+foreach ($name in @('Pricing','Logs')) { Add-TextView $name }
+. (Join-Path $PSScriptRoot 'mita-desktop-workers.ps1')
 . (Join-Path $PSScriptRoot 'mita-desktop-ports.ps1')
 Initialize-PortTab $script:pages.Ports
 
@@ -365,6 +366,7 @@ function Update-WriteControls {
     Update-BackendControlAvailability
     Update-TunnelControlAvailability
     Update-SyncControlAvailability
+    Set-WorkerControls
 }
 function Set-AuthFeedback([string]$message,[string]$kind='idle') {
     $authStatus.Text=$message
@@ -383,7 +385,9 @@ function Clear-Session {
     $password.Clear(); $password.Enabled=$true; $username.Enabled=$true; $login.Enabled=$true
     Set-AuthFeedback 'Chưa đăng nhập' 'idle'
     foreach ($name in @('Overview','Notifications','Orders','Products')) { $script:views[$name].DataSource=$null }
-    foreach ($name in @('Pricing','Workers','Logs')) { $script:views[$name].Clear() }
+    foreach ($name in @('Pricing','Logs')) { $script:views[$name].Clear() }
+    $script:workerApi=$null; $script:workerSnapshot=$null
+    Show-WorkerPanel
     foreach ($key in @('unread','pending','processing','value')) { $script:metricValues[$key].Text='—' }
     $systemDetails.Text='Đăng nhập để xem trạng thái.'
 }
@@ -476,18 +480,7 @@ function Refresh-View {
     if (!$script:csrf) { Set-Status 'Owner login required. API must already be running.'; return }
     $name=$tabs.SelectedTab.Name
     if ($name -eq 'Workers') {
-        try {
-            $day=[datetime]::UtcNow.AddHours(9).ToString('yyyy-MM-dd')
-            $file=Join-Path $script:root ".agents/runtime/mita-daily-$day.json"
-            $info=Get-Item -LiteralPath $file
-            if ($info.Length -gt 1MB) { throw 'Status too large' }
-            $value=Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json
-            $lines=@("JST day: $day; file modified: $($info.LastWriteTime.ToString('s'))", 'Snapshot only; does not prove that any process is alive.', '')
-            foreach ($job in $value.jobs.PSObject.Properties) { $lines += "$($job.Name): $($job.Value.state); updated $($job.Value.updatedAt)" }
-            $lines += "Sync: $($value.sync.state)"
-            $script:views.Workers.Text=$lines -join "`r`n"
-            Set-Status 'Read local supervisor snapshot. No process controls.'
-        } catch { $script:views.Workers.Text='No readable current-JST-day supervisor status. Workers may be offline or status unavailable.'; Set-Status 'Worker snapshot unavailable.' }
+        Refresh-Workers
         return
     }
     if ($name -eq 'Logs') { Set-Status 'Session-only activity. Raw worker logs are intentionally not loaded (may contain secrets).'; return }
