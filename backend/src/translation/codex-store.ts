@@ -94,7 +94,7 @@ export async function saveCodexName(connection: Connection, input: {
       VALUES($1,'vi',$2,$3,$4,$5,now(),true,$6,$7,$8,$9,$4)
       ON CONFLICT(asin,locale) DO UPDATE SET name=EXCLUDED.name,status=EXCLUDED.status,
         name_only=CASE WHEN product_translations.detail IS NOT NULL AND
-          (product_translations.detail_approved OR (product_translations.status IN ('success','warning') AND NOT product_translations.name_only))
+          (product_translations.detail_approved OR (product_translations.status='success' AND NOT product_translations.name_only))
           THEN false ELSE true END,
         detail_approved=product_translations.detail_approved OR
           (product_translations.status='success' AND NOT product_translations.name_only AND product_translations.detail IS NOT NULL),

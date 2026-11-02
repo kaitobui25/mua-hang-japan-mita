@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { assessCodexQuota } from '../src/translation/codex-quota.js';
-import { codexLaunch } from '../src/translation/codex-provider.js';
-import { resolve } from 'node:path';
+import { applyLocalCodexVerification, codexLaunch } from '../src/translation/codex-provider.js';
+import { resolve, join } from 'node:path';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 const now = new Date('2026-11-02T03:00:00Z');
 const window = (minutes: number, usedPercent = 25) => ({ usedPercent, windowDurationMins: minutes, resetsAt: now.getTime() / 1000 + 10000 });
@@ -46,4 +48,22 @@ test('Codex launch is opt-in, shell-free and forwards no database or API credent
   assert.ok(!launch.args.includes('--ignore-user-config'));
   assert.ok(!launch.args.includes('--ephemeral'));
   assert.ok(launch.args.includes('features.shell_tool=false'));
+});
+
+test('Owner-selected Codex worker can read explicit private local verification but not a malformed record', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mita-codex-optin-test-'));
+  const marker = join(dir, 'verification.json');
+  const environment: NodeJS.ProcessEnv = {};
+  try {
+    assert.equal(applyLocalCodexVerification(environment, marker), false);
+    writeFileSync(marker, JSON.stringify({ purpose: 'wrong-worker', verified: true,
+      executable: resolve('synthetic', 'codex.js') }));
+    assert.equal(applyLocalCodexVerification(environment, marker), false);
+    assert.equal(environment.MITA_CODEX_AUTOMATION_VERIFIED, undefined);
+    writeFileSync(marker, JSON.stringify({ purpose: 'mita-local-names', verified: true,
+      executable: resolve('synthetic', 'codex.js') }));
+    assert.equal(applyLocalCodexVerification(environment, marker), true);
+    assert.equal(environment.MITA_CODEX_AUTOMATION_VERIFIED, '1');
+    assert.equal(codexLaunch(environment).env.DATABASE_URL, undefined);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

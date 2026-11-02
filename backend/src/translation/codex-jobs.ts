@@ -4,7 +4,7 @@ import { db } from '../db/pool.js';
 import { config } from '../config.js';
 import { codexNamePrompt, parseCodexNames } from './codex.js';
 import { assertCodexNameSchema, saveCodexName, type CodexSnapshot } from './codex-store.js';
-import { createCodexProvider, CodexProviderError, type CodexProvider } from './codex-provider.js';
+import { createCodexProvider, CodexProviderError, CodexQuotaBeforeInferenceError, type CodexProvider } from './codex-provider.js';
 
 export type CodexNameRun = {
   version: 1; worker: 'names'; engine: 'codex'; runId: string; trigger: 'manual' | 'scheduled';
@@ -53,7 +53,7 @@ export async function translateCodexNames(options: {
     await client.query('SET search_path TO public');
     await assertCodexNameSchema(client);
     const identity = await client.query<{ database: string; address: string; port: number }>(`
-      SELECT current_database() AS database,inet_server_addr()::text AS address,inet_server_port() AS port`);
+      SELECT current_database() AS database,host(inet_server_addr()) AS address,inet_server_port() AS port`);
     if (identity.rows[0]?.database !== decodeURIComponent(target.pathname.slice(1)) || identity.rows[0]?.port !== 5433 ||
         !['127.0.0.1', '::1'].includes(identity.rows[0]?.address)) {
       throw new Error('codex_database_identity_mismatch');
@@ -152,6 +152,25 @@ export async function translateCodexNames(options: {
         let content: string;
         try { content = await provider.translate(pending); }
         catch (error) {
+          if (error instanceof CodexQuotaBeforeInferenceError) {
+            // The real provider certifies this happened before thread/start.
+            // Restore only this batch's reservations; never refund uncertain
+            // inference/transport errors that may have reached the model.
+            await client.query('BEGIN');
+            try {
+              for (const row of pending) {
+                const cycle = await client.query(`UPDATE codex_name_cycle_items SET attempts=attempts-1
+                  WHERE cycle_id=$1 AND asin=$2 AND completed_at IS NULL AND attempts>0 RETURNING asin`, [cycleId, row.asin]);
+                const item = await client.query(`UPDATE codex_name_run_items SET attempts=attempts-1
+                  WHERE run_id=$1 AND asin=$2 AND outcome='selected' AND attempts>0 RETURNING asin`, [run.runId, row.asin]);
+                if (cycle.rows.length !== 1 || item.rows.length !== 1) throw new Error('codex_quota_reservation_mismatch');
+              }
+              await client.query('COMMIT');
+            } catch (refundError) {
+              try { await client.query('ROLLBACK'); } catch {}
+              throw refundError;
+            }
+          }
           return await finish(error instanceof CodexProviderError &&
             ['quota_unknown', 'quota_low', 'quota_exhausted'].includes(error.reason) ? error.reason : 'codex_provider_failed');
         }

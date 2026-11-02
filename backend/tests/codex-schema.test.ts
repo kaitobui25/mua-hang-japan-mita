@@ -5,12 +5,68 @@ import { readFile } from 'node:fs/promises';
 import { db } from '../src/db/pool.js';
 import { config } from '../src/config.js';
 import { saveCodexName } from '../src/translation/codex-store.js';
+import { translateCodexNames } from '../src/translation/codex-jobs.js';
+import type { CodexProvider } from '../src/translation/codex-provider.js';
 
 // This suite cannot write via a direct invocation against a developer database.
 // Only tests/run.ts sets the matching, randomly generated disposable DB marker.
 const database = new URL(config.databaseUrl).pathname.slice(1);
 const disposable = /^mita_test_[a-f0-9]{16}$/.test(database) && process.env.MITA_DISPOSABLE_TEST_DATABASE === database;
 after(async () => { if (disposable) await db.end(); });
+
+test('20 full Codex job records are committed using real disposable PostgreSQL',
+  { skip: !disposable }, async () => {
+    const client = await db.connect();
+    // Sort ahead of every alphabetic fixture, so the real job selects only
+    // this 20-row cohort even when other suite tests have inserted products.
+    const asins = Array.from({ length: 20 }, (_, i) => `0${String(i + 1).padStart(9, '0')}`);
+    try {
+      await client.query(`INSERT INTO categories(slug,name,amazon_seed_url)
+        VALUES('codex-test-20','Codex test','https://example.com') ON CONFLICT DO NOTHING`);
+      for (const asin of asins) await client.query(`INSERT INTO products(asin,category_slug,name,brand,source_url,source_adapter)
+        VALUES($1,'codex-test-20','DHC ビタミン 500mg','DHC','https://example.com','codex-test')`, [asin]);
+    } finally { client.release(); }
+    let calls = 0;
+    const provider: CodexProvider = {
+      quota: async () => ({ allowed: true, reason: 'ready', remainingFiveHour: 90 }),
+      translate: async products => {
+        calls++;
+        return JSON.stringify({ translations: products.map(p => ({ asin: p.asin, full: 'DHC vitamin 500mg', short: null })) });
+      },
+      close: async () => {}
+    };
+    const runId = randomUUID();
+    const run = await translateCodexNames({ runId, trigger: 'manual', maxProducts: 20,
+      provider: async () => provider });
+    assert.equal(run.state, 'completed');
+    assert.equal(run.selected, 20);
+    assert.equal(run.translated, 20);
+    assert.equal(run.failed, 0);
+    assert.equal(calls, 1);
+    const saved = await db.query(`SELECT p.asin,t.name,t.name_revision,h.run_id,i.outcome,i.attempts
+      FROM products p JOIN product_translations t ON t.asin=p.asin AND t.locale='vi'
+        JOIN codex_name_history h ON h.asin=p.asin AND h.id=t.name_revision
+        JOIN codex_name_run_items i ON i.asin=p.asin AND i.run_id=h.run_id
+      WHERE p.asin=ANY($1::varchar[]) ORDER BY p.asin`, [asins]);
+    assert.equal(saved.rows.length, 20);
+    assert.ok(saved.rows.every(row => row.name === 'DHC vitamin 500mg' && row.run_id === runId &&
+      row.outcome === 'saved' && row.attempts === 1));
+    const locks = await db.query(`SELECT count(*)::int AS n FROM pg_locks
+      WHERE locktype='advisory' AND granted AND classid=0 AND objid IN (70400200,70400300,70400301)`);
+    assert.equal(locks.rows[0].n, 0);
+  });
+
+test('PostgreSQL identity normalization uses the real server address, not a mock',
+  { skip: !disposable }, async () => {
+    const target = new URL(config.databaseUrl);
+    const { rows } = await db.query<{ database: string; raw: string; address: string; port: number }>(`
+      SELECT current_database() AS database, inet_server_addr()::text AS raw,
+        host(inet_server_addr()) AS address, inet_server_port() AS port`);
+    assert.equal(rows[0].database, decodeURIComponent(target.pathname.slice(1)));
+    assert.equal(rows[0].port, 5433);
+    assert.equal(rows[0].address, '127.0.0.1');
+    assert.ok(rows[0].raw === rows[0].address || rows[0].raw.startsWith(rows[0].address + '/'));
+  });
 
 test('Codex additive SQL upgrades an older schema, reapplies without resetting state, and preserves approved detail during title replacement',
   { skip: !disposable }, async () => {
@@ -63,11 +119,13 @@ test('Codex additive SQL upgrades an older schema, reapplies without resetting s
       assert.equal(history[0].previous.title.name, source.prior_name);
       assert.equal(history[0].id, saved.name_revision);
       assert.equal((await client.query('SELECT attempts FROM codex_name_cycle_items')).rows[0].attempts, 1);
-      for (const [index, detail] of [null, { features: ['unapproved previous detail'] }].entries()) {
+      for (const [index, detail] of [null, { features: ['unapproved previous detail'] },
+        { features: ['unapproved warning detail'] }].entries()) {
         const asin = `B00000000${index + 2}`;
         await client.query('INSERT INTO products VALUES($1,$2,$3)', [asin, source.name, source.brand]);
         await client.query(`INSERT INTO product_translations(asin,locale,source_hash,status,name_only,detail)
-          VALUES($1,'vi','previous-detail-hash','failed',false,$2)`, [asin, detail === null ? null : JSON.stringify(detail)]);
+          VALUES($1,'vi','previous-detail-hash',$3,false,$2)`,
+          [asin, detail === null ? null : JSON.stringify(detail), index === 2 ? 'warning' : 'failed']);
         const token = (await client.query('SELECT updated_at::text FROM product_translations WHERE asin=$1', [asin])).rows[0].updated_at;
         const failedSource = { ...source, asin, prior_name: null, prior_updated_at: token };
         await client.query('INSERT INTO codex_name_cycle_items(cycle_id,asin,attempts) VALUES($1,$2,1)', [cycleId, asin]);
@@ -76,13 +134,13 @@ test('Codex additive SQL upgrades an older schema, reapplies without resetting s
         assert.equal((await saveCodexName(client, { runId, cycleId, source: failedSource,
           full: 'DHC vitamin 500mg', short: null })).saved, true);
         const titleOnly = (await client.query('SELECT name_only,detail_approved,detail FROM product_translations WHERE asin=$1', [asin])).rows[0];
-        assert.equal(titleOnly.name_only, true, 'a Codex title cannot promote missing/failed details to full translation');
+        assert.equal(titleOnly.name_only, true, 'a Codex title cannot promote missing/failed/unapproved warning details');
         assert.equal(titleOnly.detail_approved, false);
         assert.deepEqual(titleOnly.detail, detail);
       }
       // Legacy full approvals acquire the durable approval flag before title
       // warnings change status, protecting them from later detail-worker writes.
-      const legacyAsin = 'B000000004';
+      const legacyAsin = 'B000000005';
       await client.query('INSERT INTO products VALUES($1,$2,$3)', [legacyAsin, source.name, source.brand]);
       await client.query(`INSERT INTO product_translations(asin,locale,name,source_hash,status,name_only,detail,detail_approved)
         VALUES($1,'vi','DHC vitamin cũ 500mg','legacy-detail-hash','success',false,'{"features":["legacy approved detail"]}',false)`, [legacyAsin]);

@@ -5,20 +5,22 @@ import { translatePendingNames } from './translation/jobs.js';
 import { compactPendingTitles } from './translation/compact-title.js';
 import { shouldRunTranslation, translationCron, translationTimezone } from './translation/schedule.js';
 import { translateCodexNames } from './translation/codex-jobs.js';
+import { applyLocalCodexVerification } from './translation/codex-provider.js';
 import { randomUUID } from 'node:crypto';
 import { cronAtJst, readWorkerSettingsOrLegacy } from './workers/settings.js';
 
 const command = process.argv[2];
-async function translateNames(trigger: 'manual' | 'scheduled') {
+async function translateNames(trigger: 'manual' | 'scheduled', chosenEngine?: 'openrouter' | 'codex') {
   // Persisted Owner choice is authoritative once the additive settings schema
   // exists. Old installations retain OpenRouter until explicitly migrated.
-  const engine = (await readWorkerSettingsOrLegacy()).engine;
+  const engine = chosenEngine ?? (await readWorkerSettingsOrLegacy()).engine;
   if (!['openrouter', 'codex'].includes(engine)) throw new Error('invalid_name_translation_engine');
   if (engine === 'openrouter') {
     const cap = process.env.MITA_NAMES_MAX_PRODUCTS;
     if (cap !== undefined && (!/^[1-9][0-9]{0,2}$/.test(cap) || Number(cap)>300)) throw Error('invalid_manual_names_limit');
     return translateAndCompact(cap === undefined ? undefined : Number(cap));
   }
+  applyLocalCodexVerification();
   const runId = process.env.MITA_NAMES_RUN_ID ?? randomUUID();
   try {
     const run = await translateCodexNames({ trigger, runId,
@@ -75,7 +77,15 @@ if (command === 'once') {
           continue;
         }
         console.log('05:00 JST name translation started.');
-        console.log('Name translation finished:', await translateNames('scheduled'));
+        try {
+          console.log('Name translation finished:', await translateNames('scheduled', current.engine));
+        } catch (error) {
+          if (current.engine !== 'codex') throw error;
+          // The Codex worker already emits a bounded MITA_WORKER_RESULT with
+          // an explicit failure reason. PgBoss retrying this same JST job can
+          // replay an uncertain DB outcome, so acknowledge instead of retry.
+          console.error('Scheduled name translation failed; automatic retry disabled.');
+        }
       }
     });
     let scheduledTime = '';

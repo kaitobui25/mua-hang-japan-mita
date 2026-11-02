@@ -37,6 +37,8 @@ test('Codex replaces an existing successful name despite semantic warning, atomi
   assert.doesNotMatch(save.sql, /detail\s*=|name_attempts\s*=/);
   assert.match(save.sql, /name_only=CASE WHEN product_translations.detail IS NOT NULL AND/);
   assert.match(save.sql, /product_translations.detail_approved OR/);
+  assert.match(save.sql, /product_translations.status='success' AND NOT product_translations.name_only/);
+  assert.doesNotMatch(save.sql, /status IN \('success','warning'\) AND NOT product_translations.name_only/);
   assert.match(save.sql, /detail_approved=product_translations.detail_approved OR\s+\(product_translations.status='success' AND NOT product_translations.name_only AND product_translations.detail IS NOT NULL\)/);
   assert.doesNotMatch(f.calls.map(call => call.sql).join('\n'), /translation_settings|UPDATE products/);
   assert.ok(f.calls.some(call => call.sql.includes('DELETE FROM product_title_presentations')));

@@ -1,7 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { extname, isAbsolute, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { assessCodexQuota, type CodexQuota } from './codex-quota.js';
 import { codexNamePrompt, codexNameSchema } from './codex.js';
 import type { NameInput } from './openrouter.js';
@@ -14,6 +16,26 @@ export interface CodexProvider {
 }
 export class CodexProviderError extends Error {
   constructor(public readonly reason: string) { super(reason); }
+}
+/** Quota refusal before thread/start proves no model inference was attempted. */
+export class CodexQuotaBeforeInferenceError extends CodexProviderError {}
+
+/** An explicit, private local verification record enables scheduled/manual
+ * worker children without a permanent global environment override. Missing or
+ * malformed records fail closed; provider login/quota/sandbox checks still run. */
+export function applyLocalCodexVerification(environment: NodeJS.ProcessEnv = process.env,
+  verificationFile = fileURLToPath(new URL('../../../.agents/runtime/codex-cli-local-verification.json', import.meta.url))): boolean {
+  if (environment.MITA_CODEX_AUTOMATION_VERIFIED === '1') return true;
+  try {
+    const record = JSON.parse(readFileSync(verificationFile, 'utf8')) as Record<string, unknown>;
+    const executable = record.executable;
+    if (record.purpose !== 'mita-local-names' || record.verified !== true ||
+        typeof executable !== 'string' || !isAbsolute(executable) ||
+        !['.exe', '.js', '.mjs'].includes(extname(executable).toLowerCase())) return false;
+    environment.MITA_CODEX_EXECUTABLE = executable;
+    environment.MITA_CODEX_AUTOMATION_VERIFIED = '1';
+    return true;
+  } catch { return false; }
 }
 
 type Message = { id?: number | string; method?: string; params?: Record<string, unknown>; result?: unknown; error?: unknown };
@@ -147,7 +169,7 @@ export async function createCodexProvider(options: { spawn?: typeof spawn; envir
         // Recheck at the inference boundary too: DB attempt reservations can
         // take time after the job's earlier quota observation.
         const quota = await readQuota();
-        if (!quota.allowed) throw new CodexProviderError(quota.reason);
+        if (!quota.allowed) throw new CodexQuotaBeforeInferenceError(quota.reason);
         const started = await session.request('thread/start', {
           model: CODEX_NAME_MODEL, modelProvider: 'openai', cwd, approvalPolicy: 'never', sandbox: 'read-only',
           ephemeral: true, config: { web_search: 'disabled', 'features.shell_tool': false,

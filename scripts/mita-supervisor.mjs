@@ -256,7 +256,7 @@ export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
         const result=JSON.parse(message.slice('MITA_WORKER_RESULT '.length));
         if(result.worker==='names' && result.engine==='codex' &&
            ['completed','partial','deferred','failed'].includes(result.state)){
-          setState(name,result.state==='completed'?'completed':'partial',{
+          setState(name,result.state,{
             runId:result.runId??null,reason:result.reason??null,
             translated:result.translated??null,failed:result.failed??null,
             warnings:result.warnings??null,selected:result.selected??null});
@@ -268,7 +268,7 @@ export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
     if(!near)return;
     if(name==='names' && message.includes('JST name translation started'))setState(name,'running');
     if(name==='detail' && message.includes('JST local DETAIL translation:'))setState(name,'completed');
-    if(name==='names' && message.includes('Name translation finished:') && status.jobs[name]?.state!=='partial')setState(name,'completed');
+    if(name==='names' && message.includes('Name translation finished:') && status.jobs[name]?.state==='running')setState(name,'completed');
     if(message.includes('paused: true') && status.jobs[name]?.state==='completed')setState(name,'partial');
     if(message.includes('Skipped missed') && !status.jobs[name]?.state)setState(name,'skipped');
   }

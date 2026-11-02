@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { translateCodexNames, codexRunInput } from '../src/translation/codex-jobs.js';
 import { config } from '../src/config.js';
-import type { CodexProvider } from '../src/translation/codex-provider.js';
+import { CodexQuotaBeforeInferenceError, type CodexProvider } from '../src/translation/codex-provider.js';
 
 // This file uses no database/network/CLI; even accidental real pool use fails.
 import { db } from '../src/db/pool.js';
@@ -39,6 +39,7 @@ test('Codex run gates, budgets, bounded retries and outcomes use mocked dependen
     { mode: 'invalid', count: 2, calls: 3, translated: 0, failed: 2, reason: null },
     { mode: 'quota', count: 2, calls: 0, translated: 0, failed: 0, reason: 'quota_unknown' },
     { mode: 'quota-later', count: 100, calls: 1, translated: 80, failed: 0, reason: 'quota_low' },
+    { mode: 'quota-boundary', count: 2, calls: 1, translated: 0, failed: 0, reason: 'quota_low' },
     { mode: 'busy', count: 2, calls: 0, translated: 0, failed: 0, reason: 'worker_or_sync_busy' },
     { mode: 'duplicate', count: 2, calls: 0, translated: 0, failed: 0, reason: 'run_already_recorded' },
     { mode: 'unresolved', count: 2, calls: 0, translated: 0, failed: 0, reason: 'previous_run_unresolved' },
@@ -62,7 +63,10 @@ test('Codex run gates, budgets, bounded retries and outcomes use mocked dependen
         { indexname: 'codex_name_history_asin', indexdef: 'CREATE INDEX fixture ON public.codex_name_history USING btree (asin, id DESC)' }
       ] };
       if (sql.includes('FROM pg_trigger')) return { rows: [{ tgname: 'mita_name_revision_guard' }] };
-      if (sql.includes('current_database()')) return { rows: [{ database: 'codex_fixture', address: '127.0.0.1', port: 5433 }] };
+      if (sql.includes('current_database()')) {
+        assert.match(sql, /host\(inet_server_addr\(\)\)/, 'normalization must strip PostgreSQL inet /32 or /128 mask');
+        return { rows: [{ database: 'codex_fixture', address: '127.0.0.1', port: 5433 }] };
+      }
       if (sql.includes('pg_try_advisory_lock')) return { rows: [{ acquired: scenario.mode !== 'busy' }] };
       if (sql.includes("WHERE state='running'")) return { rows: scenario.mode === 'unresolved' ? [{ id: runId }] : [] };
       if (sql.includes('INSERT INTO codex_name_runs')) return { rows: scenario.mode === 'duplicate' ? [] : [{ id: runId }] };
@@ -83,6 +87,7 @@ test('Codex run gates, budgets, bounded retries and outcomes use mocked dependen
       translate: async rows => {
         requests++;
         assert.ok(rows.length <= 80);
+        if (scenario.mode === 'quota-boundary') throw new CodexQuotaBeforeInferenceError('quota_low');
         if (scenario.mode === 'provider') throw new Error('synthetic');
         if (scenario.mode === 'invalid') return '{';
         return JSON.stringify({ translations: rows.map(row => ({ asin: row.asin, full: 'DHC vitamin 500mg', short: null })) });
@@ -100,6 +105,10 @@ test('Codex run gates, budgets, bounded retries and outcomes use mocked dependen
       assert.ok(released);
       if (!['busy', 'duplicate', 'unresolved'].includes(scenario.mode)) assert.ok(closed);
       if (scenario.mode === 'quota') assert.ok(!statements.some(call => call.sql.includes('INSERT INTO codex_name_run_items')));
+      if (scenario.mode === 'quota-boundary') {
+        assert.equal(statements.filter(call => call.sql.includes('codex_name_cycle_items SET attempts=attempts-1')).length, 2);
+        assert.equal(statements.filter(call => call.sql.includes('codex_name_run_items SET attempts=attempts-1')).length, 2);
+      }
       if (scenario.mode === 'busy') assert.ok(!statements.some(call => /INSERT|UPDATE|DELETE/.test(call.sql)));
       assert.deepEqual(statements.filter(call => call.sql.includes('pg_advisory_unlock')).map(call => call.values[0]),
         scenario.mode === 'busy' ? [] : [70400301, 70400300, 70400200]);
