@@ -7,6 +7,8 @@ import { enqueueImport, listImports } from './imports.js';
 import { acknowledgeOrderNotification, listOrderNotifications } from './notifications.js';
 import { fetchVpsNotifications } from '../order-alert-relay.js';
 import { csrfToken, digest, getSession, isLocalRequest, login, readToken, setSessionCookie, validOrigin } from './security.js';
+import { workerOverview } from '../workers/status.js';
+import { writeWorkerSettings } from '../workers/settings.js';
 
 declare module 'fastify' {
   interface FastifyRequest { adminSession: Awaited<ReturnType<typeof getSession>> }
@@ -105,6 +107,25 @@ export async function adminRoutes(server: FastifyInstance) {
   });
   server.get('/catalog-settings', async () => getCatalogSettings());
   server.get('/translation-settings', async () => getTranslationSettings());
+  server.get('/workers', async () => workerOverview());
+  server.put('/workers/settings', { bodyLimit: 2048 }, async request => {
+    try {
+      return await writeWorkerSettings(request.body, String(request.adminSession!.actorId));
+    } catch (error) {
+      if (error instanceof Error && error.message === 'worker_settings_version_conflict') {
+        throw new AdminError(409, 'Cấu hình worker đã thay đổi; tải lại trước khi lưu.');
+      }
+      if (error instanceof Error && error.message.startsWith('invalid_worker_')) {
+        throw new AdminError(400, 'Lịch hoặc engine worker không hợp lệ.');
+      }
+      throw error;
+    }
+  });
+  // Manual execution is a coordinator-only operation. This safe default rejects
+  // requests until the Supervisor has an authenticated, race-free protocol.
+  server.post('/workers/run', { bodyLimit: 2048 }, async (_request, reply) => {
+    return reply.code(409).send({ error: 'Điều phối chạy thủ công chưa kích hoạt. Không có worker nào được chạy.' });
+  });
   server.put('/translation-settings', async request => {
     const body = request.body as Parameters<typeof saveTranslationSettings>[0] | null;
     if (!body) throw new AdminError(400, 'Thiếu cấu hình bản dịch.');
