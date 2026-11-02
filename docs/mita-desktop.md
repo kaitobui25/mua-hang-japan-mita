@@ -54,9 +54,16 @@ the server session expires according to the existing backend's eight-hour policy
   version. The PUT includes the original version and the current expiry policy
   for backend optimistic locking. Refresh preserves edited inputs; **Bỏ bản
   nháp** discards them and reloads the policy.
-- **Workers:** read-only current JST day's `.agents/runtime/mita-daily-YYYY-MM-DD.json`
-  snapshot with modification time, job states and sync state. Missing/malformed
-  status is shown as unavailable. A snapshot is not a process health check.
+- **Workers:** four independent tiles (Amazon, Vietnamese names, detailed translation,
+  PC → VPS sync), with right-side status and an Owner-only schedule/manual panel.
+  The read-only JST snapshot is combined with authenticated `/workers` counts,
+  current-cycle Codex progress, last run and bounded warning-ASIN diagnostics.
+  Missing or malformed status is unavailable, not treated as zero progress or proof
+  that a process is running. Owner can select OpenRouter or Codex CLI for the names
+  worker, save each worker's JST schedule, and request 1–300 products manually.
+  Requests are rejected while a conflicting worker or sync is active; they are not
+  queued or automatically retried. Sync requests remain behind the Cổng daily
+  three-worker barrier and remote ledger.
 - **Cổng:** switch between **Mạng nhện** (default) and **Danh sách PC/VPS**,
   both backed by the same node/edge topology. This shows 10 Mita PC/VPS ports,
   separately labelled process nodes, and read-only shared infrastructure.
@@ -168,3 +175,23 @@ GUI smoke testing should use an isolated test backend and test records, never
 live orders: login, tab navigation, paging/search, offline failure, logout, stale
 pricing rejection, and cancelling each confirmation. No window or live write is
 needed for the read-only parse check.
+
+## Workers deployment prerequisites (not an implicit migration)
+
+This feature branch has **not** been installed on the running Supervisor or
+backend. Before any live rollout, inspect the live database identity, tables,
+columns, indexes and active locks with read-only queries, obtain a restorable
+backup, and get explicit authorization for migrations, service restarts and VPS
+changes. Local migrations include `codex-names.sql` and `workers-control.sql`.
+The remote PostgreSQL schema also needs the optional revision columns before
+revision-aware catalog sync can be enabled; the explicit, separately authorized
+script is `node backend/scripts/migrate-vps-title-revisions.mjs --dry-run` then
+`--apply` with the approved SSH-forwarded VPS database URL. Never run the
+migration or nightly sync as part of a test. Compare remote title source,
+generation and revision through disposable-DB regression tests first.
+
+The 20-product Codex CLI translation trial was read-only: it generated 20
+nonempty full titles with 18 short titles and 2 full-title fallbacks. Four
+full titles still contained Japanese characters; manual semantic review is
+necessary before claiming their translations are all accurate. This trial did
+not update the live database or VPS.

@@ -137,7 +137,26 @@ function Show-WorkerPanel {
         }
         $summary=$script:workerApi.workers.$key
         if ($summary) {
-            foreach ($field in @('coverage','rotation','lastRun','nextRun','success','failed','warnings','reason','logPath','nextActions')) {
+            if ($summary.coverage) {
+                $unit=if ($key -eq 'detail') { 'slot chi tiết' } else { 'sản phẩm' }
+                $more += ('Tiến độ toàn hệ thống: ' + $summary.coverage.translated + '/' + $summary.coverage.total + ' ' + $unit)
+            }
+            if ($key -eq 'names' -and $summary.rotation) {
+                $more += ('Chu kỳ Codex: ' + $summary.rotation.completed + '/' + $summary.rotation.total + ' sản phẩm, còn lỗi quá số lần thử: ' + $summary.rotation.exhausted)
+            }
+            if ($key -eq 'names' -and $summary.lastResult) {
+                $result=$summary.lastResult
+                $more += ('Lượt Codex gần nhất: ' + $result.state + ', ' + $result.trigger + ', ' + $result.started_at)
+                $more += ('Đã dịch: ' + $result.translated + '; thất bại: ' + $result.failed + '; cảnh báo: ' + $result.warnings)
+                if ($result.reason) { $more += ('Nguyên nhân: ' + $result.reason) }
+            }
+            if ($key -eq 'names' -and $summary.warningAsinsTotal -gt 0) {
+                $more += ('ASIN có vấn đề trong lượt gần nhất: ' + $summary.warningAsinsTotal)
+                foreach ($item in @($summary.warningAsins)) {
+                    $more += ('  ' + $item.asin + ': ' + (($item.issues | ConvertTo-Json -Compress -Depth 3)))
+                }
+            }
+            foreach ($field in @('nextRun','reason','logPath','nextActions')) {
                 if ($null -ne $summary.$field) { $more += ($field + ': ' + ($summary.$field | ConvertTo-Json -Depth 3 -Compress)) }
             }
         }
@@ -179,6 +198,14 @@ function Refresh-Workers {
         Start-Api 'GET' '/workers' $null {
             param($data)
             $script:workerApi=$data
+            foreach ($key in @('amazon','names','detail','sync')) {
+                $summary=$data.workers.$key
+                if ($summary) {
+                    $title=$script:workerNames[$key] + [Environment]::NewLine + [string]$summary.state
+                    if ($summary.coverage) { $title += ('  ' + $summary.coverage.translated + '/' + $summary.coverage.total) }
+                    $script:workerTiles[$key].Text=$title
+                }
+            }
             Show-WorkerPanel
             Set-Status 'Đã tải thông tin Workers từ API xác thực.'
         }

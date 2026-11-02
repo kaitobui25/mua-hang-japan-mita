@@ -6,10 +6,20 @@ import { selectGallery } from './gallery-snapshot-policy.mjs';
 // policy, catalog visibility and run/identity sequences belong to the VPS.
 // Preserve published title metadata as a unit. A warned candidate may improve,
 // but a failed/pending retry must never revoke usable remote text.
-const keepTitle = `(product_translations.name IS NOT NULL AND
+// A committed local Codex revision is authoritative only for the exact
+// Amazon source still present on the target. Never publish a stale revision.
+const incomingCodexRevision = `(EXCLUDED.name_revision IS NOT NULL AND
+  EXCLUDED.name_generation IS NOT NULL AND EXCLUDED.name_model='gpt-6.1-sol' AND
+  EXCLUDED.status IN ('success','warning') AND NULLIF(EXCLUDED.name,'') IS NOT NULL AND
+  EXCLUDED.name_source->>'name'=(SELECT p.name FROM products p WHERE p.asin=EXCLUDED.asin) AND
+  (product_translations.name_revision IS NULL OR
+    EXCLUDED.name_revision>product_translations.name_revision))`;
+const keepNewerCodexTitle = `(product_translations.name_revision IS NOT NULL AND
+  (EXCLUDED.name_revision IS NULL OR EXCLUDED.name_revision<=product_translations.name_revision))`;
+const keepTitle = `(${keepNewerCodexTitle} OR (NOT ${incomingCodexRevision} AND product_translations.name IS NOT NULL AND
   (product_translations.status='success' OR
     (product_translations.status='warning' AND
-      (EXCLUDED.status NOT IN ('success','warning') OR EXCLUDED.name IS NULL))))`;
+      (EXCLUDED.status NOT IN ('success','warning') OR EXCLUDED.name IS NULL)))))`;
 const keepDetail = `(product_translations.detail IS NOT NULL AND
   (product_translations.detail_approved OR
     (product_translations.status='success' AND NOT product_translations.name_only)))`;
@@ -57,9 +67,11 @@ export const tableSpecs = [
     ['asin','varchar(10)'],['locale','text'],['name','text'],['detail','jsonb'],['source_hash','text'],
     ['model','text'],['status','text'],['translated_at','timestamptz'],['detail_attempted_at','timestamptz'],
     ['updated_at','timestamptz'],['name_only','boolean'],['name_attempts','integer'],
-    ['name_source','jsonb'],['name_issues','jsonb'],['detail_approved','boolean']
+    ['name_source','jsonb'],['name_issues','jsonb'],['detail_approved','boolean'],
+    ['name_revision','bigint'],['name_generation','uuid'],['name_model','text']
   ], `ON CONFLICT (asin,locale) DO UPDATE SET
-      ${['name','model','status','translated_at','name_source','name_issues'].map(field =>
+      ${['name','model','status','translated_at','name_source','name_issues',
+        'name_revision','name_generation','name_model'].map(field =>
         `${field}=CASE WHEN ${keepTitle} THEN product_translations.${field} ELSE EXCLUDED.${field} END`).join(',\n      ')},
       detail=CASE WHEN ${keepDetail} THEN product_translations.detail ELSE EXCLUDED.detail END,
       name_only=CASE WHEN ${keepDetail} THEN product_translations.name_only ELSE EXCLUDED.name_only END,
@@ -70,7 +82,7 @@ export const tableSpecs = [
       detail_attempted_at=GREATEST(product_translations.detail_attempted_at,EXCLUDED.detail_attempted_at),
       updated_at=GREATEST(product_translations.updated_at,EXCLUDED.updated_at),
       name_attempts=GREATEST(product_translations.name_attempts,EXCLUDED.name_attempts)
-      WHERE EXCLUDED.updated_at>product_translations.updated_at`],
+      WHERE EXCLUDED.updated_at>product_translations.updated_at OR ${incomingCodexRevision}`],
   ['product_title_presentations', [
     ['asin','varchar(10)'],['source_name','text'],['translated_name','text'],
     ['short_name','text'],['omitted_facts','jsonb'],['model','text'],['updated_at','timestamptz']
@@ -154,6 +166,9 @@ export function insertSql(name, columns, conflict) {
 export function translationCoverageMissing(table, incoming, current) {
   if (table === 'product_translations') {
     const published = row => ['success','warning'].includes(row.status) && Boolean(row.name);
+    // The legacy success guard must not conceal a committed local Codex edit.
+    // Verification is source-identity-aware in verifyContents, where the target
+    // products snapshot is available.
     return (published(incoming) && !published(current)) ||
       (Boolean(incoming.detail_approved) && incoming.detail != null &&
         !(current.detail != null && !current.name_only &&
@@ -191,6 +206,21 @@ export async function assertTransferSchema(client, label) {
   }
 }
 
+export function codexRevisionMissing(incoming, current, targetProduct) {
+  if (!incoming || !current || !['success','warning'].includes(incoming.status) ||
+      !incoming.name || incoming.name_model!=='gpt-6.1-sol' || !incoming.name_generation ||
+      incoming.name_revision==null) return false;
+  // A locally committed title tied to a different remote Amazon source must
+  // fail verification, not silently pass as an unchanged remote title.
+  if (!targetProduct || incoming.name_source?.name!==targetProduct.name) return true;
+  const sourceRevision = BigInt(incoming.name_revision);
+  const targetRevision = current.name_revision == null ? null : BigInt(current.name_revision);
+  return (targetRevision === null || sourceRevision>targetRevision) ||
+    (targetRevision===sourceRevision && (current.name!==incoming.name ||
+      current.name_generation!==incoming.name_generation || current.status!==incoming.status ||
+      current.name_model!==incoming.name_model || digest(current.name_issues??[])!==digest(incoming.name_issues??[])));
+}
+
 function mergedDetailMatches(incoming, current) {
   const fields=['features','ingredients','usage','specs','cautions','variant_attributes','child_asins'];
   for (const field of fields) {
@@ -214,6 +244,7 @@ function mergedDetailMatches(incoming, current) {
 export async function verifyContents(source, targetClient) {
   const report=[];
   let mismatched=0;
+  const productsByAsin = new Map((await targetClient.query('SELECT asin,name FROM products')).rows.map(row=>[row.asin,row]));
   for (const name of transferNames) {
     const target=(await targetClient.query(`SELECT * FROM "${name}"`)).rows;
     const known=new Map(target.map(row=>[rowKey(name,row),row]));
@@ -239,6 +270,8 @@ export async function verifyContents(source, targetClient) {
       const remote=known.get(rowKey(name,row));
       if (!remote) { missing.push(rowKey(name,row)); continue; }
       if (translationCoverageMissing(name, row, remote)) incorrect.push(rowKey(name,row));
+      if (name==='product_translations' && codexRevisionMissing(row,remote,productsByAsin.get(row.asin)))
+        incorrect.push(rowKey(name,row));
       // Remote newer data is valid. A newer local detail/source snapshot must
       // have arrived unchanged; immutable source snapshots are never replaced.
       if (significant.length &&
