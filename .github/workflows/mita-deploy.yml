@@ -34,10 +34,10 @@ jobs:
             backend/package-lock.json
       - name: Start isolated PostgreSQL on its actual port 5433
         run: |
-          docker run -d --name mita-ci-postgres \
+          docker run -d --name mita-ci-postgres --network host \
             -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=ci-only-password \
-            -e POSTGRES_DB=postgres -p 127.0.0.1:5433:5433 \
-            postgres:16 -c port=5433
+            -e POSTGRES_DB=postgres \
+            postgres:16 -c port=5433 -c listen_addresses=127.0.0.1
           for attempt in {1..40}; do
             if docker exec mita-ci-postgres pg_isready -h 127.0.0.1 -p 5433 -U postgres >/dev/null 2>&1; then
               exit 0
