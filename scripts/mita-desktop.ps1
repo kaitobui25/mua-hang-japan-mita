@@ -26,7 +26,8 @@ function New-Client {
     $handler.CookieContainer = New-Object System.Net.CookieContainer
     $script:cookieJar = $handler.CookieContainer
     $script:client = New-Object System.Net.Http.HttpClient($handler)
-    $script:client.Timeout = [timespan]::FromSeconds(12)
+    # Desktop diagnostics may verify PC and VPS in parallel (bounded at 15s).
+    $script:client.Timeout = [timespan]::FromSeconds(20)
 }
 New-Client
 
@@ -91,7 +92,7 @@ $authStatus.Margin=New-Object System.Windows.Forms.Padding(9,6,3,0)
 $authStatus.ForeColor=[System.Drawing.Color]::Silver
 $authStatus.AccessibleName='Trạng thái xác thực Owner hoặc Staff'
 $top.Controls.Add($authStatus)
-$refresh = Add-Button $top 'Làm mới' { Refresh-View }
+$refresh = Add-Button $top 'Làm mới' { Refresh-View -ForceComparison }
 $logout = Add-Button $top 'Đăng xuất' {
     if (!$script:pending -and $script:csrf) {
         Start-Api 'POST' '/logout' @{} { param($value) Clear-Session; Set-Status 'Logged out.' }
@@ -198,7 +199,10 @@ $script:views.Overview = $recentGrid
 $systemPanel = New-Object System.Windows.Forms.Panel; $systemPanel.Dock = 'Fill'; $systemPanel.BorderStyle = 'FixedSingle'; $systemPanel.Padding = New-Object System.Windows.Forms.Padding(12, 0, 12, 8)
 $systemHeading = New-Object System.Windows.Forms.Label; $systemHeading.Text = 'TRẠNG THÁI HỆ THỐNG'; $systemHeading.Dock = 'Top'; $systemHeading.Height = 42
 $systemHeading.Padding = New-Object System.Windows.Forms.Padding(0, 12, 0, 0); $systemHeading.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
-$systemDetails = New-Object System.Windows.Forms.Label; $systemDetails.Dock = 'Fill'; $systemDetails.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+$systemDetails = New-Object System.Windows.Forms.TextBox; $systemDetails.Dock = 'Fill'; $systemDetails.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+$systemDetails.Multiline=$true; $systemDetails.ReadOnly=$true; $systemDetails.WordWrap=$true; $systemDetails.ScrollBars='Vertical'
+$systemDetails.BackColor=[System.Drawing.Color]::Black; $systemDetails.ForeColor=[System.Drawing.Color]::White
+$systemDetails.BorderStyle='None'
 $systemDetails.Text = 'Đăng nhập để xem trạng thái.'
 $systemPanel.Controls.Add($systemDetails); $systemPanel.Controls.Add($systemHeading); $systemHeading.SendToBack()
 $overviewPanels.Controls.Add($recentPanel); $overviewPanels.Controls.Add($systemPanel)
@@ -298,6 +302,7 @@ $orderButton = Add-Button $ordersBar 'Đổi trạng thái đơn' {
 $productsBar = Add-Toolbar 'Products'
 $productButton = Add-Button $productsBar 'Đổi hiển thị' {
     if (!(Can-Write)) { return }
+    if ($productSource.SelectedIndex -ne 0) { Set-Status 'VPS chỉ cho phép xem; hãy chuyển về PC để chỉnh sửa.'; return }
     $row = $script:views.Products.CurrentRow
     if (!$row) { Set-Status 'Select a product first.'; return }
     $script:writeId = [string]$row.Cells['asin'].Value
@@ -318,12 +323,13 @@ $script:searches = @{}
 foreach ($name in @('Orders','Products')) {
     $bar = if ($name -eq 'Orders') { $ordersBar } else { $productsBar }
     $search = New-Object System.Windows.Forms.TextBox
-    $search.Width = 180; $search.MaxLength = 200; $bar.Controls.Add($search)
+    $search.Width = 180; $search.MaxLength = if ($name -eq 'Products') { 120 } else { 200 }; $bar.Controls.Add($search)
     $script:searches[$name] = $search
-    $null = Add-Button $bar 'Tìm' { $script:pageNumbers[$tabs.SelectedTab.Name] = 1; Refresh-View }
-    $null = Add-Button $bar 'Trang trước' { $n=$tabs.SelectedTab.Name; if ($script:pageNumbers[$n] -gt 1) { $script:pageNumbers[$n]--; Refresh-View } }
-    $null = Add-Button $bar 'Trang sau' { $n=$tabs.SelectedTab.Name; if ($script:pageNumbers[$n] * 50 -lt $script:pageTotals[$n]) { $script:pageNumbers[$n]++; Refresh-View } }
+    $null = Add-Button $bar 'Tìm' { $n=$tabs.SelectedTab.Name; $script:pageNumbers[$n] = 1; if ($n -eq 'Products') { Load-DesktopProducts } else { Refresh-View } }
+    $null = Add-Button $bar 'Trang trước' { $n=$tabs.SelectedTab.Name; if ($script:pageNumbers[$n] -gt 1) { $script:pageNumbers[$n]--; if ($n -eq 'Products') { Load-DesktopProducts } else { Refresh-View } } }
+    $null = Add-Button $bar 'Trang sau' { $n=$tabs.SelectedTab.Name; if ($script:pageNumbers[$n] * 50 -lt $script:pageTotals[$n]) { $script:pageNumbers[$n]++; if ($n -eq 'Products') { Load-DesktopProducts } else { Refresh-View } } }
 }
+. (Join-Path $PSScriptRoot 'mita-desktop-diagnostics.ps1')
 $pricingBar = Add-Toolbar 'Pricing'
 foreach ($name in @('Logs')) {
     $title = New-Object System.Windows.Forms.Label
@@ -362,6 +368,7 @@ $interval = New-Object System.Windows.Forms.NumericUpDown; $interval.Minimum=10;
 $interval.Add_ValueChanged({ $script:nextNotifications=[datetime]::Now.AddSeconds([double]$interval.Value) })
 function Update-WriteControls {
     foreach ($control in @($ackButton,$orderButton,$productButton,$priceButton,$fx,$fee)) { $control.Enabled = ($script:role -eq 'owner') }
+    $productButton.Enabled=($script:role -eq 'owner' -and $productSource.SelectedIndex -eq 0)
     Update-PortControlAvailability
     Update-BackendControlAvailability
     Update-TunnelControlAvailability
@@ -379,6 +386,8 @@ function Set-AuthFeedback([string]$message,[string]$kind='idle') {
 function Set-Status([string]$message) { $status.Text = $message }
 function Clear-Session {
     $script:csrf=$null; $script:pricing=$null; $script:role=$null; $script:pricingDirty=$false; $script:unread=0; $script:relayStatus='unknown'
+    $script:diagnosticSnapshotId=$null; $script:diagnosticSources=$null; $script:overviewBase=''; $script:overviewCompare=''
+    $productComparisonStatus.Text='Chưa so sánh PC/VPS'
     $script:pages.Notifications.Text='Thông báo [0]'; $tabs.Invalidate(); Update-WriteControls
     $sourceStatus.Text='NGUỒN API: 127.0.0.1:4000  |  VPS: chưa xác định'
     $script:client.Dispose(); New-Client
@@ -423,7 +432,7 @@ function Start-Api($method, $path, $body, [scriptblock]$done) {
 function Write-Completed {
     $script:views.Logs.AppendText("$([datetime]::Now.ToString('s')) Owner write accepted by API; refreshing.`r`n")
     $script:nextNotifications=[datetime]::MinValue
-    Refresh-View
+    Refresh-View -ForceComparison
 }
 function Show-Table($name, $items, $columns) {
     $table = New-Object System.Data.DataTable
@@ -434,7 +443,7 @@ function Show-Table($name, $items, $columns) {
         $table.Rows.Add($row)
     }
     $script:views[$name].DataSource=$table
-    $headers = @{id='Mã thông báo / đơn'; source='Nguồn'; orderId='Mã đơn theo nguồn'; eventType='Sự kiện'; createdAt='Thời gian'; orderStatus='Trạng thái đơn'; customerName='Khách hàng'; merchandiseVnd='Tiền hàng (VND)'; created_at='Thời gian'; customer_name='Khách hàng'; status='Trạng thái'; payment_status='Thanh toán'; merchandise_vnd='Tiền hàng (VND)'; item_count='Số mặt hàng'; asin='ASIN'; name='Sản phẩm'; hiddenAt='Ẩn lúc'}
+    $headers = @{id='Mã thông báo / đơn'; source='Nguồn'; orderId='Mã đơn theo nguồn'; eventType='Sự kiện'; createdAt='Thời gian'; orderStatus='Trạng thái đơn'; customerName='Khách hàng'; merchandiseVnd='Tiền hàng (VND)'; created_at='Thời gian'; customer_name='Khách hàng'; status='Trạng thái'; payment_status='Thanh toán'; merchandise_vnd='Tiền hàng (VND)'; item_count='Số mặt hàng'; asin='ASIN'; name='Sản phẩm'; reason='Khác biệt PC/VPS'; notice='Tên'; hiddenAt='Ẩn lúc'}
     foreach ($column in $columns) { if ($headers.ContainsKey($column)) { $script:views[$name].Columns[$column].HeaderText=$headers[$column] } }
 }
 function Format-OverviewTime($value) {
@@ -471,19 +480,31 @@ function Show-Overview($value) {
     $expected = Format-OverviewTime $value.expectedSyncAt
     $schedule = if ($null -eq $value.missingScheduledRun) { 'Chưa xác định' } elseif ($value.missingScheduledRun) { 'Chưa hoàn tất' } else { 'Đã hoàn tất' }
     $errors = if ($null -ne $value.syncErrors) { [string]@($value.syncErrors).Count + ' (tối đa 50)' } else { 'Chưa xác định' }
-    $systemDetails.Text = "Nguồn thông báo: $relay`r`n`r`nĐồng bộ gần nhất: $syncState`r`nBắt đầu: $syncTime`r`nLịch dự kiến: $expected`r`nTrạng thái lịch: $schedule`r`nLỗi đồng bộ gần nhất: $errors`r`n`r`nCập nhật: $([datetime]::Now.ToString('dd/MM/yyyy HH:mm:ss'))"
+    $script:overviewBase = "Nguồn thông báo: $relay`r`nĐồng bộ gần nhất: $syncState | Bắt đầu: $syncTime`r`nLịch: $expected | $schedule`r`nLỗi đồng bộ gần nhất: $errors"
+    $systemDetails.Text=$script:overviewBase + [string]$script:overviewCompare
 }
-function Refresh-View {
+function Load-BaseOverview {
+    Start-Api 'GET' '/overview' $null {
+        param($value)
+        Show-Overview $value
+        if ($script:diagnosticSnapshotId) { Load-DesktopOverview }
+    }
+}
+function Refresh-View([switch]$ForceComparison) {
     if ($script:pending) { return }
     $script:nextRefresh=[datetime]::Now.AddSeconds(30)
     if ($tabs.SelectedTab.Name -eq 'Ports') { Refresh-PortTopology; return }
     if (!$script:csrf) { Set-Status 'Owner login required. API must already be running.'; return }
     $name=$tabs.SelectedTab.Name
+    if ($name -in @('Products','Logs')) {
+        if ($ForceComparison -or !$script:diagnosticSnapshotId) { Request-DesktopSnapshot }
+        return
+    }
+    if ($name -eq 'Overview' -and ($ForceComparison -or !$script:diagnosticSnapshotId)) { Request-DesktopSnapshot; return }
     if ($name -eq 'Workers') {
         Refresh-Workers
         return
     }
-    if ($name -eq 'Logs') { Set-Status 'Session-only activity. Raw worker logs are intentionally not loaded (may contain secrets).'; return }
     $path='/' + $name.ToLowerInvariant()
     if ($name -in @('Orders','Products')) { $path += '?limit=50&page=' + $script:pageNumbers[$name] + '&q=' + [uri]::EscapeDataString($script:searches[$name].Text) }
     if ($name -eq 'Notifications') { Refresh-Notifications; return }
@@ -527,7 +548,7 @@ function Refresh-Notifications {
     }
 }
 Update-WriteControls
-$tabs.Add_SelectedIndexChanged({ Refresh-View })
+$tabs.Add_SelectedIndexChanged({ Refresh-View -ForceComparison })
 # Independent of the authenticated API timer and its pending request/early returns.
 $portTimer=New-Object System.Windows.Forms.Timer
 $portTimer.Interval=250

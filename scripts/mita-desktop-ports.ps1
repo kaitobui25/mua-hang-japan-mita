@@ -1,6 +1,57 @@
 ﻿# Dot-sourced at script scope by mita-desktop.ps1. All event state lives in
 # $script:portTopology; handlers never capture Initialize-PortTab local variables.
 # Probe I/O runs only in mita-desktop-probes.ps1 on a separate runspace.
+function Get-PortDetailWidth {
+    $path=Join-Path $env:LOCALAPPDATA 'MitaJapan\desktop-layout.json'
+    try {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $saved=Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+            $width=0
+            if ([int]::TryParse([string]$saved.portDetailWidth,[ref]$width) -and $width -ge 155 -and $width -le 800) { return $width }
+        }
+    } catch { # A corrupt layout preference must never prevent Desktop opening.
+    }
+    return 175
+}
+
+function Save-PortDetailWidth([int]$width) {
+    if ($width -lt 155 -or $width -gt 800) { return }
+    $folder=Join-Path $env:LOCALAPPDATA 'MitaJapan'
+    $path=Join-Path $folder 'desktop-layout.json'
+    $temporary=Join-Path $folder 'desktop-layout.tmp'
+    try {
+        if (!(Test-Path -LiteralPath $folder)) { $null=New-Item -Path $folder -ItemType Directory -Force }
+        $json=@{ portDetailWidth=$width } | ConvertTo-Json -Compress
+        [IO.File]::WriteAllText($temporary,$json,[Text.UTF8Encoding]::new($false))
+        Move-Item -LiteralPath $temporary -Destination $path -Force
+    } catch { # A read-only profile should not prevent splitter movement.
+    }
+}
+
+function Get-PortExplanation([string]$id) {
+    $explanations=@{
+        'pc-web'='Trang web chạy trên máy tính, dùng để xem thử cửa hàng.'
+        'pc-api'='Bộ xử lý phía sau cửa hàng trên PC. Nhận yêu cầu từ Web và ứng dụng quản trị.'
+        'pc-db'='Nơi lưu dữ liệu Mita trên PC. API và tác vụ đồng bộ đọc dữ liệu tại đây.'
+        'supervisor'='Bộ điều phối công việc tự động theo lịch. Quản lý Workers; không phải bản thân từng Worker.'
+        'workers'='Các công việc lấy dữ liệu Amazon, dịch tên và dịch chi tiết. Đây là tiến trình, không phải cổng mạng. Trạng thái chưa kiểm tra không có nghĩa đã ngừng.'
+        'gateway'='Cổng vào của dịch vụ AI trên PC. Gateway hoạt động không có nghĩa Workers đang chạy.'
+        'gguf'='Mô hình AI chỉ được bật khi có yêu cầu. Không chạy thường xuyên có thể là bình thường.'
+        'sync'='Công việc chuyển dữ liệu sản phẩm từ PC lên VPS. Đọc cơ sở dữ liệu PC, gửi qua kết nối SSH bảo vệ; không phải dịch vụ luôn chạy.'
+        'tunnel'='Đường nối tạm từ PC đến cơ sở dữ liệu VPS, chỉ được mở khi tác vụ cần. Không có tunnel khi rảnh là bình thường.'
+        'monitor'='Chỉ kiểm tra tình trạng máy chủ từ xa qua SSH; không gửi dữ liệu sản phẩm.'
+        'vps-web'='Trang web cửa hàng chạy trên máy chủ VPS cho khách hàng truy cập.'
+        'vps-api'='Dịch vụ xử lý yêu cầu của website VPS.'
+        'vps-db'='Cơ sở dữ liệu của cửa hàng trên VPS. Không phải cơ sở dữ liệu PC.'
+        'ssh'='Lối kết nối được bảo vệ giữa PC và VPS. Dùng cho giám sát và đường đồng bộ tạm.'
+        'http'='Cổng truy cập web công khai không mã hóa, thường chuyển sang HTTPS.'
+        'https'='Cổng web công khai được mã hóa cho khách hàng.'
+        'neo'='Cổng công cụ trình duyệt Neo trên PC, không thuộc luồng đồng bộ cửa hàng.'
+    }
+    if ($explanations.ContainsKey($id)) { return $explanations[$id] }
+    return 'Dịch vụ của hệ thống Mita Japan.'
+}
+
 function Initialize-PortTab($page) {
     $script:portTopology = @{ Nodes=@(); Edges=@(); Selected='pc-web'; Buttons=@{}; Items=@{}; Updating=$false }
     $t = $script:portTopology
@@ -112,8 +163,15 @@ function Initialize-PortTab($page) {
 
     $t.Detail = New-Object System.Windows.Forms.TextBox
     $t.Detail.Dock='Fill'; $t.Detail.Multiline=$true; $t.Detail.ReadOnly=$true
+    $t.Detail.WordWrap=$true; $t.Detail.Font=New-Object System.Drawing.Font('Segoe UI',9)
     $t.Detail.ScrollBars='Vertical'; $t.Detail.BackColor=[System.Drawing.Color]::Black; $t.Detail.ForeColor=[System.Drawing.Color]::White
     $t.Detail.AccessibleName='Chi tiết cổng và quan hệ'; $t.Detail.TabIndex=2
+    $t.ShowTechnical=New-Object System.Windows.Forms.CheckBox
+    $t.ShowTechnical.Dock='Top'; $t.ShowTechnical.Height=38
+    $t.ShowTechnical.Text='Thông tin kỹ thuật'; $t.ShowTechnical.Checked=$false
+    $t.ShowTechnical.ForeColor=[System.Drawing.Color]::White
+    $t.ShowTechnical.AccessibleName='Hiện thông tin kỹ thuật của dịch vụ được chọn'
+    $t.ShowTechnical.Add_CheckedChanged({ Select-PortNode $script:portTopology.Selected })
     # Both layouts share this control strip; merely choosing a node changes nothing.
     $t.BackendBar=New-Object System.Windows.Forms.FlowLayoutPanel
     $t.BackendBar.Dock='Bottom'; $t.BackendBar.Height=48
@@ -199,10 +257,11 @@ function Initialize-PortTab($page) {
     $t.Split.Dock='Fill'; $t.Split.Orientation='Vertical'
     $t.Split.BackColor=[System.Drawing.Color]::Black
     $t.Split.SplitterWidth=6; $t.Split.Panel2Collapsed=$true
-    $t.DetailWidth=350
+    $t.DetailWidth=Get-PortDetailWidth; $t.ResizingDetails=$false
     $t.Split.Add_SplitterMoved({
-        if (!$script:portTopology.Split.Panel2Collapsed) {
+        if (!$script:portTopology.ResizingDetails -and !$script:portTopology.Split.Panel2Collapsed) {
             $script:portTopology.DetailWidth=$script:portTopology.Split.Panel2.Width
+            Save-PortDetailWidth ([int]$script:portTopology.DetailWidth)
         }
     })
     $t.Split.AccessibleName='Sơ đồ và khung chi tiết kéo thay đổi chiều rộng'
@@ -267,6 +326,7 @@ function Initialize-PortTab($page) {
     $t.Body.Controls.Add($t.Scroll); $t.Body.Controls.Add($t.List)
     $t.Split.Panel1.Controls.Add($t.Body)
     $t.Split.Panel2.Controls.Add($t.Detail)
+    $t.Split.Panel2.Controls.Add($t.ShowTechnical)
     $page.Controls.Add($t.Split); $page.Controls.Add($t.BackendBar); $page.Controls.Add($t.TunnelBar); $page.Controls.Add($t.SyncBar); $page.Controls.Add($bar)
     $t.Split.BringToFront(); $t.BackendBar.SendToBack(); $t.TunnelBar.SendToBack(); $t.SyncBar.SendToBack(); $bar.SendToBack()
     Refresh-PortTopology
@@ -310,11 +370,14 @@ function Set-PortDetailsVisible([bool]$Visible) {
     if (!$t -or !$t.Split) { return }
     if ($Visible -and $t.Split.Panel2Collapsed) {
         $available=$t.Split.ClientSize.Width
-        if ($available -gt (300+235+$t.Split.SplitterWidth)) {
-            $t.Split.Panel2Collapsed=$false
-            $width=[Math]::Min([int]$t.DetailWidth,[Math]::Max(235,$available-300-$t.Split.SplitterWidth))
-            $t.Split.SplitterDistance=$available-$width-$t.Split.SplitterWidth
-            $t.Split.Panel1MinSize=300; $t.Split.Panel2MinSize=235
+        if ($available -gt (300+155+$t.Split.SplitterWidth)) {
+            $t.ResizingDetails=$true
+            try {
+                $width=[Math]::Max(155,[Math]::Min([int]$t.DetailWidth,$available-300-$t.Split.SplitterWidth))
+                $t.Split.Panel2Collapsed=$false
+                $t.Split.Panel1MinSize=300; $t.Split.Panel2MinSize=155
+                $t.Split.SplitterDistance=$available-$width-$t.Split.SplitterWidth
+            } finally { $t.ResizingDetails=$false }
         }
     } elseif (!$Visible) { $t.Split.Panel2Collapsed=$true }
     $t.DetailToggle.Text=if ($t.Split.Panel2Collapsed) { 'Chi tiết >' } else { 'Thu gọn <' }
@@ -342,15 +405,30 @@ function Select-PortNode([string]$Id,[switch]$ShowDetails) {
         if ($t.List.Visible) { $t.Items[$Id].EnsureVisible() }
     } finally { $t.Updating=$false }
     $last=if ($null -eq $node.LastProbed) { 'Chưa kiểm tra' } else { ([datetime]$node.LastProbed).ToString('yyyy-MM-dd HH:mm:ss K') }
-    $lines=@("$($node.Host) | $($node.Service) | Cổng: $($node.Port) | $(Get-PortStateText $node.State)",
-        "Kiểm tra gần nhất: $last", "Lý do: $($node.Reason)", "Nguồn probe: $($node.ProbeSource)", "Giao thức: $($node.Protocol)", "Nguồn tĩnh: $($node.Source)", "Nhóm: $($node.Group)")
-    foreach ($edge in $relations) {
-        $from=$t.Nodes | Where-Object { $_.Id -eq $edge.From } | Select-Object -First 1
-        $to=$t.Nodes | Where-Object { $_.Id -eq $edge.To } | Select-Object -First 1
-        $kind=switch ($edge.Kind) { 'application' { 'Ứng dụng' } 'conditional' { 'Có điều kiện' } default { 'Điều khiển/giám sát' } }
-        $lines += "$($from.Service):$($from.Port) -> $($to.Service):$($to.Port) | $kind | $($edge.Description)"
+    $state=Get-PortStateText $node.State
+    $meaning=switch ($node.State) {
+        'online' { 'Đã xác nhận dịch vụ phản hồi trong lần kiểm tra gần nhất.' }
+        'idle' { 'Hiện không hoạt động. Với tác vụ theo nhu cầu, đây có thể là trạng thái bình thường.' }
+        'offline' { 'Chưa phát hiện dịch vụ tại cổng đang kiểm tra. Kiểm tra xem dịch vụ có cần bật hay không.' }
+        'warning' { 'Có tín hiệu dịch vụ nhưng chưa xác nhận hoạt động bình thường. Xem lý do kiểm tra.' }
+        default { 'Chưa đủ dữ liệu để kết luận đang chạy hay đã dừng.' }
     }
-    if (!$relations.Count) { $lines += 'Hạ tầng chung chỉ đọc; không suy diễn thêm quan hệ ứng dụng.' }
+    $next=if ($node.State -eq 'unknown') { 'Bấm Làm mới hoặc chọn kiểm tra lại khi cần.' }
+        elseif ($node.State -eq 'online') { 'Chưa cần thao tác.' }
+        elseif ($node.State -eq 'idle') { 'Không cần bật thủ công nếu chưa có công việc cần chạy.' }
+        elseif ($node.State -eq 'warning') { 'Xem thời điểm kiểm tra; mở Thông tin kỹ thuật nếu cần xác minh.' }
+        else { 'Kiểm tra lịch chạy và dịch vụ liên quan trước khi khởi động lại.' }
+    $lines=@("$($node.Service) ($($node.Host))", '', 'Chức năng:', (Get-PortExplanation $node.Id), '', "Trạng thái: $state", $meaning,
+        '', 'Gợi ý:', $next, '', "Kiểm tra: $last")
+    if ($t.ShowTechnical.Checked) {
+        $lines += @('', '--- Kỹ thuật ---', "Cổng: $($node.Port)", "Nguồn kiểm tra: $($node.ProbeSource)",
+            "Giao thức: $($node.Protocol)", "Tài liệu: $($node.Source)", "Nhóm: $($node.Group)", "Chi tiết kiểm tra: $($node.Reason)")
+        foreach ($edge in $relations) {
+            $from=$t.Nodes | Where-Object { $_.Id -eq $edge.From } | Select-Object -First 1
+            $to=$t.Nodes | Where-Object { $_.Id -eq $edge.To } | Select-Object -First 1
+            $lines += "$($from.Service):$($from.Port) -> $($to.Service):$($to.Port) | $($edge.Description)"
+        }
+    }
     $t.Detail.Text=$lines -join "`r`n"
     if ($ShowDetails) { Set-PortDetailsVisible $true }
     $t.Graph.Invalidate()

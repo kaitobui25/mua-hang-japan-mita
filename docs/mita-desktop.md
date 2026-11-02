@@ -36,6 +36,13 @@ the server session expires according to the existing backend's eight-hour policy
   shipping states. A `+` on the unread count means the VPS relay is unavailable
   and its count is unknown. At narrower window sizes the tiles and panels stack;
   scroll the overview to reach the lower panel.
+  The right-side diagnostics additionally compares local PC versus VPS
+  PostgreSQL table/column/index counts, catalog totals and differences by ASIN,
+  full/short Vietnamese name, original name and ordered gallery source URLs.
+  Local-only control tables and VPS-only transfer ledgers are *informational*,
+  not automatically errors. Source capture times are shown separately. The
+  remote source being inaccessible yields **unknown**, never zero or a stale
+  VPS comparison.
 - **Notifications:** unread order notifications from local and (if
   explicitly configured) VPS sources, refreshed independently of the selected tab, with
   source identifiers and a confirmed `Đã xem` acknowledgement via the same
@@ -47,8 +54,17 @@ the server session expires according to the existing backend's eight-hour policy
   Before each write the client fetches `/orders/:id`, checks the allowed transition
   and payment prerequisite, then asks for confirmation showing the origin and
   target. The backend remains authoritative and audits the PATCH.
-- **Products:** paged `/products`, search by name/ASIN, and visibility toggle.
-  An exact ASIN is re-fetched before confirming and PATCHing visibility.
+- **Products:** PC/VPS source selector and read-only, complete-catalog ASIN
+  comparison through `/desktop/snapshot` and `/desktop/products`. Use Vietnamese
+  short name when valid, otherwise full Vietnamese, otherwise the source name
+  labelled **Chưa có tên Việt**. The table marks differences in existence,
+  original/full/short title and ordered gallery source URLs with short reasons;
+  **Chỉ khác biệt** filters the union before paging (50 rows/page). Search
+  includes ASIN, original and translated names; source and comparison status
+  are shown explicitly. On VPS failure, PC remains viewable but no difference
+  conclusions are made, and old VPS rows are cleared. VPS never accepts edits.
+  In PC mode, the existing visibility action still re-fetches the exact ASIN
+  from the authoritative local `/products` endpoint before confirming PATCH.
 - **Pricing:** `/pricing` view and editable JPY/VND rate (four decimals), service
   fee (two decimals). Saving re-fetches the current policy and rejects a changed
   version. The PUT includes the original version and the current expiry policy
@@ -71,7 +87,12 @@ the server session expires according to the existing backend's eight-hour policy
   separately labelled process nodes, and read-only shared infrastructure.
   Selecting a node highlights its relationships and opens the resizable right
   detail pane. It starts collapsed, opens on node activation, and can be
-  collapsed again; its width and state remain in the current Desktop session.
+  collapsed again. Its default width is now approximately **175px** and any
+  resized width is saved per Windows user under
+  `%LOCALAPPDATA%\MitaJapan\desktop-layout.json`. The network diagram and
+  controls are unchanged. Plain-language purpose, status and troubleshooting
+  appear first; technical probe paths and relationships are opt-in under
+  **Thông tin kỹ thuật**.
   Read-only
   TCP, HTTP health, PostgreSQL readiness and SSH checks run independently of
   authenticated Admin requests. Polling defaults to 15 seconds, adjustable to
@@ -128,15 +149,29 @@ the server session expires according to the existing backend's eight-hour policy
   it never adopts or kills a tunnel belonging to the scheduled Sync.
   Owner/Staff login now shows a persistent role/failure message beside the
   form, distinguishing invalid credentials, 429 lockout and local API outage.
-- **Logs:** session-only accepted-write activity. No raw worker logs, arbitrary
-  server response bodies, customer records, passwords or session values are logged.
-  Overview exposes existing authenticated sync diagnostics on screen only.
+- **Logs:** Owner and Staff can read the same sanitized timeline of local
+  Supervisor, Worker, PC control and backend events, read from fixed bounded
+  runtime JSONL sources, plus local/VPS catalog/translation/transfer-claim
+  database events. Only fixed safe event titles and timestamps are exposed;
+  raw stdout/stderr, arbitrary message strings, customer data, passwords,
+  session and machine identifiers are omitted. Default is **last 24 hours**;
+  filters allow source, severity and up to seven days (where retained). Missing,
+  unavailable and truncated sources are shown explicitly rather than claimed
+  empty. This does not replace dedicated technical log files.
 
-Refresh reloads the selected tab; automatic refresh runs every 30 seconds while
+Refresh reloads the selected tab; Products/Overview/Logs take an on-demand
+read-only snapshot when the tab opens or the user presses **Làm mới** and retain
+it while paging/filtering; snapshots are per-session, in memory, and bounded.
+On Windows, the authenticated local Admin API uses the previously approved
+strict-host-key SSH identity to read a fixed VPS PostgreSQL evidence query on
+demand; **no tunnel, transfer or remote write** is initiated. Administrators
+can disable remote inspection via `MITA_DESKTOP_DIAGNOSTICS_SSH=0` before
+starting the backend. SSH/key failure shows VPS unavailable, not stale data.
+Other tabs continue automatic refresh every 30 seconds while
 authenticated. Notifications have a separate interval, defaulting to 30 seconds
 and adjustable from 10 to 300 seconds for the current process only. A `+` in the
 count means the VPS is unavailable and its unread count is unknown. HTTP tasks are asynchronous and polled by a
-WinForms timer, with a 12-second timeout and one request at a time. The Cổng
+WinForms timer, with a 20-second timeout and one request at a time. The Cổng
 monitor uses its own bounded worker, not this request queue. Controls are
 disabled while requests run. Confirmation defaults to No. Failed writes are never
 automatically retried; after a timeout, re-fetch before deciding whether to retry.
