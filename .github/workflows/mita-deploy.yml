@@ -27,12 +27,12 @@ jobs:
           POSTGRES_PASSWORD: ci-only-password
           POSTGRES_DB: postgres
         ports:
-          - 5432:5432
+          - 5433:5432
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 5s
           --health-timeout 5s --health-retries 10
     env:
-      DATABASE_URL: postgresql://postgres:ci-only-password@127.0.0.1:5432/postgres
+      DATABASE_URL: postgresql://postgres:ci-only-password@127.0.0.1:5433/postgres
     steps:
       - uses: actions/checkout@v4
         with:
