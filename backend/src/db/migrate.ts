@@ -16,6 +16,7 @@ try {
   await client.query(await readFile(new URL('./email-delivery.sql', import.meta.url), 'utf8'));
   await client.query(await readFile(new URL('./title-presentations.sql', import.meta.url), 'utf8'));
   await client.query(await readFile(new URL('./remove-needs-human.sql', import.meta.url), 'utf8'));
+  await client.query(await readFile(new URL('./codex-names.sql', import.meta.url), 'utf8'));
   await client.query('INSERT INTO pricing_policy(id,fx_jpy_to_vnd,service_fee_percent) VALUES(1,$1,$2) ON CONFLICT DO NOTHING', [config.fxJpyToVnd, config.serviceFeePercent]);
   await client.query('COMMIT');
   console.log('Mita database schema applied');

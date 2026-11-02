@@ -21,6 +21,7 @@ try {
     await isolated.query(await readFile(new URL('../src/db/email-delivery.sql', import.meta.url), 'utf8'));
     await isolated.query(await readFile(new URL('../src/db/title-presentations.sql', import.meta.url), 'utf8'));
     await isolated.query(await readFile(new URL('../src/db/remove-needs-human.sql', import.meta.url), 'utf8'));
+    await isolated.query(await readFile(new URL('../src/db/codex-names.sql', import.meta.url), 'utf8'));
     await isolated.query('INSERT INTO pricing_policy(id,fx_jpy_to_vnd,service_fee_percent) VALUES(1,190,12)');
   } finally { await isolated.end(); }
   const files = (await readdir(new URL('.', import.meta.url))).filter(f => f.endsWith('.test.ts')).map(f => `tests/${f}`);
@@ -28,7 +29,7 @@ try {
     // Suites share one disposable database; parallel DDL from independent
     // fixtures can deadlock even when the application code is correct.
     const child = spawn(process.execPath, ['--import', 'tsx', '--test', '--test-concurrency=1', ...files],
-      { stdio: 'inherit', env: { ...process.env, DATABASE_URL: url.toString() } });
+      { stdio: 'inherit', env: { ...process.env, DATABASE_URL: url.toString(), MITA_DISPOSABLE_TEST_DATABASE: database } });
     child.on('error', reject);
     child.on('exit', code => resolve(code ?? 1));
   });

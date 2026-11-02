@@ -4,8 +4,31 @@ import { db } from './db/pool.js';
 import { translatePendingNames } from './translation/jobs.js';
 import { compactPendingTitles } from './translation/compact-title.js';
 import { shouldRunTranslation, translationCron, translationTimezone } from './translation/schedule.js';
+import { translateCodexNames } from './translation/codex-jobs.js';
+import { randomUUID } from 'node:crypto';
 
 const command = process.argv[2];
+async function translateNames(trigger: 'manual' | 'scheduled') {
+  const engine = process.env.MITA_NAMES_ENGINE ?? 'openrouter';
+  if (!['openrouter', 'codex'].includes(engine)) throw new Error('invalid_name_translation_engine');
+  if (engine === 'openrouter') return translateAndCompact();
+  const runId = process.env.MITA_NAMES_RUN_ID ?? randomUUID();
+  try {
+    const run = await translateCodexNames({ trigger, runId,
+      maxProducts: process.env.MITA_NAMES_MAX_PRODUCTS === undefined ? undefined : Number(process.env.MITA_NAMES_MAX_PRODUCTS)
+    });
+    console.log('MITA_WORKER_RESULT ' + JSON.stringify(run));
+    return run;
+  } catch (error) {
+    const safeReasons = ['invalid_codex_run', 'codex_schema_unavailable', 'codex_requires_local_database', 'codex_database_identity_mismatch'];
+    const reason = error instanceof Error && safeReasons.includes(error.message) ? error.message : 'database_outcome_unresolved';
+    // Unknown DB outcomes must never be reported as zero or automatically retried.
+    console.log('MITA_WORKER_RESULT ' + JSON.stringify({ version: 1, worker: 'names', engine,
+      runId: /^[a-f0-9-]{36}$/i.test(runId) ? runId : null, trigger, state: 'failed', reason,
+      selected: null, translated: null, failed: null, skipped: null, warnings: null, paused: true }));
+    throw new Error(reason);
+  }
+}
 async function translateAndCompact() {
   const names = await translatePendingNames();
   // The concise presentation is optional until its additive local migration
@@ -20,7 +43,11 @@ async function translateAndCompact() {
 }
 
 if (command === 'once') {
-  try { console.log('Manual name translation:', await translateAndCompact()); }
+  try {
+    const trigger = process.env.MITA_NAMES_TRIGGER ?? 'manual';
+    if (trigger !== 'manual' && trigger !== 'scheduled') throw new Error('invalid_name_translation_trigger');
+    console.log('Name translation:', await translateNames(trigger));
+  }
   finally { await db.end(); }
 } else if (command === 'daily') {
   const startedAt = new Date();
@@ -36,7 +63,7 @@ if (command === 'once') {
           continue;
         }
         console.log('05:00 JST name translation started.');
-        console.log('Name translation finished:', await translateAndCompact());
+        console.log('Name translation finished:', await translateNames('scheduled'));
       }
     });
     await boss.schedule('translation.names.daily', translationCron, {}, { tz: translationTimezone });

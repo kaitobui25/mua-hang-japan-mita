@@ -46,22 +46,34 @@ export async function readFreeQuota(apiKey = process.env.OPENROUTER_API_KEY, fet
   }
 }
 
+const numbers = (text: string) => (text.match(/\d+(?:[.,]\d+)*/g) ?? []).map(n => n.replaceAll(',', '.')).sort();
+const measurements = (text: string) => {
+  const normalized = text.normalize('NFKC').toLowerCase().replaceAll('μ', 'µ');
+  // Reject changed dosage, weight, volume and other physical measurements.
+  // NFKC accepts full-width Japanese units without allowing mg -> g.
+  return [...normalized.matchAll(/(\d+(?:[.,]\d+)?)\s*(mcg|µg|mg|kg|ml|mm|cm|kcal|kj|iu|g|l|m|%)(?!\p{L})/gu)]
+    .map(match => `${match[1].replaceAll(',', '.')}:${match[2] === 'µg' ? 'mcg' : match[2]}`)
+    .sort();
+};
+const productCodes = (text: string) => [...text.normalize('NFKC').matchAll(/\b(?=[a-z0-9-]*[a-z])(?=[a-z0-9-]*\d)[a-z0-9-]{4,}\b/gi)]
+  .map(match => match[0].toUpperCase()).sort();
+
+/** Independent title diagnostics; Codex publishes usable warned titles and records every rule failure. */
+export function nameTranslationIssues(source: { name: string; brand?: string | null }, translated: string): string[] {
+  const issues: string[] = [];
+  if (JSON.stringify(numbers(source.name)) !== JSON.stringify(numbers(translated))) issues.push('numbers_changed');
+  if (JSON.stringify(measurements(source.name)) !== JSON.stringify(measurements(translated))) issues.push('units_changed');
+  if (JSON.stringify(productCodes(source.name)) !== JSON.stringify(productCodes(translated))) issues.push('product_codes_changed');
+  if (source.brand && /[a-z]/i.test(source.brand) && !translated.toLowerCase().includes(source.brand.toLowerCase()) &&
+      source.name.toLowerCase().includes(source.brand.toLowerCase())) issues.push('brand_changed');
+  return issues;
+}
+
 export function assertTranslation(source: ProductText, value: unknown): ProductText {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid_translation');
   const data = value as Record<string, unknown>;
   if (typeof data.name !== 'string' || !data.name.trim() || data.name.length > 600) throw new Error('invalid_name');
   usableTranslation(data.name, 600);
-  const numbers = (text: string) => (text.match(/\d+(?:[.,]\d+)*/g) ?? []).map(n => n.replaceAll(',', '.')).sort();
-  const measurements = (text: string) => {
-    const normalized = text.normalize('NFKC').toLowerCase().replaceAll('μ', 'µ');
-    // Reject changed dosage, weight, volume and other physical measurements.
-    // NFKC accepts full-width Japanese units without allowing mg -> g.
-    return [...normalized.matchAll(/(\d+(?:[.,]\d+)?)\s*(mcg|µg|mg|kg|ml|mm|cm|kcal|kj|iu|g|l|m|%)(?!\p{L})/gu)]
-      .map(match => `${match[1].replaceAll(',', '.')}:${match[2] === 'µg' ? 'mcg' : match[2]}`)
-      .sort();
-  };
-  const productCodes = (text: string) => [...text.normalize('NFKC').matchAll(/\b(?=[a-z0-9-]*[a-z])(?=[a-z0-9-]*\d)[a-z0-9-]{4,}\b/gi)]
-    .map(match => match[0].toUpperCase()).sort();
   const validateText = (original: string, translated: string) => {
     usableTranslation(translated, 3000);
     if (JSON.stringify(numbers(original)) !== JSON.stringify(numbers(translated))) throw new Error('numbers_changed');
