@@ -1,10 +1,9 @@
 ﻿export const detailTranslationCron = '15 5 * * *';
 export const detailTranslationTimezone = 'Asia/Tokyo';
+import { lastDueAtJst } from '../workers/settings.js';
 
-export function shouldRunDetailTranslation(createdAt: Date, startedAt: Date, now = new Date()): boolean {
-  const due = new Date(now);
-  due.setUTCHours(20, 15, 0, 0);
-  if (due > now) due.setUTCDate(due.getUTCDate() - 1);
+export function shouldRunDetailTranslation(createdAt: Date, startedAt: Date, now = new Date(), hhmm = '05:15'): boolean {
+  const due = lastDueAtJst(now, hhmm);
   return startedAt.getTime() <= due.getTime() && createdAt.getTime() >= due.getTime() &&
     createdAt.getTime() <= now.getTime() && now.getTime() - due.getTime() <= 5 * 60 * 1000;
 }

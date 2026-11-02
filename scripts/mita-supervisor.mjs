@@ -79,8 +79,33 @@ export const windows={amazon:4*60,names:5*60,detail:5*60+15};
 export const REVIEW_SYNC_INTERVAL_MS=5*60*1000;
 export function canRunReviewSync(time=new Date()) {
   const minute=jstClock(time).minute;
-  // Reserve time for Amazon collection, translation, and the nightly catalog transfer.
-  return minute<3*60+45 || minute>=5*60+45;
+  // Respect persisted worker windows; avoid review sync while any daily
+  // worker may be due. The lease/lock remains authoritative for overruns.
+  return minute<Math.max(0,windows.amazon-15) || minute>=windows.detail+30;
+}
+export function applyWorkerWindows(schedules) {
+  if(!schedules || typeof schedules!=='object' || Array.isArray(schedules) ||
+     Object.keys(schedules).sort().join(',')!=='amazon,detail,names')throw Error('Invalid worker schedule settings');
+  const toMinutes=key=>{
+    const text=schedules[key];
+    if(typeof text!=='string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(text))throw Error('Invalid worker clock');
+    return Number(text.slice(0,2))*60+Number(text.slice(3));
+  };
+  const next={amazon:toMinutes('amazon'),names:toMinutes('names'),detail:toMinutes('detail')};
+  if(next.amazon+15>next.names || next.names+15>next.detail || next.detail>1424)throw Error('Worker schedules overlap');
+  Object.assign(windows,next);
+}
+export function unresolvedManualRequests(journalText) {
+  const pending=new Set();
+  for(const line of journalText.split('\n')){
+    if(!line.trim())continue;
+    let entry;
+    try{entry=JSON.parse(line);}catch{throw Error('Manual journal is invalid; inspection required.');}
+    if(typeof entry.runId!=='string')throw Error('Manual journal is invalid; inspection required.');
+    if(entry.event==='requested')pending.add(entry.runId);
+    else if(['exited','dispatch_failed'].includes(entry.event))pending.delete(entry.runId);
+  }
+  return pending;
 }
 const specs={
   amazon:{entry:'worker.ts',code:['worker.ts','ingestion','admin/imports.ts','db/pool.ts','config.ts']},
@@ -146,7 +171,12 @@ async function activeLocks(){
     const latest=(await client.query(`SELECT id,started_at,finished_at,state
       FROM sync_runs WHERE started_at >= (now() AT TIME ZONE 'Asia/Tokyo')::date AT TIME ZONE 'Asia/Tokyo'
       ORDER BY id DESC LIMIT 2`)).rows;
-    return {busy:Object.fromEntries(Object.entries(LOCKS).map(([key,value])=>[key,known.has(value)])),latest};
+    let schedules=null;
+    try{
+      const settings=await client.query('SELECT schedules FROM worker_control_settings WHERE id=1');
+      schedules=settings.rows[0]?.schedules??null;
+    }catch(error){if(error?.code!=='42P01')throw error;}
+    return {busy:Object.fromEntries(Object.entries(LOCKS).map(([key,value])=>[key,known.has(value)])),latest,schedules};
   } finally {await client.end().catch(()=>{});}
 }
 async function withWorkerLease(name,action){
@@ -194,13 +224,13 @@ export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
   mkdirSync(runtime,{recursive:true});
   let exiting=false,ticking=false,status=null,day=null,plannedSync=false,syncInFlight=false;
   let reviewSyncInFlight=false,lastReviewSyncAttempt=0;
-  let syncDispatching=false,syncOwner=null;
+  let syncDispatching=false,syncOwner=null,manualInFlight=null,manualDispatching=false;
   const supervisorRunId=randomUUID();
   const children=new Map(),pending=new Map();
   const statePath=()=>path.join(runtime,`mita-daily-${day}.json`);
   function setState(name,state,details={}){
     const previous=status.jobs[name];
-    if(previous?.state===state)return;
+    if(previous?.state===state && Object.entries(details).every(([key,value])=>previous[key]===value))return;
     status.jobs[name]={day,state,updatedAt:new Date().toISOString(),...details};
     atomicJson(statePath(),status);
     record('job_state',{day,name,state});
@@ -221,11 +251,24 @@ export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
   }
   function line(name,message){
     if(!status)return;
+    if(name==='names' && message.startsWith('MITA_WORKER_RESULT ')){
+      try{
+        const result=JSON.parse(message.slice('MITA_WORKER_RESULT '.length));
+        if(result.worker==='names' && result.engine==='codex' &&
+           ['completed','partial','deferred','failed'].includes(result.state)){
+          setState(name,result.state==='completed'?'completed':'partial',{
+            runId:result.runId??null,reason:result.reason??null,
+            translated:result.translated??null,failed:result.failed??null,
+            warnings:result.warnings??null,selected:result.selected??null});
+        }
+      }catch{record('worker_result_unreadable',{name});}
+      return;
+    }
     const at=jstClock(), due=windows[name], near=at.minute>=due&&at.minute<=due+360;
     if(!near)return;
-    if(name==='names' && message.includes('05:00 JST name translation started'))setState(name,'running');
-    if(name==='detail' && message.includes('05:15 JST local DETAIL translation:'))setState(name,'completed');
-    if(name==='names' && message.includes('Name translation finished:'))setState(name,'completed');
+    if(name==='names' && message.includes('JST name translation started'))setState(name,'running');
+    if(name==='detail' && message.includes('JST local DETAIL translation:'))setState(name,'completed');
+    if(name==='names' && message.includes('Name translation finished:') && status.jobs[name]?.state!=='partial')setState(name,'completed');
     if(message.includes('paused: true') && status.jobs[name]?.state==='completed')setState(name,'partial');
     if(message.includes('Skipped missed') && !status.jobs[name]?.state)setState(name,'skipped');
   }
@@ -271,7 +314,7 @@ export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
     });
   }
   async function triggerSync(manual=null){
-    if(syncDispatching || syncInFlight || reviewSyncInFlight || exiting || existsSync(STOP_FILE)){
+    if(syncDispatching || syncInFlight || reviewSyncInFlight || manualInFlight || manualDispatching || exiting || existsSync(STOP_FILE)){
       if(manual)throw Error('Coordinator busy or draining.');
       return;
     }
@@ -334,8 +377,71 @@ export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
     record('sync_started',{day});
     return syncOwner;
   }
+  async function triggerManualWorker(message){
+    const name=message.worker,runId=message.requestId,limit=message.maxProducts;
+    if(!['amazon','names','detail'].includes(name) || !keys.includes(name) ||
+       typeof runId!=='string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(runId) ||
+       !Number.isInteger(limit) || limit<1 || limit>300)throw Error('Invalid manual worker request.');
+    if(manualDispatching||manualInFlight||syncDispatching||syncInFlight||reviewSyncInFlight||exiting||ticking||existsSync(STOP_FILE))
+      throw Error('Coordinator busy; manual worker not started.');
+    // Claim the coordinator synchronously before the first await. Otherwise two
+    // authenticated requests can both pass the asynchronous lock inspection.
+    manualDispatching=true;
+    try {
+    await authorizeSync(message.cookie,message.csrf);
+    if(exiting||ticking||manualInFlight||syncDispatching||syncInFlight||reviewSyncInFlight||existsSync(STOP_FILE))
+      throw Error('Coordinator busy; manual worker not started.');
+    const observed=await activeLocks();
+    if(Object.values(observed.busy).some(Boolean))throw Error('Worker or sync lock busy.');
+    const journal=path.join(runtime,'mita-manual-workers.jsonl');
+    if(existsSync(journal)){
+      const contents=readFileSync(journal,'utf8');
+      if(contents.length>2*1024*1024)throw Error('Manual journal needs rotation before another request.');
+      if(unresolvedManualRequests(contents).size)throw Error('Earlier manual run outcome unknown; inspect journal and process inventory.');
+      for(const line of contents.split('\n')){
+        if(!line)continue;
+        try{if(JSON.parse(line).runId===runId)throw Error('Manual request already recorded; no replay.');}
+        catch(error){if(error.message==='Manual request already recorded; no replay.')throw error;}
+      }
+    }
+    const entry=path.join(backend,'src',specs[name].entry);
+    const args=['--import','tsx',entry,'once',...(name==='detail'?['--limit',String(limit)]:[])];
+    const env={...process.env,
+      LLAMA_BASE_URL:'http://127.0.0.1:8080/v1',LLAMA_MODEL:'Index-Translate-2B',
+      ...(name==='amazon'?{MITA_AMAZON_MANUAL_MAX_PRODUCTS:String(limit)}:{}),
+      ...(name==='names'?{MITA_NAMES_TRIGGER:'manual',MITA_NAMES_MAX_PRODUCTS:String(limit),MITA_NAMES_RUN_ID:runId}:{})};
+    // Journal before dispatch: an uncertain outcome must never replay the request.
+    appendFileSync(journal,JSON.stringify({at:new Date().toISOString(),event:'requested',runId,worker:name,limit})+'\n');
+    manualInFlight={runId,worker:name,limit,startedAt:new Date().toISOString()};
+    let child;
+    try{
+      child=spawn(node,args,{cwd:backend,windowsHide:true,stdio:['ignore','pipe','pipe'],env});
+      manualInFlight.pid=child.pid??null;
+      const out=path.join(runtime,name+'.manual.out.log'),err=path.join(runtime,name+'.manual.err.log');
+      child.stdout.on('data',chunk=>appendFileSync(out,chunk));
+      child.stderr.on('data',chunk=>appendFileSync(err,chunk));
+      let finalized=false;
+      const finish=(code)=>{
+        if(finalized)return;
+        finalized=true;
+        try{
+          appendFileSync(journal,JSON.stringify({at:new Date().toISOString(),event:'exited',
+            runId,worker:name,exitCode:code})+'\n');
+        }finally{if(manualInFlight?.runId===runId)manualInFlight=null;}
+      };
+      child.once('exit',finish);
+      child.once('error',()=>finish(-1));
+    }catch(error){
+      appendFileSync(journal,JSON.stringify({at:new Date().toISOString(),event:'dispatch_failed',runId,worker:name})+'\n');
+      manualInFlight=null;
+      throw Error('Manual worker dispatch failed; request recorded, no automatic replay.');
+    }
+    record('worker_manual_dispatched',{runId,worker:name,pid:child.pid??null,limit});
+    return {state:'accepted',runId,worker:name,limit,canStop:false,canRetry:false};
+    }finally{manualDispatching=false;}
+  }
   function triggerReviewSync(observed){
-    if(process.env.MITA_REVIEW_SYNC_ENABLED!=='1' || reviewSyncInFlight || syncInFlight || syncDispatching ||
+    if(process.env.MITA_REVIEW_SYNC_ENABLED!=='1' || reviewSyncInFlight || syncInFlight || syncDispatching || manualDispatching || manualInFlight ||
        Object.values(observed.busy).some(Boolean) || !canRunReviewSync() ||
        Date.now()-lastReviewSyncAttempt<REVIEW_SYNC_INTERVAL_MS)return;
     lastReviewSyncAttempt=Date.now();
@@ -370,6 +476,11 @@ export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
       let observed;
       try{observed=await activeLocks();}
       catch(error){record('database_unavailable',{reason:error.code??'connection_failed'});return;}
+      if(observed.schedules){
+        const before=JSON.stringify(windows);
+        applyWorkerWindows(observed.schedules);
+        if(JSON.stringify(windows)!==before)record('worker_schedule_updated',{day,windows:{...windows}});
+      }
       if(existsSync(STOP_FILE)){
         if(syncInFlight || syncDispatching || reviewSyncInFlight || Object.values(observed.busy).some(Boolean) ||
            keys.some(name=>!canRestart(name,new Date(),false))){
@@ -435,7 +546,7 @@ export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
           if(message.action==='Status'){
             const observed=await activeLocks();
             const state=syncInFlight?'running':status?.sync?.state==='running'?'unknown':status?.sync?.state??'unknown';
-            result={day,state,status,workerLocks:observed.busy,inFlight:syncInFlight,dispatching:syncDispatching,reviewSyncInFlight,owner:syncInFlight?syncOwner:null,lastRun:syncOwner,
+            result={day,state,status,workerLocks:observed.busy,inFlight:syncInFlight,dispatching:syncDispatching,reviewSyncInFlight,manualInFlight,manualDispatching,owner:syncInFlight?syncOwner:null,lastRun:syncOwner,
               ledger:'not-observed; remote atomic daily claim remains authoritative',forceRerunSupported:false,canStop:false};
           }else if(message.action==='SyncNow'){
             if(!/^[a-zA-Z0-9-]{1,80}$/.test(message.sessionId??''))throw Error('Desktop session ID required.');
@@ -446,7 +557,9 @@ export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
             const owner=await triggerSync(message);
             if(!owner)throw Error('Daily sync already planned; no replay.');
             result={state:'accepted',owner,canStop:false,forceRerunSupported:false};
-          }else throw Error('Only Status and SyncNow are supported; no stop or retry.');
+          }else if(message.action==='RunWorker'){
+            result=await triggerManualWorker(message);
+          }else throw Error('Only Status, SyncNow and RunWorker are supported; no stop or retry.');
           socket.end(JSON.stringify({ok:true,protocol:'mita-sync-v1',root,pid:process.pid,supervisorRunId,observedAt:new Date().toISOString(),...result})+'\n');
         }catch(error){socket.end(JSON.stringify({ok:false,protocol:'mita-sync-v1',error:error.message})+'\n');}
       })();

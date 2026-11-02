@@ -7,6 +7,9 @@ import { enqueueImport, listImports } from './imports.js';
 import { acknowledgeOrderNotification, listOrderNotifications } from './notifications.js';
 import { fetchVpsNotifications } from '../order-alert-relay.js';
 import { csrfToken, digest, getSession, isLocalRequest, login, readToken, setSessionCookie, validOrigin } from './security.js';
+import { workerOverview } from '../workers/status.js';
+import { writeWorkerSettings } from '../workers/settings.js';
+import { requestManualWorker } from '../workers/manual.js';
 
 declare module 'fastify' {
   interface FastifyRequest { adminSession: Awaited<ReturnType<typeof getSession>> }
@@ -105,6 +108,34 @@ export async function adminRoutes(server: FastifyInstance) {
   });
   server.get('/catalog-settings', async () => getCatalogSettings());
   server.get('/translation-settings', async () => getTranslationSettings());
+  server.get('/workers', async () => workerOverview());
+  server.put('/workers/settings', { bodyLimit: 2048 }, async request => {
+    try {
+      return await writeWorkerSettings(request.body, String(request.adminSession!.actorId));
+    } catch (error) {
+      if (error instanceof Error && error.message === 'worker_settings_version_conflict') {
+        throw new AdminError(409, 'Cấu hình worker đã thay đổi; tải lại trước khi lưu.');
+      }
+      if (error instanceof Error && error.message.startsWith('invalid_worker_')) {
+        throw new AdminError(400, 'Lịch hoặc engine worker không hợp lệ.');
+      }
+      throw error;
+    }
+  });
+  server.post('/workers/run', { bodyLimit: 2048 }, async (request, reply) => {
+    try {
+      const result = await requestManualWorker(request.body, request.headers.cookie,
+        request.adminSession!.csrfToken);
+      return reply.code(202).send(result);
+    } catch(error) {
+      if(error instanceof Error && error.message==='invalid_manual_worker_request') {
+        throw new AdminError(400,'Yêu cầu worker không hợp lệ.');
+      }
+      // A timeout after sending is explicitly uncertain: do not claim the
+      // process did not start and do not automatically repeat its request ID.
+      throw new AdminError(409,'Không xác nhận được lệnh chạy. Kiểm tra Supervisor và nhật ký theo request ID trước khi gửi yêu cầu khác.');
+    }
+  });
   server.put('/translation-settings', async request => {
     const body = request.body as Parameters<typeof saveTranslationSettings>[0] | null;
     if (!body) throw new AdminError(400, 'Thiếu cấu hình bản dịch.');

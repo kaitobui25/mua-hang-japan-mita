@@ -136,7 +136,7 @@ async function recordCompactTitleIssue(input: TitleInput, issue: string, client:
 /** Small, quota-bound backfill; never rewrites existing successful translations. */
 export async function compactPendingTitles(options: {
   connect?: () => Promise<PoolClient>; quota?: typeof readFreeQuota;
-  translate?: typeof proposeCompactTitle; maxProducts?: number;
+  translate?: typeof proposeCompactTitle; maxProducts?: number; allowedAsins?: string[];
 } = {}): Promise<{ saved: number; deferred: number }> {
   if (!process.env.OPENROUTER_API_KEY) return { saved: 0, deferred: 0 };
   const client = await (options.connect ?? (() => db.connect()))();
@@ -154,11 +154,12 @@ export async function compactPendingTitles(options: {
       LEFT JOIN product_title_presentations pt ON pt.asin=p.asin
       LEFT JOIN product_title_attempts a ON a.asin=p.asin
       WHERE t.status IN ('success','warning') AND t.name IS NOT NULL
+        AND ($2::varchar(10)[] IS NULL OR p.asin=ANY($2::varchar(10)[]))
         AND (pt.asin IS NULL OR pt.source_name IS DISTINCT FROM p.name
           OR pt.translated_name IS DISTINCT FROM t.name)
         AND (a.asin IS NULL OR a.source_name IS DISTINCT FROM p.name
           OR a.translated_name IS DISTINCT FROM t.name OR a.attempts<3)
-      ORDER BY p.asin LIMIT $1`, [remaining]);
+      ORDER BY p.asin LIMIT $1`, [remaining, options.allowedAsins?.length ? options.allowedAsins : null]);
     let saved = 0, deferred = 0;
     for (const row of result.rows) {
       try {

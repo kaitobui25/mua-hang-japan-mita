@@ -202,10 +202,15 @@ export function translationFailureStopsBatch(error: unknown): boolean {
   return false;
 }
 
-export type TranslationRun = { translated: number; failed: number; skipped: number; paused: boolean };
+export type TranslationRun = { translated: number; failed: number; skipped: number; paused: boolean;
+  /** Manual-only bounded cohort, shared by full and short title stages. */
+  selectedAsins?: string[] };
 
 /** Independent 05:00 JST PC worker: names only, until the catalog or free quota runs out. */
-export async function translatePendingNames(options: { log?: typeof logTranslationEvent; connect?: () => Promise<PoolClient> } = {}): Promise<TranslationRun> {
+export async function translatePendingNames(options: { log?: typeof logTranslationEvent; connect?: () => Promise<PoolClient>; maxProducts?: number } = {}): Promise<TranslationRun> {
+  if (options.maxProducts !== undefined && (!Number.isInteger(options.maxProducts) || options.maxProducts < 1 || options.maxProducts > 300)) {
+    throw Error('invalid_manual_names_limit');
+  }
   if (!process.env.OPENROUTER_API_KEY) {
     console.log('Name translation deferred: OPENROUTER_API_KEY not configured on PC.');
     return { translated: 0, failed: 0, skipped: 0, paused: true };
@@ -261,7 +266,8 @@ export async function translatePendingNames(options: { log?: typeof logTranslati
     }
   };
   const attempts = new Map(rows.map(row => [row.asin, row.name_attempts ?? 0]));
-  batches: for (const packed of packNameBatches(rows)) {
+  const selected = rows.slice(0, options.maxProducts ?? rows.length);
+  batches: for (const packed of packNameBatches(selected)) {
     // At most two split levels, still bounded by three requests per ASIN.
     const pending = [{ batch: packed, depth: 0 }];
     while (pending.length) {
@@ -346,7 +352,8 @@ export async function translatePendingNames(options: { log?: typeof logTranslati
     }
   }
   console.log(`Name translation: ${translated} updated, ${failed} failed, ${skipped} source-changed`);
-  return { translated, failed, skipped, paused: paused || remaining <= 0 };
+  return { translated, failed, skipped, paused: paused || remaining <= 0,
+    ...(options.maxProducts === undefined ? {} : { selectedAsins: selected.map(row=>row.asin) }) };
   } finally {
     try { if (acquired) await lock.query('SELECT pg_advisory_unlock(70400300)'); }
     finally { lock.release(); }
