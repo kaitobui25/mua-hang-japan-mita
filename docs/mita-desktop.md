@@ -54,9 +54,13 @@ the server session expires according to the existing backend's eight-hour policy
   version. The PUT includes the original version and the current expiry policy
   for backend optimistic locking. Refresh preserves edited inputs; **Bỏ bản
   nháp** discards them and reloads the policy.
-- **Workers:** read-only current JST day's `.agents/runtime/mita-daily-YYYY-MM-DD.json`
-  snapshot with modification time, job states and sync state. Missing/malformed
-  status is shown as unavailable. A snapshot is not a process health check.
+- **Workers:** four native tiles (Amazon, name translation, detail translation,
+  VPS sync) with a right-hand status/settings panel. The panel displays a daily
+  supervisor snapshot, known schedule, log paths, and confirmed database metrics
+  when the new authenticated Workers endpoint is available. An unavailable
+  process or progress figure is labelled unknown rather than guessed. Owner-only
+  changes and manual runs are disabled until the API/backend is ready; VPS manual
+  sync still uses the verified coordinator in the Ports tab.
 - **Cổng:** switch between **Mạng nhện** (default) and **Danh sách PC/VPS**,
   both backed by the same node/edge topology. This shows 10 Mita PC/VPS ports,
   separately labelled process nodes, and read-only shared infrastructure.
