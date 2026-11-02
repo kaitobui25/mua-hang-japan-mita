@@ -10,6 +10,7 @@ import { csrfToken, digest, getSession, isLocalRequest, login, readToken, setSes
 import { workerOverview } from '../workers/status.js';
 import { writeWorkerSettings } from '../workers/settings.js';
 import { requestManualWorker } from '../workers/manual.js';
+import { registerDesktopDiagnostics } from './desktop-diagnostics.js';
 
 declare module 'fastify' {
   interface FastifyRequest { adminSession: Awaited<ReturnType<typeof getSession>> }
@@ -52,6 +53,7 @@ export async function adminRoutes(server: FastifyInstance) {
     return { csrfToken: csrfToken(result.token) };
   });
   server.get('/session', async request => request.adminSession);
+  registerDesktopDiagnostics(server);
   server.post('/logout', async (request, reply) => {
     await db.query('DELETE FROM admin_sessions WHERE token_hash=$1', [digest(readToken(request.headers.cookie)!)]);
     setSessionCookie(reply, '', request.protocol === 'https');
