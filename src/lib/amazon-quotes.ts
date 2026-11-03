@@ -51,11 +51,13 @@ const messages: Record<string,string> = {
   amazon_busy: "Hệ thống đang kiểm tra Amazon. Vui lòng thử lại sau.",
   amazon_blocked: "Amazon yêu cầu xác minh truy cập, không thể báo giá tự động.",
   quote_rate_limited: "Có quá nhiều yêu cầu tra giá. Vui lòng thử lại sau một phút.",
-  quote_schema_unavailable: "Hệ thống báo giá chưa được cấu hình. Vui lòng thử lại sau."
+  quote_schema_unavailable: "Hệ thống báo giá chưa được cấu hình. Vui lòng thử lại sau.",
+  quote_service_unavailable: "Không kết nối được máy chủ báo giá. Vui lòng thử lại."
 };
 
 export class AmazonQuoteApiError extends Error {
-  constructor(message: string, public readonly preview: AmazonSourcePreview | null = null) { super(message); }
+  constructor(message: string, public readonly code: string | null = null,
+    public readonly preview: AmazonSourcePreview | null = null) { super(message); }
 }
 
 function parseSourcePreview(value: unknown): AmazonSourcePreview | null {
@@ -74,12 +76,14 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
   try {
     response = await fetch(url, { ...init, cache: "no-store" });
   } catch {
-    throw new Error("Không kết nối được máy chủ báo giá. Vui lòng thử lại.");
+    throw new AmazonQuoteApiError(messages.quote_service_unavailable, "quote_service_unavailable");
   }
   if (!response.ok) {
-    const body = await response.json().catch(() => ({})) as { error?: string; code?: string; details?: { preview?: unknown } };
-    const message = (body.code && messages[body.code]) || body.error || "Không thể tra giá Amazon lúc này. Vui lòng thử lại.";
-    throw new AmazonQuoteApiError(message, body.code === "offer_not_verified" ? parseSourcePreview(body.details?.preview) : null);
+    const body = await response.json().catch(() => null) as { error?: string; code?: string; details?: { preview?: unknown } } | null;
+    const code = typeof body?.code === "string" ? body.code : [502, 503, 504].includes(response.status) ? "quote_service_unavailable" : null;
+    const message = (code && messages[code]) || (typeof body?.error === "string" && body.error) || "Không thể tra giá Amazon lúc này. Vui lòng thử lại.";
+    throw new AmazonQuoteApiError(message, code,
+      code === "offer_not_verified" ? parseSourcePreview(body?.details?.preview) : null);
   }
   return response.json() as Promise<T>;
 }
