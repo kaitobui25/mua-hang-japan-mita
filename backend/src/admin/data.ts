@@ -121,6 +121,10 @@ export async function listOrders(q: Record<string, string | undefined>) {
 export async function orderDetail(id: string) {
   const order = await db.query('SELECT * FROM orders WHERE id=$1', [id]);
   if (!order.rows[0]) throw new AdminError(404, 'Không tìm thấy đơn mô phỏng.');
+  // Internal bearer verifier and checkout request fingerprint never leave the API.
+  delete order.rows[0].shipping_confirmation_hash;
+  delete order.rows[0].checkout_fingerprint;
+  delete order.rows[0].checkout_key;
   const items = await db.query('SELECT * FROM order_items WHERE order_id=$1 ORDER BY asin', [id]);
   return { ...order.rows[0], items: items.rows };
 }
@@ -154,6 +158,16 @@ export async function updateOrder(id: string, change: { status?: string; payment
     }
     if (change.shippingFinalVnd !== undefined && (!Number.isSafeInteger(change.shippingFinalVnd) || change.shippingFinalVnd < 0 || change.shippingFinalVnd > 1000000000 || old.status === 'cancelled')) {
       throw new AdminError(400, 'Phí vận chuyển không hợp lệ hoặc đơn đã hủy.');
+    }
+    if (change.shippingFinalVnd !== undefined) {
+      const quoteOrder = await client.query('SELECT 1 FROM order_items WHERE order_id=$1 AND quote_snapshot IS NOT NULL LIMIT 1', [id]);
+      if (quoteOrder.rowCount) {
+        if (old.shipping_final_vnd !== null) throw new AdminError(409, 'Phí đã được khách xác nhận; không được thay đổi.');
+        const proposed = await client.query(`UPDATE orders SET shipping_proposed_vnd=$2,shipping_final_vnd=NULL,shipping_confirmed_at=NULL
+          WHERE id=$1 RETURNING id,shipping_proposed_vnd,shipping_final_vnd,shipping_confirmed_at`, [id, change.shippingFinalVnd]);
+        await audit(client, actor, 'order.shipping_proposed', id, old, proposed.rows[0]);
+        return { ...proposed.rows[0], requiresCustomerConfirmation: true };
+      }
     }
     if (change.paymentStatus) {
       if (change.paymentStatus === 'paid' && (old.payment_status !== 'unpaid' || old.status === 'pending_confirmation' || old.status === 'cancelled')) {

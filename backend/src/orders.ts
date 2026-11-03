@@ -1,18 +1,29 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { config } from './config.js';
 import { db } from './db/pool.js';
 import { DbProduct, publicProduct, canCheckoutProduct } from './catalog.js';
 import { getPricingPolicy, toVnd } from './pricing.js';
+import { loadCheckoutQuotes, refreshAmazonQuote, validateQuoteCart, type QuoteCartLine } from './amazon-quotes.js';
+import { QuoteError, uuid } from './amazon-quote-source.js';
 
 type CartLine = { asin: string; quantity: number };
 type Customer = { name: string; phone: string; email?: string; address: string };
+const shippingToken = (orderId: string, checkoutKey: string) => createHash('sha256').update(`shipping:${orderId}:${checkoutKey}`).digest('hex');
 
 export class CheckoutError extends Error {
   constructor(public code: string, message: string) { super(message); }
 }
 
 export async function createOrder(body: unknown) {
-  return persistOrder(body, false);
+  try { return await persistOrder(body, false); }
+  catch (error) {
+    if (error instanceof QuoteError && error.code === 'quote_expired' && error.details) {
+      const { quoteId } = error.details as { quoteId: string };
+      const replacement = await refreshAmazonQuote(quoteId);
+      throw new QuoteError('quote_refresh_required', 409, { ...replacement, previousQuoteId: quoteId });
+    }
+    throw error;
+  }
 }
 
 // Retained for local fixtures and historical simulation workflows only.
@@ -23,7 +34,7 @@ export async function createSimulationOrder(body: unknown) {
 async function persistOrder(body: unknown, simulation: boolean) {
   if (config.publicReadOnly) throw new CheckoutError('checkout_disabled', 'Chức năng tạo đơn đang tạm đóng.');
   if (!body || typeof body !== 'object') throw new CheckoutError('invalid_payload', 'Thiếu dữ liệu đặt hàng');
-  const request = body as { items?: CartLine[]; customer?: Customer };
+  const request = body as { items?: CartLine[]; quoteItems?: QuoteCartLine[]; customer?: Customer; checkoutKey?: string };
   const c = request.customer;
   if (!c || [c.name, c.phone, c.address].some(v => typeof v !== 'string' || !v.trim()) ||
     c.name.length > 200 || c.address.length > 2000 ||
@@ -31,17 +42,41 @@ async function persistOrder(body: unknown, simulation: boolean) {
       (typeof c.email !== 'string' || c.email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(c.email)))) {
     throw new CheckoutError('invalid_customer', 'Vui lòng nhập tên, số điện thoại và địa chỉ hợp lệ');
   }
-  const items = request.items;
-  if (!Array.isArray(items) || items.length < 1 || items.length > 50 || items.some(x => !x || typeof x.asin !== 'string' || !/^[A-Z0-9]{10}$/.test(x.asin) || !Number.isInteger(x.quantity) || x.quantity < 1 || x.quantity > 99)) {
+  const quoteItems = validateQuoteCart(request.quoteItems ?? []);
+  if (simulation && quoteItems.length) throw new QuoteError('quotes_not_simulated', 400);
+  const items = request.items ?? [];
+  if (!Array.isArray(items) || items.length + quoteItems.length < 1 || items.length + quoteItems.length > 50 || items.some(x => !x || typeof x.asin !== 'string' || !/^[A-Z0-9]{10}$/.test(x.asin) || !Number.isInteger(x.quantity) || x.quantity < 1 || x.quantity > 99)) {
     throw new CheckoutError('invalid_items', 'Giỏ hàng không hợp lệ');
   }
   const quantities = new Map<string, number>();
   for (const { asin, quantity } of items) quantities.set(asin, (quantities.get(asin) ?? 0) + quantity);
   if ([...quantities.values()].some(q => q > 99)) throw new CheckoutError('invalid_items', 'Số lượng vượt giới hạn');
 
+  const hasCheckoutKey = !simulation && typeof request.checkoutKey === 'string' && uuid.test(request.checkoutKey);
+  if (quoteItems.length && !hasCheckoutKey) throw new QuoteError('checkout_key_required', 400);
+  if (request.checkoutKey !== undefined && !simulation && !hasCheckoutKey) throw new QuoteError('invalid_checkout_key', 400);
+  const fingerprint = createHash('sha256').update(JSON.stringify({ items, quoteItems, customer: c })).digest('hex');
+
   const connection = await db.connect();
   try {
     await connection.query('BEGIN');
+    if (hasCheckoutKey) {
+      await connection.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [request.checkoutKey]);
+      const previous = (await connection.query('SELECT id,checkout_fingerprint,merchandise_vnd,pricing_policy_version,estimated_shipping_vnd,shipping_final_vnd,shipping_confirmation_hash,payment_status FROM orders WHERE checkout_key=$1', [request.checkoutKey])).rows[0];
+      if (previous) {
+        if (previous.checkout_fingerprint !== fingerprint) throw new QuoteError('checkout_key_conflict', 409);
+        const oldLines = (await connection.query('SELECT asin,name,quantity,price_jpy,unit_price_vnd,observed_at,quote_snapshot FROM order_items WHERE order_id=$1 ORDER BY line_id', [previous.id])).rows;
+        await connection.query('COMMIT');
+        return { orderId: previous.id, status: 'already_submitted', duplicate: true, lines: oldLines,
+          subtotalVnd: Number(previous.merchandise_vnd), merchandiseVnd: Number(previous.merchandise_vnd), payableNowVnd: 0,
+          shippingEstimatedVnd: previous.estimated_shipping_vnd === null ? null : Number(previous.estimated_shipping_vnd),
+          shippingFinalVnd: previous.shipping_final_vnd === null ? null : Number(previous.shipping_final_vnd),
+          currency: 'VND', paymentStatus: previous.payment_status, version: previous.pricing_policy_version,
+          shippingDueLater: true, merchandisePriceLocked: true,
+          ...(previous.shipping_confirmation_hash ? { shippingConfirmationToken: shippingToken(previous.id, request.checkoutKey!) } : {}) };
+      }
+    }
+    const quotes = await loadCheckoutQuotes(connection, quoteItems);
     const policy = await getPricingPolicy(connection);
     const products = await connection.query<DbProduct & { shipping_estimate_vnd: number }>(
       `SELECT p.*,
@@ -69,15 +104,26 @@ async function persistOrder(body: unknown, simulation: boolean) {
       if (!Number.isSafeInteger(subtotalVnd) || !Number.isSafeInteger(shippingEstimatedVnd)) throw new CheckoutError('invalid_price', 'Giá trị đơn vượt giới hạn an toàn.');
       return { ...publicProduct(p, policy), quantity, unitPriceVnd, lineTotalVnd: unitPriceVnd * quantity, observedAt: p.price_observed_at };
     });
+    for (const quote of quotes) subtotalVnd += quote.lineTotalVnd;
+    if (!Number.isSafeInteger(subtotalVnd)) throw new QuoteError('invalid_quote_price');
     const orderId = randomUUID();
+    const shippingConfirmationToken = quotes.length ? shippingToken(orderId, request.checkoutKey!) : null;
     await connection.query(
       `INSERT INTO orders(id,customer_name,customer_phone,customer_email,customer_address,fx_jpy_to_vnd,service_fee_percent,merchandise_vnd,estimated_shipping_vnd,pricing_policy_version,status,payment_status,payment_method)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-      [orderId, c.name.trim(), c.phone.trim(), c.email?.trim() || null, c.address.trim(), policy.fxJpyToVnd, policy.serviceFeePercent, subtotalVnd, shippingEstimatedVnd, policy.version, simulation ? 'simulation_created' : 'pending_confirmation', 'unpaid', 'manual']
+      [orderId, c.name.trim(), c.phone.trim(), c.email?.trim() || null, c.address.trim(), policy.fxJpyToVnd, policy.serviceFeePercent, subtotalVnd, quotes.length ? null : shippingEstimatedVnd, policy.version, simulation ? 'simulation_created' : 'pending_confirmation', 'unpaid', 'manual']
     );
     for (const line of lines) {
       await connection.query('INSERT INTO order_items(order_id,asin,name,quantity,price_jpy,unit_price_vnd,observed_at) VALUES($1,$2,$3,$4,$5,$6,$7)',
         [orderId, line.asin, line.name, line.quantity, line.priceJpy, line.unitPriceVnd, line.observedAt]);
+    }
+    for (const quote of quotes) {
+      await connection.query(`INSERT INTO order_items(order_id,asin,name,quantity,price_jpy,unit_price_vnd,observed_at,quote_snapshot)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, [orderId, quote.asin, quote.title, quote.quantity, quote.priceJpy, quote.unitPriceVnd, quote.observedAt, JSON.stringify(quote)]);
+    }
+    if (hasCheckoutKey) {
+      await connection.query(`UPDATE orders SET checkout_key=$2,checkout_fingerprint=$3,shipping_confirmation_hash=$4 WHERE id=$1`,
+        [orderId, request.checkoutKey, fingerprint, shippingConfirmationToken ? createHash('sha256').update(shippingConfirmationToken).digest('hex') : null]);
     }
     if (!simulation) {
       // Unique event identity prevents re-enqueueing the same order alert.
@@ -89,10 +135,17 @@ async function persistOrder(body: unknown, simulation: boolean) {
         [orderId]
       );
     }
+    if (quotes.length) {
+      // Last write before commit: use wall clock, not the transaction start timestamp.
+      const claimed = await connection.query(`UPDATE amazon_quotes SET order_id=$1 WHERE id=ANY($2::uuid[])
+        AND order_id IS NULL AND expires_at>clock_timestamp() RETURNING id`, [orderId, quotes.map(q => q.id)]);
+      if (claimed.rowCount !== quotes.length) throw new QuoteError('quote_expired', 409, { quoteId: quotes.find(q => !claimed.rows.some(r => r.id === q.id))!.id });
+    }
     await connection.query('COMMIT');
-    return { orderId, status: simulation ? 'simulation_created' : 'pending_confirmation', lines, subtotalVnd,
+    return { orderId, status: simulation ? 'simulation_created' : 'pending_confirmation', lines: [...lines, ...quotes], subtotalVnd,
       merchandiseVnd: subtotalVnd, payableNowVnd: simulation ? subtotalVnd : 0,
-      shippingEstimatedVnd, shippingFinalVnd: null, currency: 'VND',
+      shippingEstimatedVnd: quotes.length ? null : shippingEstimatedVnd, shippingFinalVnd: null, currency: 'VND',
+      ...(shippingConfirmationToken ? { shippingConfirmationToken } : {}),
       paymentStatus: 'unpaid', paymentMethod: 'manual', paymentProvider: null,
       paymentReference: null, paymentMode: simulation ? 'simulation' : 'manual',
       shippingDueLater: true, merchandisePriceLocked: true, ...policy };

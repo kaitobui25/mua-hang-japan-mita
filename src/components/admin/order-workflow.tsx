@@ -13,7 +13,7 @@ const next: Record<string, string[]> = {
   shipping: ['completed'],
 };
 
-export function OrderWorkflow({ id, csrf, status, payment }: { id: string; csrf: string; status: string; payment: string }) {
+export function OrderWorkflow({ id, csrf, status, payment, amazon, shippingConfirmed }: { id: string; csrf: string; status: string; payment: string; amazon?: boolean; shippingConfirmed?: boolean }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -35,9 +35,10 @@ export function OrderWorkflow({ id, csrf, status, payment }: { id: string; csrf:
       {payment === 'unpaid' && !['pending_confirmation','cancelled'].includes(status) && <button type="button" disabled={busy} onClick={() => void change({ paymentStatus: 'paid' })}>Xác nhận đã nhận tiền</button>}
       {payment === 'paid' && <button type="button" disabled={busy} onClick={() => void change({ paymentStatus: 'refunded' })}>Ghi nhận đã hoàn tiền</button>}
     </div>
-    {status !== 'cancelled' && <div className="admin-form-row"><label>Phí vận chuyển cuối cùng (VND)
+    {status !== 'cancelled' && (!amazon || !shippingConfirmed) && <div className="admin-form-row"><label>{amazon ? 'Đề xuất phí vận chuyển để khách xác nhận (VND)' : 'Phí vận chuyển cuối cùng (VND)'}
       <input type="number" min="0" max="1000000000" step="1" value={shippingVnd} onChange={event => setShippingVnd(event.target.value)} placeholder="Ví dụ: 50000"/>
-    </label><button type="button" disabled={busy || shippingVnd === '' || !Number.isSafeInteger(Number(shippingVnd)) || Number(shippingVnd) < 0} onClick={() => void change({ shippingFinalVnd: Number(shippingVnd) })}>Lưu phí vận chuyển</button></div>}
+    </label><button type="button" disabled={busy || shippingVnd === '' || !Number.isSafeInteger(Number(shippingVnd)) || Number(shippingVnd) < 0} onClick={() => void change({ shippingFinalVnd: Number(shippingVnd) })}>{amazon ? 'Gửi đề xuất phí' : 'Lưu phí vận chuyển'}</button></div>}
+    {amazon && <p>Đơn mua hộ Amazon: phí chỉ có hiệu lực sau khi khách xem và xác nhận đúng số tiền. Hãy liên hệ khách để họ sử dụng mã trên biên nhận tại trang xác nhận phí.</p>}
     {error && <p role="alert">{error}</p>}
   </section>;
 }

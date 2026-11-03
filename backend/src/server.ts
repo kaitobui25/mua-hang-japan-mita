@@ -5,6 +5,9 @@ import { getProductDetails, listCatalog } from './catalog.js';
 import { CheckoutError, createOrder } from './orders.js';
 import { adminRoutes } from './admin/routes.js';
 import { orderAlertRelayRoutes } from './order-alert-relay.js';
+import { amazonQuoteRoutes } from './amazon-quote-routes.js';
+import { QuoteError } from './amazon-quote-source.js';
+import { quoteRateLimit } from './amazon-quotes.js';
 import { startEmailAlertScheduler } from './notifications/email-scheduler.js';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFileSync, realpathSync } from 'node:fs';
@@ -36,6 +39,7 @@ export function buildServer(logger = false) {
   const server = Fastify({ logger: logger ? { redact: ['req.headers.cookie', 'req.headers.authorization', 'res.headers.set-cookie'], serializers: { req: req => ({ method: req.method, url: req.url?.split('?')[0] }) } } : false, bodyLimit: 32768 });
   server.register(adminRoutes, { prefix: '/api/admin' });
   server.register(orderAlertRelayRoutes);
+  server.register(amazonQuoteRoutes, { prefix: '/api/amazon' });
 
   server.get('/api/health', async () => {
     const result = await db.query('SELECT 1');
@@ -64,10 +68,14 @@ export function buildServer(logger = false) {
   });
 
   server.post('/api/checkout', async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
     if (config.publicReadOnly) return reply.code(404).send({ error: 'Chức năng tạo đơn đang tạm đóng.' });
     try {
+      const quoteItems = (request.body as { quoteItems?: unknown } | null)?.quoteItems;
+      if (Array.isArray(quoteItems) && quoteItems.length) await quoteRateLimit(request.ip);
       return await createOrder(request.body);
     } catch (error) {
+      if (error instanceof QuoteError) return reply.code(error.status).send({ code: error.code, ...(error.details ? { details: error.details } : {}) });
       if (error instanceof CheckoutError) return reply.code(422).send({ code: error.code, error: error.message });
       request.log.error({ code: 'checkout_failed' }, 'Checkout persistence failed');
       return reply.code(500).send({ code: 'checkout_failed', error: 'Không thể tạo đơn lúc này. Vui lòng thử lại sau.' });

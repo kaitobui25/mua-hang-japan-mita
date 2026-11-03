@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { FeaturedProducts } from "@/components/catalog/featured-products";
 import { Icon } from "@/components/ui/icons";
+import { SearchForm } from "@/components/layout/search-form";
 
 export default function HomePage() {
   return <>
+    <section className="amazon-home-search"><div className="container amazon-home-search-inner"><label htmlFor="search-prominent">Tìm hàng Nhật hoặc dán link Amazon.co.jp</label><SearchForm className="prominent"/><p>Nhập tên sản phẩm Mita, đường dẫn Amazon JP hoặc mã ASIN để tra giá và ngày giao thường.</p></div></section>
     <section className="hero"><div className="container hero-layout">
       <div className="hero-copy"><h1>Chăm chút<br/>từng điều nhỏ.</h1><p className="lead">Đồ Nhật cho sức khỏe và những năm đầu của bé.</p><div className="hero-actions"><Link href="/san-pham" className="button button-primary">Khám phá sản phẩm <Icon name="arrow" size={19}/></Link><Link href="#danh-muc" className="button button-outline">Chọn theo danh mục</Link></div></div>
       <div className="hero-art" aria-hidden="true"><div className="art-arch"><div className="art-sun"/><svg className="art-plant" viewBox="0 0 470 560" fill="none"><path d="M224 556C231 433 205 279 181 106" stroke="currentColor" strokeWidth="4" strokeLinecap="round"/><path d="M211 410C140 366 91 294 84 238C149 253 199 321 211 410ZM207 326C266 258 284 191 278 131C231 157 200 228 207 326ZM190 213C121 169 98 116 105 72C157 90 186 136 190 213ZM222 463C272 413 334 383 379 394C348 447 282 469 222 463Z" fill="currentColor" fillOpacity=".74"/><path d="M85 238c60 68 126 172 126 172M278 131c-31 82-58 155-71 195" stroke="var(--color-paper)" strokeOpacity=".48" strokeWidth="2"/></svg><span className="art-shadow"/></div><div className="art-caption"><span>mita japan</span><span>small things, thoughtfully chosen</span></div></div>

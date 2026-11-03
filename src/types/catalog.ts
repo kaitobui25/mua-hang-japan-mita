@@ -45,7 +45,7 @@ export type CatalogResponse = {
   lastUpdatedAt?: string | null;
 };
 
-export type CartItem = { asin: string; quantity: number };
+export type CartItem = { asin: string; quantity: number; kind?: "catalog" | "amazon_quote"; quote?: import("./amazon-quote").AmazonQuote };
 
 export type Customer = { name: string; phone: string; email?: string; address: string };
 
@@ -53,8 +53,9 @@ export type CheckoutResponse = {
   orderId: string;
   lines: Array<{ asin: string; quantity: number; [key: string]: unknown }>;
   subtotalVnd: number;
-  shippingEstimatedVnd: number;
+  shippingEstimatedVnd: number | null;
   payableNowVnd: number;
-  status: "pending_confirmation";
+  status: "pending_confirmation" | "already_submitted";
+  shippingConfirmationToken?: string;
   paymentStatus?: "unpaid" | "pending" | "paid" | "refunded";
 };

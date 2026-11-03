@@ -11,7 +11,7 @@ export function useCartProducts() {
   const [failed, setFailed] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [retry, setRetry] = useState(0);
-  const ids = items.map(item => item.asin).join("|");
+  const ids = items.filter(item => item.kind !== "amazon_quote").map(item => item.asin).join("|");
   useEffect(() => {
     if (!hydrated) return;
     if (!ids) { setProducts({}); setFailed([]); setLoading(false); return; }
@@ -26,6 +26,6 @@ export function useCartProducts() {
     }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [ids, hydrated, retry]);
-  const subtotal = items.reduce((sum, item) => sum + (products[item.asin]?.priceVnd || 0) * item.quantity, 0);
+  const subtotal = items.reduce((sum, item) => sum + (item.kind === "amazon_quote" ? item.quote?.priceVnd || 0 : products[item.asin]?.priceVnd || 0) * item.quantity, 0);
   return { products, failed, loading: !hydrated || loading, subtotal, retry: () => setRetry(value => value + 1) };
 }

@@ -9,9 +9,9 @@ import { Icon } from "@/components/ui/icons";
 import { canCheckout, formatVnd, productStatus } from "@/lib/format";
 
 export function CartView() {
-  const { items, count, remove, setQuantity } = useCart();
+  const { items, count, remove, removeQuote, setQuantity } = useCart();
   const { products, failed, loading, subtotal, retry } = useCartProducts();
-  const blocked = items.some(item => !products[item.asin] || !canCheckout(products[item.asin]));
+  const blocked = items.some(item => item.kind === "amazon_quote" ? !item.quote?.canOrder : !products[item.asin] || !canCheckout(products[item.asin]));
   const readOnly = process.env.NEXT_PUBLIC_READ_ONLY === '1';
 
   return <section className="container shopping-page">
@@ -20,7 +20,13 @@ export function CartView() {
     {loading ? <div className="shopping-loading" aria-live="polite">Đang kiểm tra giá và tình trạng sản phẩm...</div>
       : !items.length ? <div className="state-panel empty-cart"><Icon name="bag" size={40}/><h2>Giỏ hàng đang trống</h2><p>Khám phá những sản phẩm phù hợp với gia đình bạn.</p><Link href="/san-pham" className="button button-primary">Khám phá sản phẩm <Icon name="arrow"/></Link></div>
       : <div className="shopping-grid"><div className="cart-items"><div className="cart-section-heading"><h2>Sản phẩm đã chọn</h2><button type="button" className="text-button" onClick={retry}>Cập nhật thông tin <Icon name="arrow" size={16}/></button></div>
-          {items.map(item => { const product = products[item.asin]; return <article className="cart-row" key={item.asin}>
+          {items.map(item => { const product = products[item.asin]; return item.kind === "amazon_quote" && item.quote ? <article className="cart-row" key={item.quote.quoteId}>
+            <Link href={`/mua-ho-amazon?input=${encodeURIComponent(item.asin)}`} className="cart-item-image" aria-label={`Tra lại Amazon ${item.asin}`}><ProductImage src={item.quote.imageUrl} name={item.quote.name}/></Link>
+            <div className="cart-item-info"><span className="product-brand">Mua hộ Amazon Japan</span><h3>{item.quote.name}</h3><span className="cart-item-asin">{item.asin} — {item.quote.seller || "Người bán chưa xác định"}</span>
+              <p className="status-warning">{Date.now() >= Date.parse(item.quote.expiresAt) ? "Báo giá đã hết hạn, sẽ tra lại khi đặt." : !item.quote.amazonDeliveryDate ? "Chưa có ngày giao Amazon — vẫn có thể gửi đơn." : `Dự kiến giao tận nhà: ${item.quote.vietnamDeliveryDate || "Chưa xác định"}`}</p>
+              <div className="cart-item-controls"><span>Số lượng: {item.quantity} (đổi số lượng cần tra giá lại)</span><button type="button" className="remove-button" onClick={()=>removeQuote(item.quote!.quoteId)}>Xóa</button></div></div>
+            <div className="cart-line-price">{formatVnd(item.quote.priceVnd * item.quantity)}</div>
+          </article> : <article className="cart-row" key={item.asin}>
             <Link href={`/san-pham/${item.asin}`} className="cart-item-image" aria-label={`Xem sản phẩm ${item.asin}`}><ProductImage src={product?.imageUrl} name={product?.name || item.asin}/></Link>
             <div className="cart-item-info"><span className="product-brand">{product?.brand || "Sản phẩm Nhật"}</span><h3><Link href={`/san-pham/${item.asin}`}>{product?.name || `ASIN ${item.asin}`}</Link></h3><span className="cart-item-asin">{item.asin}</span>
               {product ? <p className={canCheckout(product) ? "status-good" : "status-warning"}>{productStatus(product)}</p> : <p className="status-warning">Chưa tải được dữ liệu sản phẩm.</p>}

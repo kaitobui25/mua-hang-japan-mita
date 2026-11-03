@@ -8,6 +8,7 @@ import { Icon } from "@/components/ui/icons";
 import { SearchForm } from "@/components/layout/search-form";
 
 const NAV = [
+  { href: "/mua-ho-amazon", label: "Mua hộ Amazon" },
   { href: "/danh-muc/thuc-pham-bo-sung", label: "Thực phẩm bổ sung" },
   { href: "/danh-muc/thuc-pham-cho-be", label: "Thực phẩm cho bé" },
   { href: "/san-pham", label: "Tất cả sản phẩm" },

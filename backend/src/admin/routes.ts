@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { db } from '../db/pool.js';
 import { getPricingPolicy, toVnd, validatePolicy, validateExpiryPolicy, type PricingPolicy } from '../pricing.js';
-import { AdminError, getCatalogSettings, getTranslationSettings, listOrders, listProducts, orderDetail, overview, saveCatalogSettings, savePolicy, saveTranslationSettings, setVisibility, updateOrder } from './data.js';
+import { AdminError, audit, transaction, getCatalogSettings, getTranslationSettings, listOrders, listProducts, orderDetail, overview, saveCatalogSettings, savePolicy, saveTranslationSettings, setVisibility, updateOrder } from './data.js';
 import { recentAdminIssues } from './issues.js';
 import { enqueueImport, listImports } from './imports.js';
 import { acknowledgeOrderNotification, listOrderNotifications } from './notifications.js';
@@ -11,6 +11,7 @@ import { workerOverview } from '../workers/status.js';
 import { writeWorkerSettings } from '../workers/settings.js';
 import { requestManualWorker } from '../workers/manual.js';
 import { registerDesktopDiagnostics } from './desktop-diagnostics.js';
+import { getQuoteSettings } from '../amazon-quotes.js';
 
 declare module 'fastify' {
   interface FastifyRequest { adminSession: Awaited<ReturnType<typeof getSession>> }
@@ -110,6 +111,19 @@ export async function adminRoutes(server: FastifyInstance) {
   });
   server.get('/catalog-settings', async () => getCatalogSettings());
   server.get('/translation-settings', async () => getTranslationSettings());
+  server.get('/amazon-quote-settings', async () => getQuoteSettings());
+  server.put('/amazon-quote-settings', { bodyLimit: 1024 }, async request => {
+    const body = request.body as { version?: number; deliveryDays?: number } | null;
+    if (!body || !Number.isInteger(body.version) || !Number.isInteger(body.deliveryDays) || body.deliveryDays! < 0 || body.deliveryDays! > 90) throw new AdminError(400, 'Invalid quote settings');
+    return transaction(async client => {
+      const before = await getQuoteSettings(client);
+      const result = await client.query(`UPDATE amazon_quote_settings SET delivery_days=$1,version=version+1,updated_at=now()
+        WHERE id=1 AND version=$2 RETURNING version,delivery_days AS "deliveryDays"`, [body.deliveryDays, body.version]);
+      if (!result.rowCount) throw new AdminError(409, 'Quote settings changed; reload before saving');
+      await audit(client, request.adminSession!.actorId, 'amazon.quote_settings', '1', before, result.rows[0]);
+      return result.rows[0];
+    });
+  });
   server.get('/workers', async () => workerOverview());
   server.put('/workers/settings', { bodyLimit: 2048 }, async request => {
     try {
