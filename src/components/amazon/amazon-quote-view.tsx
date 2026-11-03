@@ -43,7 +43,7 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
         setError(cause instanceof Error ? cause.message : "Không thể báo giá.");
         if (cause instanceof AmazonQuoteApiError) {
           if (cause.preview) setPreview(cause.preview);
-          else if (["offer_not_verified", "amazon_cooldown", "amazon_blocked", "amazon_rate_limited", "amazon_unavailable", "quote_schema_unavailable", "quote_unavailable", "quote_service_unavailable"].includes(cause.code ?? "")) {
+          else if (["amazon_quotes_disabled", "offer_not_verified", "amazon_cooldown", "amazon_busy", "amazon_blocked", "amazon_rate_limited", "quote_rate_limited", "amazon_unavailable", "quote_schema_unavailable", "quote_unavailable", "quote_service_unavailable"].includes(cause.code ?? "")) {
             const cached = await lookupLocalAmazonPreview(value);
             if (sequence === requestSequence.current) setCachedPreview(cached);
           }
