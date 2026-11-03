@@ -74,15 +74,15 @@ function Description({ value }: { value: string }) {
 }
 
 export function ProductInformation({
-  description, detail, titleExtras, hasStructuredRatings = false,
-}: { description?: string | null; detail?: ProductDetailData | null; titleExtras?: string[]; hasStructuredRatings?: boolean }) {
+  description, detail, titleExtras, hasStructuredRatings = false, className = "container detail-description",
+}: { description?: string | null; detail?: ProductDetailData | null; titleExtras?: string[]; hasStructuredRatings?: boolean; className?: string }) {
   const sections = SECTIONS.map(section => ({ ...section, items: detail?.[section.field] ?? [] }))
     .filter(section => section.items.length > 0);
   const specifications = Object.entries(detail?.specs ?? {})
     .filter(([label]) => !hasStructuredRatings || label !== "Customer Reviews");
   if (!description && sections.length === 0 && specifications.length === 0 && !titleExtras?.length) return null;
 
-  return <section className="container detail-description" aria-labelledby="detail-information-title">
+  return <section className={className} aria-labelledby="detail-information-title">
     <div className="detail-description-title"><h2 id="detail-information-title">Thông tin sản phẩm</h2></div>
     <div className="detail-sections">
       {description && <Description value={description}/>}

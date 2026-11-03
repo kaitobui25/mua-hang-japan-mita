@@ -63,6 +63,60 @@ Quote routes use `Cache-Control: no-store`. Expected error codes include
 `checkout_key_conflict` and `shipping_confirmation_conflict`. Disabled/unavailable
 sources use 503; invalid input uses 400; conflicts use 409; unverified offers use 422.
 
+## Optional product display metadata (plan 18)
+
+`PublicOffer` / `AmazonQuote` may carry an optional `display` object, separate from
+offer terms. It has `provenance: { asin, sourceUrl, observedAt, permissionReference }`
+and optional fields:
+
+| Field | Meaning / maximum |
+| --- | --- |
+| `images` | Up to 10 distinct HTTPS media-amazon.com image URLs, each 2048 characters |
+| `brand` | Original brand text, 500 characters |
+| `description` | Original plain text, 12000 characters |
+| `features` | Up to 20 distinct source bullets, each 2000 characters |
+| `ingredients`, `usage`, `warnings` | Explicitly labelled source sections, each 4000 characters |
+| `specifications` | Up to 40 distinct `{ name, value }` rows, 500 / 2000 characters |
+| `rating` | Explicit Amazon aggregate score, greater than 0 and at most 5 |
+| `reviewCount` | Explicit Amazon aggregate rating count (including ratings without written reviews), not the number of extracted review excerpts |
+| `reviews` | Up to 10 distinct `{ body, title?, rating? }` excerpts, body 4000 / title 500 characters |
+
+Missing, ambiguous, malformed or oversized fields are omitted; an empty `display`
+is omitted entirely. Text is extracted without HTML/scripts, hidden or aria-hidden
+content, with block/line boundaries preserved as spaces. Consumers must render it
+as text, never as raw HTML. Numbers, units, model/brand identifiers and original
+language are retained. This does not translate content or call Google. Aggregate
+ratings/counts belong to Amazon and must never be labelled as Mita reviews.
+
+Extraction uses only the same validated selected-ASIN page response after all offer
+guards succeed. Images come from the rendered landing image / gallery, not alternate
+variant scripts or catalog fallback. No image/review request, alternate variant
+selection or additional source access is performed. Unverified offers still fail
+closed even if product metadata exists. Existing `imageUrl` behavior is unchanged.
+
+**Permission gate:** `parsePublicOffer(html, asin, quantity, observedAt, permission?)`
+and `readPublicOffer(asin, quantity, permission?)` accept a trusted backend-only
+`AmazonDisplayPermission` containing a nonempty `reference` to reviewed source/display
+rights evidence and an explicit `fields` allowlist. For example, a review permitting
+only brand and features supplies `{ reference: "review-record-id", fields: ["brand",
+"features"] }`; it does not authorize ratings, reviews or images. Never derive this
+permission from request input or page claims, or include private credentials in the
+reference. The reference records a decision; the parser cannot establish legal rights.
+
+There is no default permission or new environment toggle. The normal quote API caller
+does not supply permission, so new metadata stays absent until source/rights review
+and separately reviewed trusted caller wiring. This implementation supplies parsing
+and DTO support without claiming that real Amazon content or commercial display
+rights have been verified. Existing quote building preserves optional display data;
+refresh comparison excludes it. Pricing, expiry, checkout terms and persistence SQL
+are unchanged; no migration is needed for this optional JSON snapshot property.
+
+Focused offline verification: `node --import tsx --test tests/amazon-quote-source.test.ts
+tests/amazon-quotes-unit.test.ts` from `backend/`. Both suites use synthetic HTML and
+mock fetch responses; neither issues DB queries or live Amazon requests. The standard
+full test runner still requires a verified disposable database target as documented
+above. No live schema or runtime claims follow from these unit tests.
+
 ## Owner and persistence
 
 Authenticated Admin `GET/PUT /api/admin/amazon-quote-settings` reads/updates

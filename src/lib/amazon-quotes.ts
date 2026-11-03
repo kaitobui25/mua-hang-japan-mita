@@ -1,8 +1,9 @@
-import type { AmazonQuote } from "@/types/amazon-quote";
+import type { AmazonQuote, AmazonQuoteDisplay } from "@/types/amazon-quote";
 
 type DateRange = { start: string; end: string } | null;
 type ServerQuote = {
   id: string; asin: string; title: string; seller: string; sourceUrl: string; imageUrl: string | null;
+  display?: AmazonQuoteDisplay;
   quantity: number; priceJpy: number; unitPriceVnd: number; observedAt: string; expiresAt: string;
   deliveryDays: number; amazonDelivery: DateRange; vietnamDelivery: DateRange;
   freeJapanShipping: true; shippingEvidence: string; variant: string; offerId: string;
@@ -15,10 +16,13 @@ function projectQuote(raw: ServerQuote): AmazonQuote {
     raw.priceJpy,raw.unitPriceVnd,raw.imageUrl,raw.purchaseType,raw.shippingType,raw.freeJapanShipping,
     raw.shippingEvidence,raw.amazonDelivery?.start,raw.amazonDelivery?.end,raw.deliveryDays,
     raw.vietnamDelivery?.start,raw.vietnamDelivery?.end,raw.pricingPolicy.fxJpyToVnd,raw.pricingPolicy.serviceFeePercent]);
+  // Only images expressly allowed by the trusted backend display gate reach public UI,
+  // including the cart and checkout. The legacy quote image is not permission evidence.
+  const allowedImage = raw.display?.images?.[0] ?? null;
   return { quoteId: raw.id, asin: raw.asin, name: raw.title, seller: raw.seller,
     variant: raw.variant, offerId: raw.offerId,
     shippingEvidence: raw.shippingEvidence, shippingType: 'standard',
-    sourceUrl: raw.sourceUrl, imageUrl: raw.imageUrl, quantity: raw.quantity,
+    sourceUrl: raw.sourceUrl, imageUrl: allowedImage, display: raw.display, quantity: raw.quantity,
     priceJpy: raw.priceJpy, priceVnd: raw.unitPriceVnd,
     observedAt: raw.observedAt, expiresAt: raw.expiresAt,
     amazonDeliveryDate: raw.amazonDelivery?.start || null, amazonDeliveryEnd: raw.amazonDelivery?.end || null,

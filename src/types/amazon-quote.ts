@@ -1,4 +1,19 @@
 /** Public, server-issued purchase estimate. Never treat a client copy as checkout authority. */
+export type AmazonQuoteDisplay = {
+  provenance: { asin: string; sourceUrl: string; observedAt: string; permissionReference: string };
+  images?: string[];
+  brand?: string;
+  description?: string;
+  features?: string[];
+  ingredients?: string;
+  usage?: string;
+  warnings?: string;
+  specifications?: { name: string; value: string }[];
+  rating?: number;
+  reviewCount?: number;
+  reviews?: { title?: string; body: string; rating?: number }[];
+};
+
 export type AmazonQuote = {
   quoteId: string;
   asin: string;
@@ -10,6 +25,8 @@ export type AmazonQuote = {
   shippingType: 'standard';
   sourceUrl: string;
   imageUrl?: string | null;
+  /** Optional source-backed content; unavailable without verified display permission. */
+  display?: AmazonQuoteDisplay;
   quantity: number;
   priceJpy: number;
   priceVnd: number;
