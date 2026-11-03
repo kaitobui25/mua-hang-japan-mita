@@ -1,3 +1,4 @@
+import { ScraplingSession, QuoteTransportError } from '../src/ingestion/scrapling.js';
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { randomUUID } from 'node:crypto';
@@ -150,11 +151,11 @@ test('Amazon quote checkout and migration regressions in disposable DB only', { 
       await db.query("DELETE FROM source_access_blocks WHERE source='amazon.co.jp'");
       const enabled = process.env.AMAZON_QUOTES_ENABLED; process.env.AMAZON_QUOTES_ENABLED = '1';
       let price = 1000;
-      const fetchMock = t.mock.method(globalThis, 'fetch', async () => new Response(`<input id="ASIN" value="${offer.asin}"><span id="productTitle">Synthetic item</span>
+      const transportMock = t.mock.method(ScraplingSession.prototype, 'quote', async () => ({ html: `<input id="ASIN" value="${offer.asin}"><span id="productTitle">Synthetic item</span>
         <div id="twister"><span class="selection">Blue</span></div><div id="desktop_buybox"><div id="newAccordionRow"><input type="radio" checked>
         <input name="offeringID.1" value="synthetic-offer"><span id="sellerProfileTriggerId">Synthetic seller</span><span id="price_inside_buybox">￥${price}</span></div>
         <div id="availability">在庫あり</div><select name="quantity"><option value="1" selected>1</option></select><div id="mir-layout-DELIVERY_BLOCK-slot">通常配送無料</div></div>`,
-      { headers: { 'content-type': 'text/html' } }));
+      observedAt: new Date() }));
       try {
         const quote = await createAmazonQuote(offer.asin);
         assert.equal((await refreshAmazonQuote(quote.id)).changed, false);
@@ -167,14 +168,14 @@ test('Amazon quote checkout and migration regressions in disposable DB only', { 
         assert.equal(result.json().details.previousQuoteId, expired.id);
         assert.equal((await db.query('SELECT order_id FROM amazon_quotes WHERE id=$1', [expired.id])).rows[0].order_id, null);
       } finally {
-        fetchMock.mock.restore();
+        transportMock.mock.restore();
         if (enabled === undefined) delete process.env.AMAZON_QUOTES_ENABLED; else process.env.AMAZON_QUOTES_ENABLED = enabled;
       }
     });
     await t.test('source gate and mutex block all fetching; CAPTCHA records shared pause without retry', async () => {
       const enabled = process.env.AMAZON_QUOTES_ENABLED; process.env.AMAZON_QUOTES_ENABLED = '1';
       let calls = 0;
-      const fetchMock = t.mock.method(globalThis, 'fetch', async () => { calls++; return new Response('captcha', { headers: { 'content-type': 'text/html' } }); });
+      const transportMock = t.mock.method(ScraplingSession.prototype, 'quote', async () => { calls++; throw new QuoteTransportError('amazon_blocked'); });
       const lock = await db.connect();
       try {
         await lock.query('SELECT pg_advisory_lock($1)', [AMAZON_ACCESS_LOCK]);
@@ -187,12 +188,12 @@ test('Amazon quote checkout and migration regressions in disposable DB only', { 
         assert.equal(calls, 1);
         assert.equal((await db.query("SELECT 1 FROM source_access_blocks WHERE source='amazon.co.jp'")).rowCount, 1);
         await db.query("DELETE FROM source_access_blocks WHERE source='amazon.co.jp'");
-        fetchMock.mock.mockImplementation(async () => new Response('', { status: 429, headers: { 'retry-after': '604800' } }));
+        transportMock.mock.mockImplementation(async () => { throw new QuoteTransportError('amazon_rate_limited', new Date(Date.now() + 604800000).toISOString()); });
         await assert.rejects(createAmazonQuote(offer.asin), /amazon_rate_limited/);
         const blocked = (await db.query("SELECT retry_after_at FROM source_access_blocks WHERE source='amazon.co.jp'")).rows[0];
         assert.ok(blocked.retry_after_at.getTime() > Date.now() + 6 * 86400000);
       } finally {
-        await lock.query('SELECT pg_advisory_unlock($1)', [AMAZON_ACCESS_LOCK]); lock.release(); fetchMock.mock.restore();
+        await lock.query('SELECT pg_advisory_unlock($1)', [AMAZON_ACCESS_LOCK]); lock.release(); transportMock.mock.restore();
         await db.query("DELETE FROM source_access_blocks WHERE source='amazon.co.jp'");
         if (enabled === undefined) delete process.env.AMAZON_QUOTES_ENABLED; else process.env.AMAZON_QUOTES_ENABLED = enabled;
       }

@@ -1,3 +1,5 @@
+import { ScraplingSession, QuoteTransportError } from '../src/ingestion/scrapling.js';
+import { config } from '../src/config.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parsePublicOffer, readPublicOffer, QuoteError, type AmazonDisplayPermission } from '../src/amazon-quote-source.js';
@@ -142,20 +144,30 @@ test('display survives quote building without changing pricing, validity or ship
   assert.equal(quote.shippingDueLater, true);
 });
 
-test('reader enriches only the single bounded source response and retains HTTP block guards', async t => {
-  const fetch = t.mock.method(globalThis, 'fetch', async () => new Response(page(metadata), { headers: { 'Content-Type': 'text/html' } }));
+test('reader enriches only the single bridge response and retains source guards', async t => {
+  const transport = t.mock.method(ScraplingSession.prototype, 'quote', async () => ({ html: page(metadata), observedAt }));
+  const close = t.mock.method(ScraplingSession.prototype, 'close', () => {});
   const offer = await readPublicOffer(asin, 1, permission);
-  assert.equal(fetch.mock.callCount(), 1);
-  assert.equal(fetch.mock.calls[0].arguments[0], `https://www.amazon.co.jp/dp/${asin}?quantity=1`);
-  assert.equal(fetch.mock.calls[0].arguments[1]?.redirect, 'error');
-  assert.equal(offer.display?.brand, 'ACME 型番 X-01');
+  assert.equal(transport.mock.callCount(), 1);
+  assert.deepEqual(transport.mock.calls[0].arguments, [asin, 1, config.amazonTimeoutMs]);
+  assert.equal(offer.display?.brand, 'ACME \u578b\u756a X-01');
+  assert.equal(offer.display?.provenance.observedAt, observedAt.toISOString());
   assert.equal((await readPublicOffer(asin, 1)).display, undefined);
-  for (const status of [403, 429]) {
-    fetch.mock.mockImplementation(async () => new Response('blocked', { status, headers: { 'Retry-After': '60' } }));
+  for (const code of ['amazon_blocked', 'amazon_rate_limited', 'amazon_response_too_large', 'amazon_unavailable'] as const) {
+    transport.mock.mockImplementation(async () => { throw new QuoteTransportError(code, '2026-11-05T00:00:00.000Z'); });
     await assert.rejects(readPublicOffer(asin, 1, permission), (error: unknown) =>
-      error instanceof QuoteError && error.code === (status === 403 ? 'amazon_blocked' : 'amazon_rate_limited') && !!error.retryAfterAt);
+      error instanceof QuoteError && error.code === code && error.retryAfterAt === '2026-11-05T00:00:00.000Z' && error.details === undefined);
   }
-  fetch.mock.mockImplementation(async () => new Response('x'.repeat(3000001), { headers: { 'Content-Type': 'text/html' } }));
-  await assert.rejects(readPublicOffer(asin, 1, permission), (error: unknown) =>
-    error instanceof QuoteError && error.code === 'amazon_response_too_large');
+  assert.equal(close.mock.callCount(), transport.mock.callCount());
+});
+
+test('invalid quote inputs fail before opening transport', async t => {
+  const transport = t.mock.method(ScraplingSession.prototype, 'quote', async () => { throw Error('must not run'); });
+  for (const input of ['', asin.toLowerCase(), asin + 'X', `https://www.amazon.co.jp/dp/${asin}`, asin + '\n']) {
+    await assert.rejects(readPublicOffer(input, 1), (e: unknown) => e instanceof QuoteError && e.code === 'invalid_amazon_input');
+  }
+  for (const quantity of [0, 100, 1.5, NaN, '1', true]) {
+    await assert.rejects(readPublicOffer(asin, quantity as number), (e: unknown) => e instanceof QuoteError && e.code === 'invalid_quantity');
+  }
+  assert.equal(transport.mock.callCount(), 0);
 });

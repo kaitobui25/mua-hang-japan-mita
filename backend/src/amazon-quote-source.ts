@@ -1,5 +1,6 @@
 import { load, type CheerioAPI } from 'cheerio';
 import { config } from './config.js';
+import { ScraplingSession, QuoteTransportError } from './ingestion/scrapling.js';
 import { normalizeAmazonInput } from './ingestion/detail.js';
 
 export class QuoteError extends Error {
@@ -253,34 +254,15 @@ export function parsePublicOffer(html: string, asin: string, quantity: number, o
 }
 
 export async function readPublicOffer(asin: string, quantity: number, displayPermission?: AmazonDisplayPermission): Promise<PublicOffer> {
-  const observedAt = new Date();
-  const response = await fetch(`https://www.amazon.co.jp/dp/${asin}?quantity=${quantity}`, {
-    redirect: 'error', signal: AbortSignal.timeout(config.amazonTimeoutMs),
-    headers: { 'Accept-Language': 'ja-JP', Accept: 'text/html' }
-  });
-  if (response.status === 403 || response.status === 429) {
-    const retry = response.headers.get('retry-after');
-    const retryTime = retry && /^\d+$/.test(retry) ? Date.now() + Number(retry) * 1000 : Date.parse(retry ?? '');
-    const retryDate = new Date(retryTime);
-    const retryAfterAt = Number.isFinite(retryDate.getTime()) ? retryDate.toISOString() : undefined;
-    await response.body?.cancel();
-    throw new QuoteError(response.status === 429 ? 'amazon_rate_limited' : 'amazon_blocked', 503, undefined, retryAfterAt);
-  }
-  if (!response.ok || !response.headers.get('content-type')?.includes('text/html')) {
-    await response.body?.cancel(); throw new QuoteError('amazon_unavailable', 503);
-  }
-  const reader = response.body?.getReader();
-  if (!reader) throw new QuoteError('amazon_unavailable', 503);
-  const chunks: Uint8Array[] = [];
-  let size = 0;
+  if (typeof asin !== 'string' || asin.length !== 10 || !/^[A-Z0-9]{10}$/.test(asin)) throw new QuoteError('invalid_amazon_input', 400);
+  quoteQuantity(quantity);
+  const session = new ScraplingSession();
   try {
-    for (;;) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      size += chunk.value.length;
-      if (size > 3000000) throw new QuoteError('amazon_response_too_large', 503);
-      chunks.push(chunk.value);
-    }
-  } finally { await reader.cancel(); }
-  return parsePublicOffer(Buffer.concat(chunks).toString('utf8'), asin, quantity, observedAt, displayPermission);
+    const { html, observedAt } = await session.quote(asin, quantity, config.amazonTimeoutMs);
+    return parsePublicOffer(html, asin, quantity, observedAt, displayPermission);
+  } catch (error) {
+    if (error instanceof QuoteError) throw error;
+    if (error instanceof QuoteTransportError) throw new QuoteError(error.code, 503, undefined, error.retryAfterAt);
+    throw new QuoteError('amazon_unavailable', 503);
+  } finally { session.close(); }
 }

@@ -1,4 +1,6 @@
 import unittest
+import base64
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 from datetime import datetime, timezone, timedelta
@@ -20,9 +22,135 @@ class Session:
         response = next(self.responses)
         if isinstance(response, Exception):
             raise response
-        return SimpleNamespace(status=response[0], body=response[1].encode(), url=response[2] if len(response) > 2 else url, encoding='utf-8', headers=response[3] if len(response) > 3 else {})
+        body = response[1].encode()
+        if 'content_callback' in kwargs:
+            if kwargs['content_callback'](body) != len(body):
+                failure = RuntimeError('fixture curl callback aborted')
+                failure.response = SimpleNamespace(status_code=response[0], headers=response[3] if len(response) > 3 else {})
+                raise failure
+            body = b''
+        return SimpleNamespace(status=response[0], body=body, url=response[2] if len(response) > 2 else url, encoding='utf-8', headers=response[3] if len(response) > 3 else {})
 
 class Tests(unittest.TestCase):
+    def quote_request(self, **overrides):
+        return dict(op='quote', asin=ASIN, quantity=1, timeoutMs=15000,
+                    url=f'https://www.amazon.co.jp/dp/{ASIN}?quantity=1') | overrides
+
+    def test_quote_transports_only_bounded_original_html_without_retries_or_spoofing(self):
+        session = Session([(200, HTML, self.quote_request()['url'], {'content-type': 'text/html; charset=utf-8'})])
+        result = Client(session).request(self.quote_request())['result']
+        self.assertEqual(zlib.decompress(base64.b64decode(result['htmlZlibBase64'])).decode(), HTML)
+        self.assertEqual(result['htmlBytes'], len(HTML.encode()))
+        self.assertEqual(result['asin'], ASIN)
+        self.assertEqual(result['url'], self.quote_request()['url'])
+        observed = datetime.fromisoformat(result['observedAt'])
+        self.assertLess(abs((observed - datetime.now(timezone.utc)).total_seconds()), 1)
+        self.assertEqual(len(session.calls), 1)
+        options = session.calls[0][1]
+        self.assertFalse(options['follow_redirects'])
+        self.assertEqual(options['retries'], 0)
+        self.assertIsNone(options['impersonate'])
+        self.assertFalse(options['stealthy_headers'])
+        self.assertEqual(options['headers']['User-Agent'], 'MitaJapan/1.0')
+        self.assertEqual(options['timeout'], 15)
+
+    def test_quote_invalid_inputs_never_fetch(self):
+        for override in [dict(asin='bad'), dict(asin=ASIN + '\n'), dict(asin=1), dict(quantity=True),
+                         dict(quantity=0), dict(quantity=100), dict(quantity='1'), dict(timeoutMs=0),
+                         dict(timeoutMs=120001), dict(timeoutMs=True), dict(url='https://evil.test/'),
+                         dict(url=f'https://www.amazon.co.jp/dp/{ASIN}?quantity=2')]:
+            session = Session([])
+            with self.assertRaises(ValueError):
+                Client(session).request(self.quote_request(**override))
+            self.assertEqual(session.calls, [])
+
+    def test_quote_installed_fetcher_callback_contract_without_network(self):
+        from unittest.mock import patch
+        try:
+            from scrapling.fetchers import FetcherSession
+        except ImportError:
+            self.skipTest('Optional Scrapling transport environment not installed')
+
+        def fixture_request(*args, **kwargs):
+            self.assertIsNone(kwargs['impersonate'])
+            self.assertFalse(kwargs['allow_redirects'])
+            self.assertNotIn('referer', {k.lower() for k in kwargs['headers']})
+            self.assertEqual(kwargs['headers']['User-Agent'], 'MitaJapan/1.0')
+            body = HTML.encode()
+            self.assertEqual(kwargs['content_callback'](body), len(body))
+            return SimpleNamespace(url=kwargs['url'], content=b'', status_code=200, reason='OK',
+                                   encoding='utf-8', cookies={}, headers={'content-type': 'text/html'},
+                                   request=None, history=[])
+
+        with patch('scrapling.engines.static.CurlSession.request', side_effect=fixture_request) as network:
+            with FetcherSession(retries=0, follow_redirects=False) as session:
+                result = Client(session).request(self.quote_request())['result']
+            self.assertEqual(network.call_count, 1)
+            self.assertEqual(zlib.decompress(base64.b64decode(result['htmlZlibBase64'])).decode(), HTML)
+
+    def test_quote_denials_preserve_deadlines_and_latch_without_retry(self):
+        for status in (403, 429):
+            for retry in ('60', '604800', format_datetime(datetime.now(timezone.utc) + timedelta(days=2), usegmt=True), 'invalid', '9' * 500):
+                session = Session([(status, 'captcha', self.quote_request()['url'], {'retry-after': retry})])
+                client = Client(session)
+                with self.assertRaises(SourceFailure) as caught:
+                    client.request(self.quote_request())
+                self.assertEqual(caught.exception.state, 'blocked' if status == 403 else 'rate_limited')
+                self.assertEqual(bool(caught.exception.retry_after_at), retry not in ('invalid', '9' * 500))
+                with self.assertRaises(SourceFailure):
+                    client.request(self.quote_request())
+                self.assertEqual(len(session.calls), 1)
+
+    def test_quote_rejects_challenges_redirects_wrong_identity_and_non_html(self):
+        url = self.quote_request()['url']
+        for status, body, final, headers, state in [
+            (200, '<input id="captchacharacters">', url, {'content-type': 'text/html'}, 'blocked'),
+            (200, '<form action="/ap/signin">', url, {'content-type': 'text/html'}, 'blocked'),
+            (200, '<title>Amazon Robot Check</title>', url, {'content-type': 'text/html'}, 'blocked'),
+            (302, '', url, {'location': '/ap/cvf'}, 'blocked'),
+            (302, '', url, {'location': '/dp/B000000002'}, 'temporary'),
+            (503, '', url, {}, 'temporary'),
+            (200, HTML, url, {'content-type': 'application/json'}, 'temporary'),
+            (200, HTML, 'https://evil.test/dp/' + ASIN, {'content-type': 'text/html'}, 'temporary'),
+            (200, HTML, url.replace(ASIN, 'B000000002'), {'content-type': 'text/html'}, 'temporary'),
+            (200, HTML, url.replace('quantity=1', 'quantity=2'), {'content-type': 'text/html'}, 'temporary')]:
+            session = Session([(status, body, final, headers)])
+            with self.assertRaises(SourceFailure) as caught:
+                Client(session).request(self.quote_request())
+            self.assertEqual(caught.exception.state, state)
+            self.assertEqual(len(session.calls), 1)
+        session = Session([TimeoutError()])
+        with self.assertRaises(SourceFailure):
+            Client(session).request(self.quote_request())
+        self.assertEqual(len(session.calls), 1)
+
+    def test_quote_partial_denial_retains_priority_over_body_errors(self):
+        for status in (403, 429):
+            session = Session([(status, 'x' * 3_000_001, self.quote_request()['url'], {'retry-after': '604800'})])
+            with self.assertRaises(SourceFailure) as caught:
+                Client(session).request(self.quote_request())
+            self.assertEqual(caught.exception.state, 'blocked' if status == 403 else 'rate_limited')
+            self.assertIsNotNone(caught.exception.retry_after_at)
+            self.assertEqual(len(session.calls), 1)
+
+    def test_quote_body_and_ipc_size_limits(self):
+        from unittest.mock import patch
+        from amazon_bridge import MAX_QUOTE_BODY
+        url = self.quote_request()['url']
+        for body, code in [('x' * MAX_QUOTE_BODY, None), ('x' * (MAX_QUOTE_BODY + 1), 'amazon_response_too_large'),
+                           ('\u3042' * (MAX_QUOTE_BODY // 3 + 1), 'amazon_response_too_large')]:
+            session = Session([(200, body, url, {'content-type': 'text/html'})])
+            if code:
+                with self.assertRaises(SourceFailure) as caught:
+                    Client(session).request(self.quote_request())
+                self.assertEqual(caught.exception.quote_code, code)
+            else:
+                self.assertEqual(Client(session).request(self.quote_request())['result']['htmlBytes'], MAX_QUOTE_BODY)
+        with patch('amazon_bridge.MAX_QUOTE_COMPRESSED', 1):
+            with self.assertRaises(SourceFailure) as caught:
+                Client(Session([(200, HTML, url, {'content-type': 'text/html'})])).request(self.quote_request())
+            self.assertEqual(caught.exception.quote_code, 'amazon_response_too_large')
+
     def test_detail_gallery_fields_and_variants(self):
         item = detail(HTML, ASIN, CATEGORY, OBSERVED)
         self.assertEqual(item['priceJpy'], 2980)

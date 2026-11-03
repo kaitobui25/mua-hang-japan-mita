@@ -1,3 +1,4 @@
+import { ScraplingSession, QuoteTransportError } from '../src/ingestion/scrapling.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { amazonAsin, parsePublicOffer, readPublicOffer, QuoteError, addDeliveryDays, type AmazonProductPreview } from '../src/amazon-quote-source.js';
@@ -91,37 +92,29 @@ test('preview requires exact unique ASIN and visible valid title; CAPTCHA never 
     (e: unknown) => e instanceof QuoteError && e.code === 'amazon_blocked' && e.details === undefined);
 });
 
-test('reader previews only the same valid HTML response with no extra source request', async () => {
-  const originalFetch = globalThis.fetch;
-  let calls = 0;
-  try {
-    for (const [status, contentType, body, code] of [
-      [200, 'text/html', modernHtml(), 'offer_not_verified'],
-      [200, 'application/json', modernHtml(), 'amazon_unavailable'],
-      [503, 'text/html', modernHtml(), 'amazon_unavailable'],
-      [403, 'text/html', modernHtml(), 'amazon_blocked'],
-      [429, 'text/html', modernHtml(), 'amazon_rate_limited'],
-      [200, 'text/html', modernHtml() + 'captcha', 'amazon_blocked']
-    ] as const) {
-      globalThis.fetch = async () => {
-        calls++;
-        return new Response(body, { status, headers: { 'content-type': contentType } });
-      };
-      const before = calls;
-      await assert.rejects(() => readPublicOffer(asin, 1), (e: unknown) => {
-        assert.ok(e instanceof QuoteError);
-        assert.equal(e.code, code);
-        const preview = (e.details as { preview: AmazonProductPreview } | undefined)?.preview;
-        if (code === 'offer_not_verified') {
-          assert.equal(preview?.title, 'Fixture item');
-          assert.equal(preview?.priceJpy, 1000);
-          assert.ok(Number.isFinite(Date.parse(preview!.observedAt)));
-        } else assert.equal(preview, undefined);
-        return true;
-      });
-      assert.equal(calls - before, 1);
-    }
-  } finally { globalThis.fetch = originalFetch; }
+test('reader previews only the same bridge HTML with no extra source request', async t => {
+  const transport = t.mock.method(ScraplingSession.prototype, 'quote', async () => ({ html: modernHtml(), observedAt: now }));
+  for (const code of ['offer_not_verified', 'amazon_unavailable', 'amazon_blocked', 'amazon_rate_limited', 'amazon_response_too_large'] as const) {
+    transport.mock.mockImplementation(async () => {
+      if (code !== 'offer_not_verified') throw new QuoteTransportError(code);
+      return { html: modernHtml(), observedAt: now };
+    });
+    const before = transport.mock.callCount();
+    await assert.rejects(readPublicOffer(asin, 1), (e: unknown) => {
+      assert.ok(e instanceof QuoteError);
+      assert.equal(e.code, code);
+      const preview = (e.details as { preview: AmazonProductPreview } | undefined)?.preview;
+      if (code === 'offer_not_verified') {
+        assert.equal(preview?.title, 'Fixture item');
+        assert.equal(preview?.priceJpy, 1000);
+        assert.equal(preview?.observedAt, now.toISOString());
+      } else assert.equal(preview, undefined);
+      return true;
+    });
+    assert.equal(transport.mock.callCount() - before, 1);
+  }
+  transport.mock.mockImplementation(async () => ({ html: modernHtml() + 'captcha', observedAt: now }));
+  await assert.rejects(readPublicOffer(asin, 1), (e: unknown) => e instanceof QuoteError && e.code === 'amazon_blocked' && e.details === undefined);
 });
 test('Amazon inputs canonicalize exact HTTPS JP product URLs and ASINs', () => {
   for (const input of [asin.toLowerCase(), `https://www.amazon.co.jp/name/dp/${asin}?tag=ignored`, `https://amazon.co.jp/gp/product/${asin}`]) assert.equal(amazonAsin(input), asin);
