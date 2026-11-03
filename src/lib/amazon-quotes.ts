@@ -47,11 +47,12 @@ const messages: Record<string,string> = {
   amazon_quotes_disabled: "Hệ thống tra giá Amazon đang chờ xác minh nguồn. Hiện chưa nhận đơn mua hộ trực tuyến.",
   invalid_amazon_input: "Hãy nhập mã ASIN 10 ký tự hoặc link sản phẩm Amazon.co.jp hợp lệ.",
   offer_not_verified: "Không xác minh được giá và miễn phí giao thường tại Nhật cho sản phẩm này.",
-  amazon_cooldown: "Amazon đang hạn chế truy cập. Vui lòng thử lại sau.",
+  amazon_cooldown: "Mita đang tạm dừng truy cập nguồn Amazon sau lần bị từ chối trước đó. Vui lòng thử lại sau.",
   amazon_busy: "Hệ thống đang kiểm tra Amazon. Vui lòng thử lại sau.",
   amazon_blocked: "Amazon yêu cầu xác minh truy cập, không thể báo giá tự động.",
   quote_rate_limited: "Có quá nhiều yêu cầu tra giá. Vui lòng thử lại sau một phút.",
   quote_schema_unavailable: "Hệ thống báo giá chưa được cấu hình. Vui lòng thử lại sau.",
+  amazon_unavailable: "Chưa thể lấy thông tin sản phẩm từ Amazon. Vui lòng thử lại sau.",
   quote_service_unavailable: "Không kết nối được máy chủ báo giá. Vui lòng thử lại."
 };
 
