@@ -196,24 +196,44 @@ export function parsePublicOffer(html: string, asin: string, quantity: number, o
   if (/captcha|validateCaptcha|ロボットではない/i.test(html)) throw new QuoteError('amazon_blocked', 503);
   const $ = load(html);
   const box = $('#desktop_buybox');
-  const oneTime = box.find('#newAccordionRow');
-  const offer = oneTime.length === 1 ? oneTime : box;
+  const modern = box.find('[id="newAccordionRow_0"]');
+  const oneTime = modern.length ? modern : box.find('[id="newAccordionRow"]');
+  const offer = oneTime;
+  const hidden = (element: ReturnType<CheerioAPI>) => element.add(element.parents()).toArray().some(el =>
+    $(el).is('script, style, noscript, template, [hidden], [aria-hidden="true"], .aok-hidden, .a-hidden') ||
+    /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse))\s*(?:!important\s*)?(?:;|$)/i.test($(el).attr('style') ?? ''));
+  const radios = box.find('input[type="radio"]:checked');
+  const rowRadios = oneTime.find('input[type="radio"]');
+  const activeRows = box.find('.a-accordion-active');
+  // Only the known one-time row may be active. A checked radio, when present,
+  // must agree; never fall back to another row or to buybox-wide offer facts.
+  const selectedModern = modern.length === 1 && box.find('[id="newAccordionRow"]').length === 0 &&
+    activeRows.length === 1 && activeRows.is(oneTime) &&
+    (rowRadios.length === 0 ? radios.length === 0 : rowRadios.length === 1 && radios.length === 1 &&
+      rowRadios.is(radios) && !hidden(radios) && !radios.is('[disabled], [aria-disabled="true"]'));
   const hiddenOneTime = oneTime.add(oneTime.parents()).toArray().some(el =>
     $(el).is('[hidden], [aria-hidden="true"], .aok-hidden') ||
     /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse))\s*(?:!important\s*)?(?:;|$)/i.test($(el).attr('style') ?? ''));
   const selectedAsin = $('#ASIN').attr('value');
   const title = $('#productTitle').text().trim();
-  const offerId = offer.find('input[name="offeringID.1"]').attr('value');
-  const seller = offer.find('#sellerProfileTriggerId').text().trim() || offer.find('#merchant-info').text().trim();
-  const priceText = offer.find('#price_inside_buybox, #newBuyBoxPrice, .priceToPay .a-offscreen').map((_, el) => $(el).text().trim()).get();
+  const offerIds = offer.find(modern.length ? 'input[name="offeringID.1"], input[id="offerListingID"]' : 'input[name="offeringID.1"]');
+  const offerId = offerIds.attr('value');
+  const sellers = offer.find('[id="sellerProfileTriggerId"]');
+  const sellerElement = sellers.length ? sellers : offer.find('[id="merchant-info"]');
+  const seller = sellerElement.text().trim();
+  const priceElements = offer.find('#price_inside_buybox, #newBuyBoxPrice, .priceToPay .a-offscreen' +
+    (modern.length ? ', #corePrice_feature_div .a-offscreen' : ''));
+  const priceText = priceElements.map((_, el) => $(el).text().trim()).get();
   const prices = [...new Set(priceText)];
   const price = prices.length === 1 && prices[0].match(/^[￥¥]\s*(\d{1,3}(?:,\d{3})*|\d+)(?:\.00)?$/);
   const priceJpy = price ? Number(price[1].replaceAll(',', '')) : 0;
   // Conditions may be siblings of the nested delivery block; retain the entire slot.
-  const shipping = box.find('#mir-layout-DELIVERY_BLOCK-slot');
+  const scope = modern.length ? offer : box;
+  const shipping = scope.find('[id="mir-layout-DELIVERY_BLOCK-slot"]');
   const shippingEvidence = shipping.text().replace(/\s+/g, ' ').trim();
-  const availability = box.find('#availability').text().trim();
-  const quantitySelect = box.find('select[name="quantity"]');
+  const availabilityElement = scope.find('[id="availability"]');
+  const availability = availabilityElement.text().trim();
+  const quantitySelect = scope.find('select[name="quantity"]');
   const options = quantitySelect.find('option');
   const selectedOption = options.filter('[selected]').length ? options.filter('[selected]').first() : options.first();
   const disabledQuantity = quantitySelect.is('[disabled], [aria-disabled="true"]') ||
@@ -224,8 +244,17 @@ export function parsePublicOffer(html: string, asin: string, quantity: number, o
   const remainingStock = availability.match(/\bonly\s+(\d+)\s+left\b/i);
   const variant = $('#twister .selection').map((_, el) => $(el).text().trim()).get().filter(Boolean).join(' / ');
   if (box.length !== 1 || oneTime.length !== 1 || hiddenOneTime || selectedAsin !== asin || !title || title.length > 1000 || !offerId || offerId.length > 2048 || !seller || seller.length > 1000 || variant.length > 2000 || shippingEvidence.length > 4000 ||
-      offer.find('input[name="offeringID.1"]').length !== 1 ||
-      (oneTime.length > 0 && oneTime.find('input[type="radio"]:checked').length !== 1) ||
+      $('[id="desktop_buybox"]').length !== 1 || $('[id="ASIN"]').length !== 1 || !$('#ASIN').is('input') ||
+      $('[id="productTitle"]').length !== 1 || hidden($('#productTitle')) ||
+      offerIds.length !== 1 || sellerElement.length !== 1 ||
+      (modern.length ? !selectedModern || hidden(oneTime) || oneTime.is('[disabled], [aria-disabled="true"]') ||
+        [offerIds, sellerElement, priceElements, shipping, availabilityElement, quantitySelect, selectedOption].some(hidden) ||
+        offerIds.is('[disabled], [aria-disabled="true"]') ||
+        /subscribe|定期|Prime|プライム/i.test(offer.text()) ||
+        shipping.length !== 1 || availabilityElement.length !== 1 || options.filter('[selected]').length > 1 ||
+        oneTime.find('[id^="newAccordionRow_"], [id="subscribeAccordionRow"]').length > 0 :
+        oneTime.find('input[type="radio"]:checked').length !== 1) ||
+      !Number.isInteger(quantity) || quantity < 1 || quantity > 99 ||
       !Number.isSafeInteger(priceJpy) || priceJpy <= 0 || priceJpy > 100000000 ||
       !/在庫あり|in stock/i.test(availability) || /not\s+(?:currently\s+)?in\s+stock|out of stock|在庫なし/i.test(availability) || quantitySelect.length !== 1 || disabledQuantity || quantity > maxQuantity || selectedQuantity !== quantity ||
       (remainingStock !== null && quantity > Number(remainingStock[1])) ||

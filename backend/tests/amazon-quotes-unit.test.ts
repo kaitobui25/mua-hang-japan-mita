@@ -22,6 +22,118 @@ function modernHtml() {
     .replace('name="offeringID.1"', 'id="offerListingID"')
     .replace('id="mir-layout-DELIVERY_BLOCK-slot"', 'id="mir-layout-DELIVERY_BLOCK"');
 }
+
+// Representative rendered accordion: selected offer facts live in its form;
+// an unselected subscription and a page-level price must never supply facts.
+function modernVerifiedHtml() {
+  return `<!doctype html><html><body>
+    <input type="hidden" id="ASIN" value="${asin}">
+    <h1><span id="productTitle">Fixture item 200g</span></h1>
+    <div id="twister"><span class="selection">Blue 200g</span></div>
+    <div id="corePriceDisplay_desktop_feature_div"><span class="a-offscreen">&#165;800</span></div>
+    <div id="desktop_buybox">
+      <div id="newAccordionRow_0" class="a-box a-accordion-active">
+        <div class="a-accordion-row"><span>One-time purchase</span></div>
+        <div class="a-accordion-inner"><form id="addToCart" method="post">
+          <input type="hidden" id="offerListingID" name="offeringID.1" value="selected-offer-token">
+          <div id="corePrice_feature_div"><span class="a-price priceToPay">
+            <span class="a-offscreen">&#165;1,000</span><span aria-hidden="true">1,000</span>
+          </span></div>
+          <div id="merchant-info">Sold by <a id="sellerProfileTriggerId">Selected seller</a></div>
+          <div id="availability"><span>Only 2 left in stock</span></div>
+          <select name="quantity"><option value="1" selected>1</option><option value="2">2</option></select>
+          <div id="mir-layout-DELIVERY_BLOCK-slot"><div id="mir-layout-DELIVERY_BLOCK">FREE Standard Delivery</div></div>
+          <input type="submit" name="submit.add-to-cart" value="Add to Cart">
+        </form></div>
+      </div>
+      <div id="subscribeAccordionRow" class="a-box">
+        <input type="radio" name="purchaseOption" value="subscribe">
+        <span>Subscribe &amp; Save</span><span class="priceToPay"><span class="a-offscreen">&#165;900</span></span>
+        <input name="offeringID.1" value="subscription-offer"><span id="merchant-info">Other seller</span>
+      </div>
+    </div></body></html>`;
+}
+
+test('active modern one-time buybox verifies only its selected offer facts', () => {
+  const html = modernVerifiedHtml();
+  const offer = parsePublicOffer(html, asin, 1, now);
+  assert.deepEqual(offer, { asin, sourceUrl: `https://www.amazon.co.jp/dp/${asin}`,
+    title: 'Fixture item 200g', variant: 'Blue 200g', seller: 'Selected seller', offerId: 'selected-offer-token',
+    quantity: 1, priceJpy: 1000, imageUrl: null, purchaseType: 'one_time', shippingType: 'standard',
+    freeJapanShipping: true, shippingEvidence: 'FREE Standard Delivery', amazonDelivery: null });
+  const radio = html.replace('<span>One-time purchase</span>', '<input type="radio" name="purchaseOption" checked><span>One-time purchase</span>');
+  assert.equal(parsePublicOffer(radio, asin, 1, now).offerId, 'selected-offer-token');
+  assert.equal(parsePublicOffer(html.replace('name="offeringID.1" value="selected-offer-token"', 'value="selected-offer-token"'), asin, 1, now).offerId, 'selected-offer-token');
+  assert.equal(parsePublicOffer(html.replace('value="1" selected', 'value="1"').replace('value="2"', 'value="2" selected'), asin, 2, now).quantity, 2);
+});
+
+test('modern buybox rejects ambiguous selection, identity, seller, offer and price', () => {
+  const html = modernVerifiedHtml();
+  for (const [label, candidate] of [
+    ['inactive', html.replace('a-box a-accordion-active', 'a-box')],
+    ['subscription active', html.replace('id="subscribeAccordionRow" class="a-box"', 'id="subscribeAccordionRow" class="a-box a-accordion-active"')],
+    ['subscription checked', html.replace('value="subscribe"', 'value="subscribe" checked')],
+    ['one-time unchecked', html.replace('<span>One-time purchase</span>', '<input type="radio"><span>One-time purchase</span>')],
+    ['one-time disabled', html.replace('<span>One-time purchase</span>', '<input type="radio" checked disabled><span>One-time purchase</span>')],
+    ['two checked', html.replace('<span>One-time purchase</span>', '<input type="radio" checked><input type="radio" checked><span>One-time purchase</span>')],
+    ['duplicate row', html.replace('id="addToCart"', 'id="newAccordionRow_0"')],
+    ['legacy row conflict', html.replace('id="addToCart"', 'id="newAccordionRow"')],
+    ['wrong ASIN', html.replace(`value="${asin}"`, 'value="B000000001"')],
+    ['duplicate ASIN', html.replace('</body>', `<input id="ASIN" value="${asin}"></body>`)],
+    ['duplicate title', html.replace('</body>', '<span id="productTitle">Another title</span></body>')],
+    ['missing title', html.replace('Fixture item 200g', '')],
+    ['missing seller', html.replace('<div id="merchant-info">Sold by <a id="sellerProfileTriggerId">Selected seller</a></div>', '')],
+    ['duplicate seller', html.replace('Selected seller</a>', 'Selected seller</a><a id="sellerProfileTriggerId">Another seller</a>')],
+    ['missing offer', html.replace('<input type="hidden" id="offerListingID" name="offeringID.1" value="selected-offer-token">', '')],
+    ['duplicate offer', html.replace('id="addToCart"', 'id="addToCart"><input name="offeringID.1" value="another-offer"')],
+    ['missing price', html.replace('&#165;1,000', '')],
+    ['alternate price', html.replace('&#165;1,000', '&#165;1,000 or &#165;900')],
+    ['conflicting price', html.replace('</form>', '<span id="newBuyBoxPrice">&#165;900</span></form>')],
+    ['subscription terms', html.replace('One-time purchase', 'Subscribe &amp; Save')],
+    ['subscription without save', html.replace('One-time purchase', 'Subscribe monthly')],
+    ['Japanese subscription', html.replace('One-time purchase', '\u5b9a\u671f\u304a\u30c8\u30af\u4fbf')],
+    ['Prime membership', html.replace('One-time purchase', 'Prime members only')],
+    ['Prime price', html.replace('One-time purchase', 'Prime exclusive')]
+  ]) {
+    assert.throws(() => parsePublicOffer(candidate, asin, 1, now),
+      (e: unknown) => e instanceof QuoteError && e.code === 'offer_not_verified', label);
+  }
+});
+
+test('modern buybox fails closed on hidden evidence, quantity, stock and shipping conditions', () => {
+  const html = modernVerifiedHtml();
+  for (const attribute of ['hidden', 'aria-hidden="true"', 'class="a-hidden"', 'style="display:none !important"', 'style="visibility:collapse"']) {
+    for (const target of ['id="desktop_buybox"', 'id="productTitle"', 'id="sellerProfileTriggerId"', 'id="offerListingID"',
+      'id="corePrice_feature_div"', 'id="availability"', 'name="quantity"', 'value="1" selected', 'id="mir-layout-DELIVERY_BLOCK-slot"']) {
+      assert.throws(() => parsePublicOffer(html.replace(target, `${target} ${attribute}`), asin, 1, now), QuoteError, `${target}: ${attribute}`);
+    }
+  }
+  assert.throws(() => parsePublicOffer(html.replace('id="newAccordionRow_0"', 'id="newAccordionRow_0" hidden'), asin, 1, now), QuoteError);
+  assert.throws(() => parsePublicOffer(html.replace('id="newAccordionRow_0"', 'id="newAccordionRow_0" aria-disabled="true"'), asin, 1, now), QuoteError);
+  for (const candidate of [
+    html.replace('Only 2 left in stock', 'Out of stock. In stock soon'),
+    html.replace('Only 2 left in stock', ''),
+    html.replace('select name="quantity"', 'select name="quantity" disabled'),
+    html.replace('value="1" selected', 'value="1" selected disabled'),
+    html.replace('value="2"', 'value="2" selected'),
+    html.replace('name="quantity"', 'name="other-quantity"'),
+    html.replace('id="mir-layout-DELIVERY_BLOCK-slot"', 'id="other-delivery"'),
+    html.replace('id="availability"', 'id="other-availability"')
+  ]) assert.throws(() => parsePublicOffer(candidate, asin, 1, now), QuoteError);
+  const two = html.replace('value="1" selected', 'value="1"').replace('value="2"', 'value="2" selected');
+  assert.throws(() => parsePublicOffer(two.replace('Only 2 left', 'Only 1 left'), asin, 2, now), QuoteError);
+  assert.throws(() => parsePublicOffer(html, asin, 2, now), QuoteError);
+  for (const condition of ['Prime members only', 'on orders over JPY 3,500', 'on your first order',
+    'with qualifying purchases', 'coupon required', 'Subscribe &amp; Save']) {
+    for (const content of [`<span>${condition}</span><div>FREE Standard Delivery</div>`,
+      `<div>FREE Standard Delivery</div><span>${condition}</span>`]) {
+      assert.throws(() => parsePublicOffer(html.replace('<div id="mir-layout-DELIVERY_BLOCK">FREE Standard Delivery</div>', content), asin, 1, now), QuoteError, condition);
+    }
+  }
+  for (const shipping of ['FREE Delivery', 'FREE Standard Delivery or paid expedited delivery', 'JPY 300 Standard Delivery', '']) {
+    assert.throws(() => parsePublicOffer(html.replace('FREE Standard Delivery', shipping), asin, 1, now), QuoteError, shipping);
+  }
+});
 function rejectedPreview(html: string): AmazonProductPreview | undefined {
   let error: unknown;
   try { parsePublicOffer(html, asin, 1, now); } catch (e) { error = e; }
