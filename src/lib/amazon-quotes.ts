@@ -52,6 +52,7 @@ const messages: Record<string,string> = {
   amazon_blocked: "Amazon yêu cầu xác minh truy cập, không thể báo giá tự động.",
   quote_rate_limited: "Có quá nhiều yêu cầu tra giá. Vui lòng thử lại sau một phút.",
   quote_schema_unavailable: "Hệ thống báo giá chưa được cấu hình. Vui lòng thử lại sau.",
+  quote_unavailable: "Máy chủ báo giá chưa thể xử lý yêu cầu. Vui lòng thử lại sau.",
   amazon_unavailable: "Chưa thể lấy thông tin sản phẩm từ Amazon. Vui lòng thử lại sau.",
   quote_service_unavailable: "Không kết nối được máy chủ báo giá. Vui lòng thử lại."
 };
