@@ -56,6 +56,15 @@ main { min-height: 65vh; }
 .amazon-quote-controls .button { flex: 0 0 auto; }
 .amazon-quote-form .amazon-note { margin-top: 14px; }
 .amazon-quote-alert { margin-top: 18px; }
+.amazon-source-preview { margin-top: var(--space-lg); padding: clamp(20px,3vw,36px); border: 1px solid var(--color-rule-2); background: var(--color-paper); overflow-wrap: anywhere; }
+.amazon-source-preview .amazon-source { font-size: 12px; font-weight: 700; letter-spacing: .08em; color: var(--color-accent); margin-bottom: var(--space-sm); }
+.amazon-source-preview h2 { font: 600 clamp(1.5rem,2.8vw,2.2rem)/1.3 var(--font-display); margin-bottom: var(--space-sm); }
+.amazon-source-preview p { margin-bottom: var(--space-sm); line-height: 1.6; }
+.amazon-preview-asin { color: var(--color-muted); font-size: 13px; }
+.amazon-preview-price { font-size: 24px; font-weight: 700; }
+.amazon-preview-price span { display: block; font-size: 13px; font-weight: 400; color: var(--color-muted); }
+.amazon-preview-warning { max-width: 74ch; font-size: 14px; color: var(--color-ink-2); }
+.amazon-source-preview .button { display: inline-flex; align-items: center; min-height: 48px; margin-top: var(--space-xs); }
 .amazon-quote-result { margin-top: var(--space-lg); }
 /* Amazon proxy detail: share Mita's catalog grid without catalog purchase behavior. */
 .amazon-product-detail { padding-top: var(--space-md); }

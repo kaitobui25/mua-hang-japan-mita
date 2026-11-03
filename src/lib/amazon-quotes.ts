@@ -1,4 +1,4 @@
-import type { AmazonQuote, AmazonQuoteDisplay } from "@/types/amazon-quote";
+import type { AmazonQuote, AmazonQuoteDisplay, AmazonSourcePreview } from "@/types/amazon-quote";
 
 type DateRange = { start: string; end: string } | null;
 type ServerQuote = {
@@ -54,6 +54,21 @@ const messages: Record<string,string> = {
   quote_schema_unavailable: "Hệ thống báo giá chưa được cấu hình. Vui lòng thử lại sau."
 };
 
+export class AmazonQuoteApiError extends Error {
+  constructor(message: string, public readonly preview: AmazonSourcePreview | null = null) { super(message); }
+}
+
+function parseSourcePreview(value: unknown): AmazonSourcePreview | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Partial<AmazonSourcePreview>;
+  if (typeof raw.asin !== "string" || !/^[A-Z0-9]{10}$/.test(raw.asin) ||
+      raw.sourceUrl !== `https://www.amazon.co.jp/dp/${raw.asin}` ||
+      typeof raw.title !== "string" || !raw.title.trim() || raw.title.length > 1000 ||
+      typeof raw.observedAt !== "string" || !Number.isFinite(Date.parse(raw.observedAt))) return null;
+  return { asin: raw.asin, title: raw.title.trim(), sourceUrl: raw.sourceUrl, observedAt: raw.observedAt,
+    ...(Number.isSafeInteger(raw.priceJpy) && Number(raw.priceJpy) > 0 && Number(raw.priceJpy) <= 100000000 ? { priceJpy: raw.priceJpy } : {}) };
+}
+
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
@@ -62,8 +77,9 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error("Không kết nối được máy chủ báo giá. Vui lòng thử lại.");
   }
   if (!response.ok) {
-    const body = await response.json().catch(() => ({})) as { error?: string; code?: string };
-    throw new Error((body.code && messages[body.code]) || body.error || "Không thể tra giá Amazon lúc này. Vui lòng thử lại.");
+    const body = await response.json().catch(() => ({})) as { error?: string; code?: string; details?: { preview?: unknown } };
+    const message = (body.code && messages[body.code]) || body.error || "Không thể tra giá Amazon lúc này. Vui lòng thử lại.";
+    throw new AmazonQuoteApiError(message, body.code === "offer_not_verified" ? parseSourcePreview(body.details?.preview) : null);
   }
   return response.json() as Promise<T>;
 }

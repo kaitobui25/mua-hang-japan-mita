@@ -14,6 +14,15 @@ export type AmazonQuoteDisplay = {
   reviews?: { title?: string; body: string; rating?: number }[];
 };
 
+/** Source-backed identity for a product that did not qualify for a purchase quote. */
+export type AmazonSourcePreview = {
+  asin: string;
+  title: string;
+  sourceUrl: string;
+  observedAt: string;
+  priceJpy?: number;
+};
+
 export type AmazonQuote = {
   quoteId: string;
   asin: string;

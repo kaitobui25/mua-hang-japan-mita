@@ -3,15 +3,16 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useCart } from "@/context/cart";
-import { createAmazonQuote } from "@/lib/amazon-quotes";
+import { AmazonQuoteApiError, createAmazonQuote } from "@/lib/amazon-quotes";
 import { AmazonProductDetail } from "@/components/amazon/amazon-product-detail";
-import type { AmazonQuote } from "@/types/amazon-quote";
+import type { AmazonQuote, AmazonSourcePreview } from "@/types/amazon-quote";
 
 export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }) {
   const { addQuote } = useCart();
   const [input, setInput] = useState(initialInput);
   const [quantity, setQuantity] = useState(1);
   const [quote, setQuote] = useState<AmazonQuote | null>(null);
+  const [preview, setPreview] = useState<AmazonSourcePreview | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [added, setAdded] = useState(false);
@@ -26,6 +27,7 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
     setLoading(true);
     setError("");
     setQuote(null);
+    setPreview(null);
     setConfirmed(false);
     setAdded(false);
     try {
@@ -34,7 +36,10 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
       setNow(Date.now());
       setQuote(next);
     } catch (cause) {
-      if (sequence === requestSequence.current) setError(cause instanceof Error ? cause.message : "Không thể báo giá.");
+      if (sequence === requestSequence.current) {
+        setError(cause instanceof Error ? cause.message : "Không thể báo giá.");
+        if (cause instanceof AmazonQuoteApiError) setPreview(cause.preview);
+      }
     } finally {
       if (sequence === requestSequence.current) setLoading(false);
     }
@@ -78,7 +83,15 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
       </div>
       <p className="amazon-note">Chỉ nhận mua một lần, giao thường miễn phí tại Nhật, không Prime. Phí vận chuyển về Việt Nam tính riêng sau.</p>
     </form>
-    {error && <div className="inline-alert amazon-quote-alert" role="alert">{error} <button type="button" onClick={() => setError("")}>Đóng</button></div>}
+    {error && !preview && <div className="inline-alert amazon-quote-alert" role="alert">{error} <button type="button" onClick={() => setError("")}>Đóng</button></div>}
+    {preview && <section className="amazon-source-preview" role="status" aria-label="Thông tin sản phẩm từ Amazon">
+      <p className="amazon-source">SẢN PHẨM TỪ AMAZON.CO.JP</p>
+      <h2>{preview.title}</h2>
+      <p className="amazon-preview-asin">ASIN: {preview.asin}</p>
+      {preview.priceJpy !== undefined && <p className="amazon-preview-price">¥{preview.priceJpy.toLocaleString("ja-JP")} <span>Giá nguồn tham khảo, chưa phải báo giá Mita</span></p>}
+      <p className="amazon-preview-warning">Chưa xác minh đủ điều kiện báo giá mua hộ. Không thể thêm giỏ hoặc đặt hàng từ thông tin tham khảo này.</p>
+      <a href={preview.sourceUrl} target="_blank" rel="noopener noreferrer" className="button button-outline">Xem sản phẩm gốc trên Amazon</a>
+    </section>}
     {loading && <div className="detail-loading amazon-detail-loading" role="status" aria-label="Đang tra thông tin sản phẩm"><div className="product-skeleton large"><div/><span/><span/><span/></div><div className="product-skeleton large"><div/><span/><span/><span/></div></div>}
     {quote && <AmazonProductDetail key={quote.quoteId} quote={quote} quantity={quantity} onQuantityChange={value => { setQuantity(value); setConfirmed(false); }}
       onRefresh={() => { setInput(quote.asin); void loadQuote(quote.asin, quantity); }} refreshing={loading} expired={expired}

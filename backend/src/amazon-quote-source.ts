@@ -15,6 +15,52 @@ export function quoteQuantity(value: unknown): number {
   return Number(value);
 }
 export type DateRange = { start: string; end: string };
+// Display only: never a quote, shipping promise or checkout capability.
+export type AmazonProductPreview = {
+  asin: string; sourceUrl: string; title: string; observedAt: string; priceJpy?: number;
+};
+
+function parseProductPreview($: CheerioAPI, asin: string, observedAt: Date): AmazonProductPreview | undefined {
+  if (!/^[A-Z0-9]{10}$/.test(asin) || $('input[id="ASIN"]').length !== 1 ||
+      $('[id="ASIN"]').length !== 1 || $('#ASIN').attr('value') !== asin || !Number.isFinite(observedAt.getTime())) return;
+  const hidden = (element: ReturnType<CheerioAPI>) => element.add(element.parents()).toArray().some(el =>
+    $(el).is('script, style, noscript, template, [hidden], [aria-hidden="true"], .aok-hidden, .a-hidden') ||
+    /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse))\s*(?:!important\s*)?(?:;|$)/i.test($(el).attr('style') ?? ''));
+  const text = (element: ReturnType<CheerioAPI>) => {
+    const copy = element.clone();
+    copy.find('*').each((_, el) => { if (hidden($(el))) $(el).remove(); });
+    return copy.text().replace(/[\u0000-\u001f\u007f-\u009f\ufffd]/g, ' ').replace(/\s+/g, ' ').trim();
+  };
+  const titleElement = $('[id="productTitle"]');
+  if (titleElement.length !== 1 || hidden(titleElement)) return;
+  const title = text(titleElement);
+  if (!title || title.length > 1000) return;
+  const preview: AmazonProductPreview = { asin, sourceUrl: `https://www.amazon.co.jp/dp/${asin}`,
+    title, observedAt: observedAt.toISOString() };
+  const box = $('[id="desktop_buybox"]');
+  const selected = box.find('input[type="radio"]:checked');
+  // Modern accordion exposes its selected row with an active class rather than a radio.
+  const active = box.find('[id^="newAccordionRow_"].a-accordion-active');
+  const row = selected.length === 1 ? selected.closest('[id^="newAccordionRow_"]') :
+    selected.length === 0 && active.length === 1 ? active : $();
+  const selectedOffer = selected.length === 1
+    ? !hidden(selected) && !selected.is('[disabled], [aria-disabled="true"]')
+    : selected.length === 0 && active.length === 1;
+  // No generic page price, hidden offer, subscription or alternate row fallback.
+  if (box.length === 1 && selectedOffer && row.length === 1 &&
+      row.parents('[id="desktop_buybox"]').length === 1 &&
+      /^newAccordionRow_\d+$/.test(row.attr('id') ?? '') && !hidden(row) &&
+      !/subscribe|定期|Prime exclusive|プライム会員限定/i.test(text(row))) {
+    const prices = row.find('.priceToPay .a-offscreen, #corePrice_feature_div .a-offscreen')
+      .filter((_, el) => !hidden($(el)));
+    const values = prices.toArray().map(el => text($(el)));
+    const price = values.length > 0 && new Set(values).size === 1 &&
+      values[0].match(/^[￥¥]\s*(\d{1,3}(?:,\d{3})*|\d+)(?:\.00)?$/);
+    const priceJpy = price ? Number(price[1].replaceAll(',', '')) : 0;
+    if (Number.isSafeInteger(priceJpy) && priceJpy > 0 && priceJpy <= 100000000) preview.priceJpy = priceJpy;
+  }
+  return preview;
+}
 // Display-only source data. Permission is supplied by trusted backend code after
 // source/rights review, never by a quote request or by the source HTML itself.
 export type AmazonDisplay = {
@@ -151,6 +197,9 @@ export function parsePublicOffer(html: string, asin: string, quantity: number, o
   const box = $('#desktop_buybox');
   const oneTime = box.find('#newAccordionRow');
   const offer = oneTime.length === 1 ? oneTime : box;
+  const hiddenOneTime = oneTime.add(oneTime.parents()).toArray().some(el =>
+    $(el).is('[hidden], [aria-hidden="true"], .aok-hidden') ||
+    /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse))\s*(?:!important\s*)?(?:;|$)/i.test($(el).attr('style') ?? ''));
   const selectedAsin = $('#ASIN').attr('value');
   const title = $('#productTitle').text().trim();
   const offerId = offer.find('input[name="offeringID.1"]').attr('value');
@@ -159,23 +208,32 @@ export function parsePublicOffer(html: string, asin: string, quantity: number, o
   const prices = [...new Set(priceText)];
   const price = prices.length === 1 && prices[0].match(/^[￥¥]\s*(\d{1,3}(?:,\d{3})*|\d+)(?:\.00)?$/);
   const priceJpy = price ? Number(price[1].replaceAll(',', '')) : 0;
-  const shipping = box.find('#mir-layout-DELIVERY_BLOCK-slot #mir-layout-DELIVERY_BLOCK').length
-    ? box.find('#mir-layout-DELIVERY_BLOCK-slot #mir-layout-DELIVERY_BLOCK') : box.find('#mir-layout-DELIVERY_BLOCK-slot');
+  // Conditions may be siblings of the nested delivery block; retain the entire slot.
+  const shipping = box.find('#mir-layout-DELIVERY_BLOCK-slot');
   const shippingEvidence = shipping.text().replace(/\s+/g, ' ').trim();
   const availability = box.find('#availability').text().trim();
-  const maxQuantity = Math.max(...box.find('select[name="quantity"] option').map((_, el) => Number($(el).attr('value'))).get(), 0);
-  const selectedQuantity = Number(box.find('select[name="quantity"] option[selected]').first().attr('value') ?? box.find('select[name="quantity"] option').first().attr('value'));
+  const quantitySelect = box.find('select[name="quantity"]');
+  const options = quantitySelect.find('option');
+  const selectedOption = options.filter('[selected]').length ? options.filter('[selected]').first() : options.first();
+  const disabledQuantity = quantitySelect.is('[disabled], [aria-disabled="true"]') ||
+    selectedOption.is('[disabled], [aria-disabled="true"]') || selectedOption.parents('fieldset[disabled], optgroup[disabled]').length > 0;
+  const maxQuantity = Math.max(...options.filter((_, el) => !$(el).is('[disabled], [aria-disabled="true"]') &&
+    !$(el).parents('optgroup[disabled]').length).map((_, el) => Number($(el).attr('value'))).get(), 0);
+  const selectedQuantity = Number(selectedOption.attr('value'));
+  const remainingStock = availability.match(/\bonly\s+(\d+)\s+left\b/i);
   const variant = $('#twister .selection').map((_, el) => $(el).text().trim()).get().filter(Boolean).join(' / ');
-  if (box.length !== 1 || oneTime.length !== 1 || selectedAsin !== asin || !title || title.length > 1000 || !offerId || offerId.length > 2048 || !seller || seller.length > 1000 || variant.length > 2000 || shippingEvidence.length > 4000 ||
+  if (box.length !== 1 || oneTime.length !== 1 || hiddenOneTime || selectedAsin !== asin || !title || title.length > 1000 || !offerId || offerId.length > 2048 || !seller || seller.length > 1000 || variant.length > 2000 || shippingEvidence.length > 4000 ||
       offer.find('input[name="offeringID.1"]').length !== 1 ||
       (oneTime.length > 0 && oneTime.find('input[type="radio"]:checked').length !== 1) ||
       !Number.isSafeInteger(priceJpy) || priceJpy <= 0 || priceJpy > 100000000 ||
-      !/在庫あり|in stock/i.test(availability) || /not in stock|out of stock|在庫なし/i.test(availability) || quantity > maxQuantity || selectedQuantity !== quantity ||
+      !/在庫あり|in stock/i.test(availability) || /not\s+(?:currently\s+)?in\s+stock|out of stock|在庫なし/i.test(availability) || quantitySelect.length !== 1 || disabledQuantity || quantity > maxQuantity || selectedQuantity !== quantity ||
+      (remainingStock !== null && quantity > Number(remainingStock[1])) ||
       ($('#twister').length > 0 && !variant) ||
       /subscribe\s*&\s*save|定期おトク便|Prime exclusive|プライム会員限定/i.test(offer.text()) ||
       !unconditionalStandardFree.test(shippingEvidence) ||
       /Prime|プライム|以上|初回|初めて|条件|coupon|クーポン|over |first order|fastest|最短|eligible|qualifying|minimum|when|with |spend|会員|対象|購入|注文|お急ぎ|速達|定期|subscribe|同時|合計|合わせ|まとめ/i.test(shippingEvidence)) {
-    throw new QuoteError('offer_not_verified');
+    const preview = parseProductPreview($, asin, observedAt);
+    throw new QuoteError('offer_not_verified', 422, preview ? { preview } : undefined);
   }
   // Explicit dates only; relative/ambiguous text remains unknown. Preserve ranges.
   const dates = [...shippingEvidence.matchAll(/(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日/g)].map(m => {

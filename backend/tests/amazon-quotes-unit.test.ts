@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { amazonAsin, parsePublicOffer, QuoteError, addDeliveryDays } from '../src/amazon-quote-source.js';
+import { amazonAsin, parsePublicOffer, readPublicOffer, QuoteError, addDeliveryDays, type AmazonProductPreview } from '../src/amazon-quote-source.js';
 import { buildQuote, validateQuoteCart } from '../src/amazon-quotes.js';
 
 const asin = 'B08FTSH6KP';
@@ -14,6 +14,115 @@ function offerHtml(shipping = '通常配送無料 2026年11月8日から2026年1
       </div><span id="availability">在庫あり</span><select name="quantity"><option value="1" selected>1</option><option value="2">2</option></select>
       <div id="mir-layout-DELIVERY_BLOCK-slot">${shipping}</div></div>`;
 }
+
+function modernHtml() {
+  return offerHtml('FREE delivery on orders over JPY 3,500')
+    .replace('id="newAccordionRow"', 'id="newAccordionRow_0"')
+    .replace('name="offeringID.1"', 'id="offerListingID"')
+    .replace('id="mir-layout-DELIVERY_BLOCK-slot"', 'id="mir-layout-DELIVERY_BLOCK"');
+}
+function rejectedPreview(html: string): AmazonProductPreview | undefined {
+  let error: unknown;
+  try { parsePublicOffer(html, asin, 1, now); } catch (e) { error = e; }
+  assert.ok(error instanceof QuoteError);
+  assert.equal(error.code, 'offer_not_verified');
+  assert.equal(error.status, 422);
+  return (error.details as { preview: AmazonProductPreview } | undefined)?.preview;
+}
+
+test('modern public product preview survives strict quote rejection without shipping or image claims', () => {
+  const html = modernHtml().replace('Fixture item', 'Source &amp; model 200g <script>secret()</script><span hidden>Other variant</span>') +
+    '<img id="landingImage" src="https://m.media-amazon.com/images/I/fixture.jpg">';
+  assert.deepEqual(rejectedPreview(html), { asin, sourceUrl: `https://www.amazon.co.jp/dp/${asin}`,
+    title: 'Source & model 200g', observedAt: now.toISOString(), priceJpy: 1000 });
+  // Even a legacy offer rejected only for conditional shipping remains rejected.
+  assert.equal(rejectedPreview(offerHtml('FREE Standard Delivery on orders over JPY 3,500'))?.title, 'Fixture item');
+});
+test('active modern one-time accordion without radio exposes only its own displayed JPY price', () => {
+  const active = modernHtml()
+    .replace('id="newAccordionRow_0"', 'id="newAccordionRow_0" class="a-accordion-active"')
+    .replace('<input type="radio" checked>', '')
+    .replace('class="priceToPay"', 'id="corePrice_feature_div"');
+  assert.equal(rejectedPreview(active)?.priceJpy, 1000);
+  assert.equal(rejectedPreview(active.replace('class="a-accordion-active"', 'class="a-accordion"'))?.priceJpy, undefined);
+  assert.equal(rejectedPreview(active.replace('￥1,000', '￥1,000 or ￥900'))?.priceJpy, undefined);
+  assert.equal(rejectedPreview(active.replace('</div><span id="availability">', '<div id="newAccordionRow_1" class="a-accordion-active">￥900</div></div><span id="availability">'))?.priceJpy, undefined);
+});
+
+test('preview never invents a price from ambiguous, hidden, subscription or unselected offers', () => {
+  const html = modernHtml();
+  const extraPrice = '<span class="priceToPay"><span class="a-offscreen">￥900</span></span>';
+  const withoutPrice = html.replace(/<span class="priceToPay">.*?<\/span><\/span>/, '');
+  for (const candidate of [
+    html.replace('￥1,000', '￥1,000 or ￥900'), html.replace('￥1,000', '￥0'),
+    html.replace('</div><span id="availability">', `${extraPrice}</div><span id="availability">`),
+    html.replace('type="radio" checked', 'type="radio"'),
+    html.replace('type="radio" checked', 'type="radio" checked disabled'),
+    html.replace('Fixture seller', 'Subscribe &amp; Save'), html.replace('Fixture seller', '定期おトク便'),
+    html.replace('type="radio" checked', 'type="radio" checked><input type="radio" checked'),
+    withoutPrice + extraPrice,
+    withoutPrice + '<script>{"priceJpy":900,"asin":"B000000001"}</script>',
+    html.replace('id="newAccordionRow_0"', 'id="subscribeAccordionRow"')
+  ]) {
+    const preview = rejectedPreview(candidate);
+    assert.equal(preview?.title, 'Fixture item');
+    assert.equal(Object.hasOwn(preview!, 'priceJpy'), false);
+  }
+  for (const attribute of ['hidden', 'aria-hidden="true"', 'class="aok-hidden"', 'class="a-hidden"',
+    'style="display:none !important"', 'style="visibility:collapse"']) {
+    for (const target of ['id="newAccordionRow_0"', 'id="desktop_buybox"', 'class="priceToPay"']) {
+      const replacement = target === 'class="priceToPay"' && attribute.startsWith('class=')
+        ? `class="priceToPay ${attribute.slice(7, -1)}"` : `${target} ${attribute}`;
+      assert.equal(rejectedPreview(html.replace(target, replacement))?.priceJpy, undefined, `${target}: ${attribute}`);
+    }
+  }
+});
+
+test('preview requires exact unique ASIN and visible valid title; CAPTCHA never carries preview', () => {
+  const html = modernHtml();
+  for (const candidate of [html.replace(asin, 'B000000001'), html.replace('id="ASIN"', 'id="otherASIN"'),
+    html + `<input id="ASIN" value="${asin}">`, html.replace('id="productTitle"', 'id="otherTitle"'),
+    html + '<span id="productTitle">Duplicate</span>', html.replace('Fixture item', ''),
+    html.replace('Fixture item', 'x'.repeat(1001)), html.replace('id="productTitle"', 'id="productTitle" hidden'),
+    html.replace('Fixture item', '<span style="display:none">Hidden title</span>')]) {
+    assert.equal(rejectedPreview(candidate), undefined);
+  }
+  assert.throws(() => parsePublicOffer(html + 'captcha', asin, 1, now),
+    (e: unknown) => e instanceof QuoteError && e.code === 'amazon_blocked' && e.details === undefined);
+});
+
+test('reader previews only the same valid HTML response with no extra source request', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  try {
+    for (const [status, contentType, body, code] of [
+      [200, 'text/html', modernHtml(), 'offer_not_verified'],
+      [200, 'application/json', modernHtml(), 'amazon_unavailable'],
+      [503, 'text/html', modernHtml(), 'amazon_unavailable'],
+      [403, 'text/html', modernHtml(), 'amazon_blocked'],
+      [429, 'text/html', modernHtml(), 'amazon_rate_limited'],
+      [200, 'text/html', modernHtml() + 'captcha', 'amazon_blocked']
+    ] as const) {
+      globalThis.fetch = async () => {
+        calls++;
+        return new Response(body, { status, headers: { 'content-type': contentType } });
+      };
+      const before = calls;
+      await assert.rejects(() => readPublicOffer(asin, 1), (e: unknown) => {
+        assert.ok(e instanceof QuoteError);
+        assert.equal(e.code, code);
+        const preview = (e.details as { preview: AmazonProductPreview } | undefined)?.preview;
+        if (code === 'offer_not_verified') {
+          assert.equal(preview?.title, 'Fixture item');
+          assert.equal(preview?.priceJpy, 1000);
+          assert.ok(Number.isFinite(Date.parse(preview!.observedAt)));
+        } else assert.equal(preview, undefined);
+        return true;
+      });
+      assert.equal(calls - before, 1);
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
 test('Amazon inputs canonicalize exact HTTPS JP product URLs and ASINs', () => {
   for (const input of [asin.toLowerCase(), `https://www.amazon.co.jp/name/dp/${asin}?tag=ignored`, `https://amazon.co.jp/gp/product/${asin}`]) assert.equal(amazonAsin(input), asin);
   for (const input of ['hello', `http://amazon.co.jp/dp/${asin}`, `https://amazon.co.jp.evil.test/dp/${asin}`,
@@ -38,6 +147,49 @@ test('paid, conditional, Prime and ambiguous shipping never qualify; CAPTCHA blo
   }
   assert.equal(parsePublicOffer(offerHtml('FREE Standard Delivery'), asin, 1, now).shippingType, 'standard');
   assert.throws(() => parsePublicOffer('captcha', asin, 1, now), (e: unknown) => e instanceof QuoteError && e.code === 'amazon_blocked');
+});
+test('negative stock wording and explicit remaining stock override in-stock text', () => {
+  const html = offerHtml('FREE Standard Delivery').replace(/(<span id="availability">).*?(<\/span>)/, '$1In stock$2');
+  assert.equal(parsePublicOffer(html, asin, 1, now).quantity, 1);
+  for (const availability of ['Not currently in stock', 'Not in stock', 'Out of stock. In stock soon']) {
+    assert.throws(() => parsePublicOffer(html.replace('>In stock<', `>${availability}<`), asin, 1, now),
+      (e: unknown) => e instanceof QuoteError && e.code === 'offer_not_verified', availability);
+  }
+  const limited = html.replace('>In stock<', '>Only 1 left in stock<');
+  assert.equal(parsePublicOffer(limited, asin, 1, now).quantity, 1);
+  assert.throws(() => parsePublicOffer(limited.replace('value="1" selected', 'value="1"').replace('value="2"', 'value="2" selected'), asin, 2, now), QuoteError);
+});
+test('nested delivery blocks retain sibling Prime and threshold conditions', () => {
+  const nested = '<div id="mir-layout-DELIVERY_BLOCK">FREE Standard Delivery</div>';
+  assert.equal(parsePublicOffer(offerHtml(nested), asin, 1, now).shippingEvidence, 'FREE Standard Delivery');
+  for (const condition of ['Prime members only', 'on orders over JPY 3,500', 'with qualifying purchases']) {
+    for (const shipping of [`<span>${condition}</span>${nested}`, `${nested}<span>${condition}</span>`]) {
+      assert.throws(() => parsePublicOffer(offerHtml(shipping), asin, 1, now),
+        (e: unknown) => e instanceof QuoteError && e.code === 'offer_not_verified', shipping);
+    }
+  }
+});
+test('hidden one-time rows and ancestors cannot verify an offer', () => {
+  for (const attribute of ['hidden', 'aria-hidden="true"', 'style="display: none !important"',
+    'style="visibility: hidden"', 'class="aok-hidden"']) {
+    for (const id of ['newAccordionRow', 'desktop_buybox']) {
+      const html = offerHtml('FREE Standard Delivery').replace(`id="${id}"`, `id="${id}" ${attribute}`);
+      assert.throws(() => parsePublicOffer(html, asin, 1, now),
+        (e: unknown) => e instanceof QuoteError && e.code === 'offer_not_verified', `${id}: ${attribute}`);
+    }
+  }
+});
+test('disabled quantity controls and selected options cannot verify quantity', () => {
+  const html = offerHtml('FREE Standard Delivery');
+  for (const disabled of [html.replace('select name="quantity"', 'select name="quantity" disabled'),
+    html.replace('select name="quantity"', 'select name="quantity" aria-disabled="true"'),
+    html.replace('value="1" selected', 'value="1" selected disabled'),
+    html.replace('<select', '<fieldset disabled><select').replace('</select>', '</select></fieldset>'),
+    html.replace('<option value="1"', '<optgroup disabled><option value="1"').replace('</select>', '</optgroup></select>')]) {
+    assert.throws(() => parsePublicOffer(disabled, asin, 1, now),
+      (e: unknown) => e instanceof QuoteError && e.code === 'offer_not_verified');
+  }
+  assert.equal(parsePublicOffer(html.replace('value="2"', 'disabled value="2"'), asin, 1, now).quantity, 1);
 });
 test('missing or ambiguous ETA remains null and calendar-day ranges cross year boundaries', () => {
   const offer = parsePublicOffer(offerHtml('通常配送無料'), asin, 1, now);

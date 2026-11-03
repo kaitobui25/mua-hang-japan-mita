@@ -63,6 +63,36 @@ Quote routes use `Cache-Control: no-store`. Expected error codes include
 `checkout_key_conflict` and `shipping_confirmation_conflict`. Disabled/unavailable
 sources use 503; invalid input uses 400; conflicts use 409; unverified offers use 422.
 
+### Display-only preview on rejected offers
+
+An `offer_not_verified` `QuoteError` (422) may include exactly this details shape:
+
+```ts
+{ preview: {
+  asin: string;
+  sourceUrl: string; // https://www.amazon.co.jp/dp/<ASIN>, no query parameters
+  title: string; // source #productTitle, plain text, at most 1000 characters
+  observedAt: string; // ISO timestamp of the same source observation
+  priceJpy?: number; // optional positive integer, at most 100000000
+} }
+```
+
+The preview requires the same valid public HTML response, one exact `input#ASIN`
+and a unique visible title. CAPTCHA/blocked responses and ASIN mismatches carry no
+preview. Text excludes scripts, hidden content and markup. The optional price is
+read only from `.priceToPay .a-offscreen` inside a visible modern
+`newAccordionRow_<number>` containing the buybox's sole checked, enabled radio.
+Subscription/Prime-exclusive rows, conflicting or malformed prices, hidden prices
+and generic page/alternate-variant prices supply no price. Missing optional keys
+are omitted. Seller, variant, images and other display metadata are not included.
+
+This is product information for display only, not a verified quote or checkout
+capability. It establishes no quantity, stock, shipping cost, eligibility or ETA;
+conditional shipping remains unverified and must never be shown as free. The
+strict quote rejection and existing source/cooldown behavior remain unchanged.
+Extraction makes no additional requests and returns no HTML, cookies or image
+URLs. This backend contract does not itself add storefront rendering.
+
 ## Optional product display metadata (plan 18)
 
 `PublicOffer` / `AmazonQuote` may carry an optional `display` object, separate from
