@@ -13,7 +13,9 @@ export async function amazonQuoteRoutes(server: FastifyInstance) {
   server.setErrorHandler((error, request, reply) => {
     if (error instanceof QuoteError) {
       if (error.status === 429) reply.header('Retry-After', '60');
-      return reply.code(error.status).send({ code: error.code, ...(error.details ? { details: error.details } : {}) });
+      return reply.code(error.status).send({ code: error.code,
+        ...(error.details ? { details: error.details } : {}),
+        ...(error.retryAfterAt ? { retryAfterAt: error.retryAfterAt } : {}) });
     }
     const status = error instanceof Error && 'statusCode' in error ? Number(error.statusCode) : 503;
     if (status >= 400 && status < 500) return reply.code(status).send({ code: 'invalid_quote_request' });

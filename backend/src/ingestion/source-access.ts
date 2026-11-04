@@ -5,6 +5,16 @@ import { expectedSyncAt } from './schedule.js';
 export const AMAZON_ACCESS_LOCK = 70400200;
 type Connection = Pick<PoolClient, 'query'>;
 
+/** The persisted source pause is shared by quote, catalog and scheduled workers. */
+export async function amazonPauseStatus(connection: Connection): Promise<{ retryAfterAt: string | null } | null> {
+  const result = await connection.query(`SELECT retry_after_at FROM source_access_blocks WHERE source='amazon.co.jp'`);
+  if (!result.rowCount) return null;
+  const value: unknown = result.rows[0].retry_after_at;
+  const retryAfterAt = value instanceof Date ? value.toISOString() :
+    typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
+  return { retryAfterAt };
+}
+
 /** 04:00 JST on the following calendar day, even before today's 04:00. */
 export function nextAmazonRetryAt(now = new Date()): Date {
   const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);

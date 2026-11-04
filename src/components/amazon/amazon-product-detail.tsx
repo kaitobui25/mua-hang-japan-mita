@@ -41,8 +41,8 @@ const deadline = (value: string) => new Intl.DateTimeFormat("vi-VN", {
 function sourceImage(url: string): boolean {
   try {
     const parsed = new URL(url);
-    return parsed.protocol === "https:" && !parsed.username && !parsed.password &&
-      /^(?:[a-z0-9-]+\.)*media-amazon\.com$/i.test(parsed.hostname);
+    return parsed.protocol === "https:" && !parsed.username && !parsed.password && !parsed.port &&
+      /^(?:[a-z0-9-]+\.)*media-amazon\.com$/i.test(parsed.hostname) && parsed.pathname.startsWith("/images/I/");
   } catch { return false; }
 }
 
@@ -66,10 +66,10 @@ export function AmazonProductDetail({
   const [selectedImage, setSelectedImage] = useState("");
   const display = quote.display;
   // Legacy quote.imageUrl alone does not establish permission to re-display a source image.
-  const pictures = [...new Set((display?.images ?? []).filter(sourceImage))].slice(0, 5);
+  const pictures = [...new Set((display?.images ?? []).filter(sourceImage))].slice(0, 10);
   const currentImage = pictures.includes(selectedImage) ? selectedImage : pictures[0];
   const quantityChanged = quantity !== quote.quantity;
-  const canAdd = quote.canOrder && !expired && !quantityChanged;
+  const canAdd = quote.canOrder && quote.freeShipping && !refreshing && !expired && !quantityChanged;
   const detail = display && {
     features: display.features ?? [],
     ingredients: display.ingredients ? [display.ingredients] : [],
@@ -130,6 +130,7 @@ export function AmazonProductDetail({
           <div><dt><Icon name="bag" size={18}/> Phí vận chuyển về Việt Nam</dt><dd>Chưa xác định · Báo riêng, khách xác nhận trước khi thu</dd></div>
         </dl>
         <p className="amazon-quote-validity"><Icon name="clock" size={16}/> Báo giá có hiệu lực đến {deadline(quote.expiresAt)}. Ngày giao chỉ là dự kiến, không xác minh đích nhận tại Nhật.</p>
+        <p className="amazon-observed-at">Quan sát nguồn: <time dateTime={quote.observedAt}>{deadline(quote.observedAt)}</time>.</p>
         {quote.warning && <p className="inline-alert" role="status">{quote.warning}</p>}
         {expired && <p className="inline-alert" role="alert">Báo giá đã hết hạn. Cần tra lại trước khi thêm vào giỏ.</p>}
 
@@ -156,7 +157,7 @@ export function AmazonProductDetail({
     <section className="amazon-translation-bar" aria-label="Dịch thông tin sản phẩm">
       <div>
         <h2>Thông tin nguồn Amazon</h2>
-        <p>Thông tin dưới đây giữ nguyên từ nguồn. Google Dịch miễn phí mở ở tab riêng, không tự dịch trong Mita.</p>
+        <p>Thông tin dưới đây giữ nguyên từ nguồn. Google Dịch miễn phí mở ở tab riêng, không tự dịch trong Mita. Nếu Google Dịch không khả dụng, bạn vẫn có thể xem nguyên văn và mở trang Amazon. Văn bản gửi dịch có thể được rút gọn.</p>
       </div>
       <a className="button button-outline" href={googleTranslateUrl} target="_blank" rel="noopener noreferrer">Dịch bằng Google <Icon name="arrow" size={18}/></a>
       <details className="amazon-original-disclosure">
@@ -164,6 +165,7 @@ export function AmazonProductDetail({
         <p>{quote.name}</p>
         {display?.description && <p>{display.description}</p>}
       </details>
+      {display && <p className="amazon-display-provenance">Nội dung nguồn Amazon quan sát lúc <time dateTime={display.provenance.observedAt}>{deadline(display.provenance.observedAt)}</time>.</p>}
     </section>
 
     {display && <ProductInformation description={display.description} detail={detail} hasStructuredRatings={display.rating !== undefined || display.reviewCount !== undefined} className="detail-description amazon-detail-description"/>}

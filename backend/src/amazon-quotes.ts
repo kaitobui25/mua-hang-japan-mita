@@ -2,7 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { db } from './db/pool.js';
 import { getPricingPolicy, toVnd, type PricingPolicy } from './pricing.js';
-import { AMAZON_ACCESS_LOCK, amazonGate, recordAmazonPause } from './ingestion/source-access.js';
+import { AMAZON_ACCESS_LOCK, amazonGate, amazonPauseStatus, recordAmazonPause } from './ingestion/source-access.js';
 import { amazonAsin, quoteQuantity, readPublicOffer, addDeliveryDays, QuoteError, uuid, type PublicOffer } from './amazon-quote-source.js';
 
 export type AmazonQuote = PublicOffer & {
@@ -44,14 +44,21 @@ export async function createAmazonQuote(input: unknown, quantity: unknown = 1): 
   try {
     locked = (await client.query('SELECT pg_try_advisory_lock($1) AS locked', [AMAZON_ACCESS_LOCK])).rows[0].locked;
     if (!locked) throw new QuoteError('amazon_busy', 503);
-    if (!await amazonGate(client)) throw new QuoteError('amazon_cooldown', 503);
+    if (!await amazonGate(client)) {
+      const pause = await amazonPauseStatus(client);
+      throw new QuoteError('amazon_cooldown', 503, undefined, pause?.retryAfterAt ?? undefined);
+    }
     const policy = await getPricingPolicy(client), settings = await getQuoteSettings(client);
     let offer: PublicOffer;
     // Start validity before I/O; network latency must never extend an observation.
     const observedAt = new Date();
     try { offer = await readPublicOffer(asin, count); }
     catch (error) {
-      if (error instanceof QuoteError && ['amazon_blocked', 'amazon_rate_limited'].includes(error.code)) await recordAmazonPause(client, error.code, error.retryAfterAt);
+      if (error instanceof QuoteError && ['amazon_blocked', 'amazon_rate_limited'].includes(error.code)) {
+        await recordAmazonPause(client, error.code, error.retryAfterAt);
+        const pause = await amazonPauseStatus(client);
+        throw new QuoteError(error.code, error.status, error.details, pause?.retryAfterAt ?? undefined);
+      }
       if (error instanceof QuoteError) throw error;
       throw new QuoteError('amazon_unavailable', 503);
     }

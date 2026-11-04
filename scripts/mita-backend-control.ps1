@@ -161,6 +161,9 @@ if ($Action -eq 'Run') {
         Add-Type -Path (Join-Path $PSScriptRoot 'mita-backend-job.cs')
         # Override inherited remote/API configuration in this child process only.
         $env:API_PORT='4000'; $env:DATABASE_URL='postgresql://mita_local@127.0.0.1:5433/postgres'
+        # Local purchase-assistance uses the same DB as catalog and checkout.
+        # AMAZON_ACCESS_LOCK and source_access_blocks still block denied Amazon access.
+        $env:AMAZON_QUOTES_ENABLED='1'
         $env:MITA_VPS_WORKER=$null
         $env:MITA_BACKEND_RUN_ID=$RunId
         $env:MITA_BACKEND_STOP_FILE=Join-Path $runtime ($RunId+'.backend-stop')

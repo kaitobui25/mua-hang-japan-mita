@@ -1,8 +1,19 @@
 # Amazon quote API
 
-Backend implementation of plan 14. No catalog import occurs. Public Amazon reading is
-disabled unless `AMAZON_QUOTES_ENABLED=1`; this change does not enable it, migrate an
-active database or start a service. `PUBLIC_READ_ONLY=1` blocks quote and checkout writes.
+Backend implementation of plan 14 and ADR 0019 (2026-11-04). No catalog import occurs.
+Amazon reading is disabled unless `AMAZON_QUOTES_ENABLED=1`; `PUBLIC_READ_ONLY=1` blocks
+quote and checkout writes. The Windows local backend manager explicitly enables quotes
+on API port `4000`, using the same `127.0.0.1:5433/postgres` database as catalog,
+checkout and workers. Next.js routes all local `/api/*` traffic to that backend, not a
+second quote-only port. Other deployment environments retain the disabled-by-default
+behavior. Enabling quotes never bypasses `source_access_blocks`, Amazon's cooldown,
+the shared source lock, or the per-peer/global request limits.
+
+The old standalone `4010` smoke backend/database is not part of the normal local
+runtime. Do not reuse smoke quote IDs in carts or orders, delete source cooldown rows,
+or apply schema migration automatically at startup. Active schema changes require a
+verified backup and transactional migration review; disposable test databases remain
+separate from the single operational database.
 
 ## Frontend contract
 

@@ -11,7 +11,7 @@ import { createOrder } from '../src/orders.js';
 import { config } from '../src/config.js';
 import { buildServer } from '../src/server.js';
 import { updateOrder, orderDetail } from '../src/admin/data.js';
-import type { PublicOffer } from '../src/amazon-quote-source.js';
+import { QuoteError, type PublicOffer } from '../src/amazon-quote-source.js';
 
 const disposable = process.env.MITA_DISPOSABLE_TEST_DATABASE;
 const safe = disposable && /^mita_test_[a-f0-9]+$/.test(disposable) && new URL(config.databaseUrl).pathname === `/${disposable}`;
@@ -182,11 +182,27 @@ test('Amazon quote checkout and migration regressions in disposable DB only', { 
         await assert.rejects(createAmazonQuote(offer.asin, 1), /amazon_busy/);
         assert.equal(calls, 0);
         await lock.query('SELECT pg_advisory_unlock($1)', [AMAZON_ACCESS_LOCK]);
-        await assert.rejects(createAmazonQuote(offer.asin, 1), /amazon_blocked/);
+        let blockedRetryAfter: string | undefined;
+        await assert.rejects(createAmazonQuote(offer.asin, 1), (error: unknown) => {
+          assert.ok(error instanceof QuoteError);
+          assert.equal(error.code, 'amazon_blocked');
+          blockedRetryAfter = error.retryAfterAt;
+          assert.ok(blockedRetryAfter && Date.parse(blockedRetryAfter) > Date.now());
+          return true;
+        });
         assert.equal(calls, 1);
-        await assert.rejects(createAmazonQuote(offer.asin, 1), /amazon_cooldown/);
+        await assert.rejects(createAmazonQuote(offer.asin, 1), (error: unknown) => {
+          assert.ok(error instanceof QuoteError);
+          assert.equal(error.code, 'amazon_cooldown');
+          assert.equal(error.retryAfterAt, blockedRetryAfter);
+          return true;
+        });
         assert.equal(calls, 1);
         assert.equal((await db.query("SELECT 1 FROM source_access_blocks WHERE source='amazon.co.jp'")).rowCount, 1);
+        const blockedResponse = await server.inject({ method: 'POST', url: '/api/amazon/quotes', payload: { input: offer.asin } });
+        assert.equal(blockedResponse.statusCode, 503);
+        assert.equal(blockedResponse.json().code, 'amazon_cooldown');
+        assert.equal(blockedResponse.json().retryAfterAt, blockedRetryAfter);
         await db.query("DELETE FROM source_access_blocks WHERE source='amazon.co.jp'");
         transportMock.mock.mockImplementation(async () => { throw new QuoteTransportError('amazon_rate_limited', new Date(Date.now() + 604800000).toISOString()); });
         await assert.rejects(createAmazonQuote(offer.asin), /amazon_rate_limited/);
