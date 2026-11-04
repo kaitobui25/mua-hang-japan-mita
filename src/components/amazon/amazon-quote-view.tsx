@@ -117,7 +117,7 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
         <button className="button button-primary" type="submit" disabled={loading}>{loading ? "Đang tra thông tin…" : "Xem thông tin sản phẩm"}</button>
       </div>
       {error && !recognizedAsin && <p id="amazon-input-error" className="inline-alert amazon-quote-alert" role="alert">{error}</p>}
-      <p className="amazon-note">Chỉ nhận mua một lần, giao thường miễn phí tại Nhật, không Prime. Phí vận chuyển về Việt Nam tính riêng sau.</p>
+      <p className="amazon-note">Thông tin hiển thị theo trang Amazon tại thời điểm tra cứu. Giá đặt mua qua Mita và phí vận chuyển về Việt Nam được báo riêng.</p>
     </form>
     {preview && <AmazonSourceProductDetail preview={preview} error={error}/>}
     {recognizedAsin && !quote && !preview && !loading && <section className="amazon-source-preview" role="status" aria-label="Đã nhận diện ASIN, chưa xác minh sản phẩm">

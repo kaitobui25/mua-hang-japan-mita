@@ -62,7 +62,7 @@ function SourceRating({ rating, count }: { rating?: number; count?: number }) {
 /** Product-page layout for source evidence only. It never enables quote/cart actions. */
 export function AmazonSourceProductDetail({ preview, error }: { preview: AmazonSourcePreview; error: string }) {
   const [selectedImage, setSelectedImage] = useState("");
-  const display = preview.display;
+  const display = preview.display ?? preview.observedDetails;
   const pictures = [...new Set((display?.images ?? []).filter(sourceImage))].slice(0, 10);
   const currentImage = pictures.includes(selectedImage) ? selectedImage : pictures[0];
   const detail = display && {
@@ -78,7 +78,7 @@ export function AmazonSourceProductDetail({ preview, error }: { preview: AmazonS
   const googleTranslateUrl = `https://translate.google.com/?sl=auto&tl=vi&text=${encodeURIComponent(translationText)}&op=translate`;
 
   return <article className="amazon-quote-result amazon-source-result" aria-label="Thông tin sản phẩm từ Amazon">
-    <p className="amazon-preview-result-status" role="status">Đã đọc thông tin sản phẩm từ Amazon. Chưa có báo giá mua hộ hợp lệ.</p>
+    <p className="amazon-preview-result-status" role="status">Đã đọc thông tin sản phẩm từ Amazon. Giá và vận chuyển dưới đây là thông tin trên trang nguồn.</p>
     <section className="product-detail amazon-product-detail" aria-label="Sản phẩm quan sát từ Amazon">
       <div className="detail-image">
         <ProductImage key={currentImage ?? "empty"} src={currentImage} name={preview.title} priority/>
@@ -88,7 +88,7 @@ export function AmazonSourceProductDetail({ preview, error }: { preview: AmazonS
             <ProductImage src={src} name={`Ảnh ${index + 1} của ${preview.title}`}/>
           </button>)}
         </div>}
-        <p>{pictures.length ? "Ảnh sản phẩm từ Amazon." : "Chưa có ảnh được phép hiển thị; đang dùng ảnh dự phòng Mita."}</p>
+        <p>{pictures.length ? "Ảnh quan sát từ trang sản phẩm Amazon." : "Amazon chưa trả về ảnh sản phẩm; đang dùng ảnh dự phòng Mita."}</p>
       </div>
       <div className="detail-content amazon-detail-content">
         {display?.brand && <p className="product-brand">{display.brand}</p>}
@@ -103,15 +103,15 @@ export function AmazonSourceProductDetail({ preview, error }: { preview: AmazonS
           <a href={preview.sourceUrl} target="_blank" rel="noopener noreferrer" className="inline-link">Xem sản phẩm gốc trên Amazon <Icon name="arrow" size={15}/></a>
         </div>
         {preview.priceJpy !== undefined && <div className="detail-price-block">
-          <p className="amazon-price-caption">Giá Amazon tham khảo, chưa phải báo giá Mita</p>
+          <p className="amazon-price-caption">Giá hiển thị trên Amazon khi tra cứu</p>
           <div className="detail-price">{jpy(preview.priceJpy)}</div>
         </div>}
-        <p className="inline-alert amazon-preview-warning" role="alert">{error} Đây là thông tin nguồn, chưa phải báo giá. Chưa thể thêm vào giỏ hoặc đặt hàng.</p>
+        {preview.priceJpy === undefined && <p className="amazon-price-caption">Chưa đọc được giá trên trang sản phẩm Amazon.</p>}
         <dl className="amazon-delivery-details amazon-preview-terms">
-          <div><dt>Giá bán VND tại Mita</dt><dd>Chưa có báo giá hợp lệ</dd></div>
-          <div><dt>Giao thường miễn phí tại Nhật</dt><dd>Chưa xác minh</dd></div>
-          <div><dt>Ngày giao và phí vận chuyển</dt><dd>Chưa xác định</dd></div>
+          <div><dt>Vận chuyển nội địa Nhật theo Amazon</dt><dd>{preview.freeDelivery ? "Miễn phí vận chuyển" : "Chưa thấy nhãn miễn phí vận chuyển"}{preview.deliveryText && <small className="amazon-source-delivery-text">{preview.deliveryText}</small>}</dd></div>
+          <div><dt>Báo giá VND và phí vận chuyển về Việt Nam</dt><dd>Chưa có báo giá Mita · phí vận chuyển tính riêng</dd></div>
         </dl>
+        <p className="inline-alert amazon-preview-warning" role="status">{error} Giá và nhãn miễn phí vận chuyển trên Amazon có thể thay đổi. Chưa thể thêm vào giỏ Mita.</p>
       </div>
     </section>
     <section className="amazon-translation-bar" aria-label="Dịch tên và thông tin nguồn">
@@ -124,10 +124,10 @@ export function AmazonSourceProductDetail({ preview, error }: { preview: AmazonS
     {display && <ProductInformation description={display.description} detail={detail}
       hasStructuredRatings={display.rating !== undefined || display.reviewCount !== undefined}
       className="detail-description amazon-detail-description"/>}
-    {!!display?.reviews?.length && <section className="amazon-detail-reviews" aria-label="Đánh giá từ nguồn Amazon">
+    {!!preview.display?.reviews?.length && <section className="amazon-detail-reviews" aria-label="Đánh giá từ nguồn Amazon">
       <h2>Đánh giá từ Amazon</h2>
       <p>Đánh giá của nguồn Amazon, không phải đánh giá của khách Mita.</p>
-      <div className="amazon-review-list">{display.reviews.map((review, index) => <article key={index} className="detail-info-card">
+      <div className="amazon-review-list">{preview.display.reviews.map((review, index) => <article key={index} className="detail-info-card">
         {review.title && <h3>{review.title}</h3>}
         {review.rating !== undefined && <p>{review.rating.toLocaleString("vi-VN")} / 5 sao</p>}
         <p>{review.body}</p>

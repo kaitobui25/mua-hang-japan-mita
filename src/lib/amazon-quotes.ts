@@ -1,5 +1,5 @@
 import { amazonInputAsin } from "@/lib/amazon-input";
-import type { AmazonQuote, AmazonQuoteDisplay, AmazonSourcePreview } from "@/types/amazon-quote";
+import type { AmazonQuote, AmazonQuoteDisplay, AmazonObservedDetails, AmazonSourcePreview } from "@/types/amazon-quote";
 
 type DateRange = { start: string; end: string } | null;
 type ServerQuote = {
@@ -29,14 +29,10 @@ function image(value: unknown): value is string {
   } catch { return false; }
 }
 
-/** The backend grants display permission; reject mismatched or malformed optional content. */
-function parseDisplay(value: unknown, asin: string, sourceUrl: string): AmazonQuoteDisplay | undefined {
-  if (!record(value) || !record(value.provenance)) return;
-  const provenance = value.provenance;
-  if (provenance.asin !== asin || provenance.sourceUrl !== sourceUrl || !timestamp(provenance.observedAt) ||
-      !text(provenance.permissionReference, 500)) return;
-  const display: AmazonQuoteDisplay = { provenance: { asin, sourceUrl, observedAt: provenance.observedAt,
-    permissionReference: provenance.permissionReference } };
+/** Only product-scoped plain text and explicitly allowlisted Amazon image URLs. */
+function parseObservedDetails(value: unknown): AmazonObservedDetails | undefined {
+  if (!record(value)) return;
+  const display: AmazonObservedDetails = {};
   for (const [key, limit] of [["brand", 500], ["description", 12000], ["ingredients", 4000], ["usage", 4000], ["warnings", 4000]] as const) {
     if (text(value[key], limit)) display[key] = value[key];
   }
@@ -50,7 +46,17 @@ function parseDisplay(value: unknown, asin: string, sourceUrl: string): AmazonQu
   if (Number.isSafeInteger(value.reviewCount) && Number(value.reviewCount) >= 0 && Number(value.reviewCount) <= 1000000000) display.reviewCount = Number(value.reviewCount);
   if (Array.isArray(value.reviews)) display.reviews = value.reviews.filter(v => record(v) && text(v.body, 4000)).slice(0, 10)
     .map(v => ({ body: v.body as string, ...(text(v.title, 500) ? { title: v.title } : {}), ...(rating(v.rating) ? { rating: v.rating } : {}) }));
-  return display;
+  return Object.keys(display).length ? display : undefined;
+}
+
+/** Quote display still requires a trusted backend rights decision. */
+function parseDisplay(value: unknown, asin: string, sourceUrl: string): AmazonQuoteDisplay | undefined {
+  if (!record(value) || !record(value.provenance)) return;
+  const provenance = value.provenance;
+  if (provenance.asin !== asin || provenance.sourceUrl !== sourceUrl || !timestamp(provenance.observedAt) ||
+      !text(provenance.permissionReference, 500)) return;
+  return { provenance: { asin, sourceUrl, observedAt: provenance.observedAt,
+    permissionReference: provenance.permissionReference }, ...parseObservedDetails(value) };
 }
 
 function projectQuote(raw: ServerQuote): AmazonQuote {
@@ -103,7 +109,7 @@ export function parseAmazonQuote(raw: unknown): AmazonQuote {
 const messages: Record<string,string> = {
   amazon_quotes_disabled: "Hệ thống tra giá Amazon đang chờ xác minh nguồn. Hiện chưa nhận đơn mua hộ trực tuyến.",
   invalid_amazon_input: "Hãy nhập mã ASIN 10 ký tự hoặc link sản phẩm Amazon.co.jp hợp lệ.",
-  offer_not_verified: "Không xác minh được giá và miễn phí giao thường tại Nhật cho sản phẩm này.",
+  offer_not_verified: "Đã nhận thông tin từ Amazon. Báo giá đặt mua tại Mita chưa sẵn sàng.",
   amazon_cooldown: "Mita đang tạm dừng truy cập nguồn Amazon sau lần bị từ chối trước đó. Vui lòng thử lại sau.",
   amazon_busy: "Hệ thống đang kiểm tra Amazon. Vui lòng thử lại sau.",
   amazon_rate_limited: "Amazon đang giới hạn truy cập. Mita tạm dừng tra thông tin từ nguồn.",
@@ -129,8 +135,13 @@ function parseSourcePreview(value: unknown): AmazonSourcePreview | null {
       typeof raw.title !== "string" || !raw.title.trim() || raw.title.length > 1000 ||
       !timestamp(raw.observedAt)) return null;
   const display = parseDisplay(raw.display, raw.asin, raw.sourceUrl);
+  const observedDetails = parseObservedDetails(raw.observedDetails);
+  const deliveryText = text(raw.deliveryText, 400) ? raw.deliveryText.trim() : undefined;
   return { asin: raw.asin, title: raw.title.trim(), sourceUrl: raw.sourceUrl, observedAt: raw.observedAt,
     ...(Number.isSafeInteger(raw.priceJpy) && Number(raw.priceJpy) > 0 && Number(raw.priceJpy) <= 100000000 ? { priceJpy: Number(raw.priceJpy) } : {}),
+    ...(observedDetails ? { observedDetails } : {}),
+    ...(deliveryText ? { deliveryText } : {}),
+    ...(deliveryText && raw.freeDelivery === true ? { freeDelivery: true as const } : {}),
     ...(display?.provenance.observedAt === raw.observedAt ? { display } : {}) };
 }
 

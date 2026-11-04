@@ -85,24 +85,36 @@ An `offer_not_verified` `QuoteError` (422) may include exactly this details shap
   title: string; // source #productTitle, plain text, at most 1000 characters
   observedAt: string; // ISO timestamp of the same source observation
   priceJpy?: number; // optional positive integer, at most 100000000
+  observedDetails?: { images?: string[]; brand?: string; description?: string; features?: string[];
+    ingredients?: string; usage?: string; warnings?: string;
+    specifications?: { name: string; value: string }[]; rating?: number; reviewCount?: number };
+  deliveryText?: string; // optional text from the product buybox delivery block
+  freeDelivery?: true; // only when a free-delivery label appears inside that block
 } }
 ```
 
-The preview requires the same valid public HTML response, one exact `input#ASIN`
-and a unique visible title. CAPTCHA/blocked responses and ASIN mismatches carry no
-preview. Text excludes scripts, hidden content and markup. The optional price is
-read only from `.priceToPay .a-offscreen` inside a visible modern
-`newAccordionRow_<number>` containing the buybox's sole checked, enabled radio.
-Subscription/Prime-exclusive rows, conflicting or malformed prices, hidden prices
-and generic page/alternate-variant prices supply no price. Missing optional keys
-are omitted. Seller, variant, images and other display metadata are not included.
+The preview requires the same valid public HTML response, one exact `input#ASIN`,
+a unique visible title and no conflicting canonical product URL.
+CAPTCHA/blocked responses and ASIN mismatches carry no preview. Text excludes
+scripts, hidden content and markup. Price is read from primary product current-price
+regions (including `#desktop_buybox #corePrice_feature_div .a-offscreen`) without
+requiring selected-offer, seller, stock, quantity or accordion verification.
+Conflicting/malformed/hidden prices, reference/list prices and recommendation prices
+are omitted. The main image uses validated `data-old-hires` or `src` from
+`#landingImage`; other images are confined to `#altImages`. The preview may
+also carry product facts, features/specifications and Amazon aggregate rating/count.
+No image or review is synthesized from the ASIN or Mita catalog.
 
 This is product information for display only, not a verified quote or checkout
-capability. It establishes no quantity, stock, shipping cost, eligibility or ETA;
-conditional shipping remains unverified and must never be shown as free. The
-strict quote rejection and existing source/cooldown behavior remain unchanged.
-Extraction makes no additional requests and returns no HTML, cookies or image
-URLs. This backend contract does not itself add storefront rendering.
+capability. If the main product delivery block contains `無料配送`, `通常配送無料`
+or `FREE delivery`, the UI labels that **observed source statement** as free
+delivery, including the original source wording. It does not establish standard
+service, a specific recipient/address, quantity, eligibility or checkout authority.
+It never sets verified quote `freeJapanShipping`. The strict quote rejection and
+source/cooldown guards remain unchanged; no new Amazon fetch is made.
+The local preview may include source image URLs; it does not return HTML or cookies.
+The live publishing rights of image/description content remain a separate issue to
+review before any production deployment. No permission-reference is fabricated.
 
 ## Optional product display metadata (plan 18)
 

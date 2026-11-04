@@ -14,6 +14,10 @@ export type AmazonQuoteDisplay = {
   reviews?: { title?: string; body: string; rating?: number }[];
 };
 
+/** Facts observed on the requested product page for local source browsing only.
+ * No checkout authority or claim of Amazon republication licensing. */
+export type AmazonObservedDetails = Omit<AmazonQuoteDisplay, 'provenance'>;
+
 /** Source-backed identity for a product that did not qualify for a purchase quote. */
 export type AmazonSourcePreview = {
   asin: string;
@@ -21,6 +25,9 @@ export type AmazonSourcePreview = {
   sourceUrl: string;
   observedAt: string;
   priceJpy?: number;
+  observedDetails?: AmazonObservedDetails;
+  deliveryText?: string;
+  freeDelivery?: true;
   /** Only fields specifically permitted by the trusted Amazon source display gate. */
   display?: AmazonQuoteDisplay;
 };

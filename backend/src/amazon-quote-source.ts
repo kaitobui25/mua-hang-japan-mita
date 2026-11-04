@@ -19,6 +19,8 @@ export type DateRange = { start: string; end: string };
 // Display only: never a quote, shipping promise or checkout capability.
 export type AmazonProductPreview = {
   asin: string; sourceUrl: string; title: string; observedAt: string; priceJpy?: number;
+  observedDetails?: Omit<AmazonDisplay, 'provenance'>;
+  deliveryText?: string; freeDelivery?: true;
   display?: AmazonDisplay;
 };
 
@@ -42,34 +44,61 @@ function parseProductPreview($: CheerioAPI, asin: string, observedAt: Date, perm
   if (titleElement.length !== 1) return;
   const title = text(titleElement);
   if (!title || title.length > 1000) return;
+  // Display evidence must belong to the requested product, not another ASIN in
+  // a recommendation or a conflicting canonical page.
+  const canonical = $('link[rel="canonical"]');
+  if (canonical.length > 1) return;
+  if (canonical.length === 1) {
+    const href = canonical.attr('href');
+    if (href) {
+      try {
+        const url = new URL(href);
+        if (!['www.amazon.co.jp', 'amazon.co.jp'].includes(url.hostname) ||
+            url.protocol !== 'https:' || !url.pathname.includes(`/dp/${asin}`)) return;
+      } catch { return; }
+    }
+  }
   const preview: AmazonProductPreview = { asin, sourceUrl: `https://www.amazon.co.jp/dp/${asin}`,
     title, observedAt: observedAt.toISOString() };
   const box = $('[id="desktop_buybox"]');
-  const selected = box.find('input[type="radio"]:checked');
-  // Check *all* active rows: a subscription row active alongside a checked
-  // one-time radio makes the selected price ambiguous.
-  const active = box.find('.a-accordion-active');
-  const row = selected.length === 1 ? selected.closest('[id="newAccordionRow"], [id^="newAccordionRow_"]') :
-    selected.length === 0 && active.length === 1 ? active : $();
-  const selectedOffer = selected.length === 1
-    ? !hidden(selected) && !selected.is('[disabled], [aria-disabled="true"]')
-    : selected.length === 0 && active.length === 1;
-  // No generic page price, hidden offer, subscription or alternate row fallback.
-  if (box.length === 1 && selectedOffer && row.length === 1 &&
-      row.parents('[id="desktop_buybox"]').length === 1 &&
-      /^newAccordionRow(?:_\d+)?$/.test(row.attr('id') ?? '') && !hidden(row) &&
-      !row.is('[disabled], [aria-disabled="true"]') &&
-      (active.length === 0 || active.length === 1 && active.is(row)) &&
-      row.find('[id="newAccordionRow"], [id^="newAccordionRow_"], [id="subscribeAccordionRow"]').length === 0 &&
-      !/subscribe|定期|Prime exclusive|プライム会員限定/i.test(text(row))) {
-    const prices = row.find('#price_inside_buybox, #newBuyBoxPrice, .priceToPay .a-offscreen, #corePrice_feature_div .a-offscreen')
-      .filter((_, el) => !hidden($(el)));
-    const values = prices.toArray().map(el => text($(el)));
-    const price = values.length > 0 && new Set(values).size === 1 &&
-      values[0].match(/^[￥¥]\s*(\d{1,3}(?:,\d{3})*|\d+)(?:\.00)?$/);
-    const priceJpy = price ? Number(price[1].replaceAll(',', '')) : 0;
-    if (Number.isSafeInteger(priceJpy) && priceJpy > 0 && priceJpy <= 100000000) preview.priceJpy = priceJpy;
+  // Only the primary product price. Never use list/strike prices, comparison
+  // tables, sponsored products or another selected variant as a fallback.
+  const currentPriceSelectors = [
+    '#desktop_buybox #corePrice_feature_div .a-price .a-offscreen',
+    '#desktop_buybox #corePrice_feature_div .a-offscreen',
+    '#desktop_buybox #price_inside_buybox',
+    '#desktop_buybox #newBuyBoxPrice',
+    '#desktop_buybox .priceToPay .a-offscreen',
+    '#corePriceDisplay_desktop_feature_div .priceToPay .a-offscreen',
+    '#corePrice_feature_div .priceToPay .a-offscreen',
+  ];
+  const currentPrices = currentPriceSelectors.flatMap(selector => $(selector)
+    .filter((_, el) => !hidden($(el))).toArray().map(el => text($(el))).filter(Boolean));
+  const uniquePrices = [...new Set(currentPrices)];
+  const currentPrice = uniquePrices.length === 1 &&
+    uniquePrices[0].match(/^[￥¥]\s*(\d{1,3}(?:,\d{3})*|\d+)(?:\.00)?$/);
+  const observedAmount = currentPrice ? Number(currentPrice[1].replaceAll(',', '')) : 0;
+  if (Number.isSafeInteger(observedAmount) && observedAmount > 0 && observedAmount <= 100000000) {
+    preview.priceJpy = observedAmount;
   }
+  // A source-page "free delivery" label is shown as observed. It is *not*
+  // evidence of a standard, unconditional, checkout-eligible delivery offer.
+  if (box.length === 1) {
+    const blocks = box.find('[id="mir-layout-DELIVERY_BLOCK"]');
+    const delivery = blocks.length === 1 ? blocks : box.find('[id="mir-layout-DELIVERY_BLOCK-slot"]');
+    if (delivery.length === 1 && !hidden(delivery)) {
+      const deliveryText = text(delivery).slice(0, 400);
+      if (deliveryText) {
+        preview.deliveryText = deliveryText;
+        if (/無料配送|通常配送\s*無料|\bFREE\s+DELIVERY\b/i.test(deliveryText)) preview.freeDelivery = true;
+      }
+    }
+  }
+  const observed = extractDisplayFields($, new Set<keyof Omit<AmazonDisplay, 'provenance'>>([
+    'images', 'brand', 'description', 'features', 'ingredients', 'usage', 'warnings',
+    'specifications', 'rating', 'reviewCount',
+  ]));
+  if (observed) preview.observedDetails = observed;
   const display = parsePublicDisplay($, asin, observedAt, permission);
   if (display) preview.display = display;
   return preview;
@@ -109,10 +138,7 @@ function sourceRating(value: string): number | undefined {
   const rating = match ? Number(match[1] ?? match[2]) : NaN;
   return rating > 0 && rating <= 5 ? rating : undefined;
 }
-function parsePublicDisplay($: CheerioAPI, asin: string, observedAt: Date, permission?: AmazonDisplayPermission): AmazonDisplay | undefined {
-  if (!permission || !permission.reference.trim() || permission.reference.length > 500 ||
-      /[\u0000-\u001f\u007f]/.test(permission.reference) || !Number.isFinite(observedAt.getTime())) return;
-  const allowed = new Set(permission.fields);
+function extractDisplayFields($: CheerioAPI, allowed: ReadonlySet<keyof Omit<AmazonDisplay, 'provenance'>>): Omit<AmazonDisplay, 'provenance'> | undefined {
   const data: Omit<AmazonDisplay, 'provenance'> = {};
   const hidden = (element: ReturnType<CheerioAPI>) => element.add(element.parents()).toArray().some(el =>
     $(el).is('script, style, noscript, template, [hidden], [aria-hidden="true"], .aok-hidden, .a-hidden') ||
@@ -133,7 +159,8 @@ function parsePublicDisplay($: CheerioAPI, asin: string, observedAt: Date, permi
     // Only rendered selected-product images; never parse alternate ASIN script
     // payloads, recommendations or derive catalog/image URLs from an ASIN.
     const images = unique(visible($('#landingImage, #altImages img')).slice(0, 80).toArray()
-      .map(el => displayImage($(el).attr('src'))).filter((v): v is string => !!v), 10);
+      .map(el => displayImage($(el).attr('data-old-hires')) ?? displayImage($(el).attr('src')))
+      .filter((v): v is string => !!v), 10);
     if (images.length) data.images = images;
   }
   if (allowed.has('brand')) data.brand = text($('#po-brand .po-break-word').first(), 500);
@@ -165,13 +192,17 @@ function parsePublicDisplay($: CheerioAPI, asin: string, observedAt: Date, permi
     });
     if (specifications.length) data.specifications = unique(specifications, 40);
   }
-  if (allowed.has('rating') && $('#acrPopover').length === 1) {
-    data.rating = sourceRating(visible($('#acrPopover')).attr('title')?.trim() ?? '');
+  if (allowed.has('rating')) {
+    const ratings = visible($('[id="acrPopover"]')).toArray()
+      .map(el => sourceRating($(el).attr('title')?.trim() ?? '')).filter((value): value is number => value !== undefined);
+    if (ratings.length && new Set(ratings).size === 1) data.rating = ratings[0];
   }
-  if (allowed.has('reviewCount') && $('#acrCustomerReviewText').length === 1) {
-    const count = text($('#acrCustomerReviewText'), 100)?.match(/^(\d{1,3}(?:,\d{3})*|\d+)(?:個の評価|\s+(?:global\s+)?ratings?)$/i);
-    const value = count ? Number(count[1].replaceAll(',', '')) : NaN;
-    if (Number.isSafeInteger(value) && value >= 0 && value <= 1000000000) data.reviewCount = value;
+  if (allowed.has('reviewCount')) {
+    const counts = visible($('[id="acrCustomerReviewText"]')).toArray().map(el =>
+      text($(el), 100)?.match(/^\(?(\d{1,3}(?:,\d{3})*|\d+)\)?(?:個の評価|\s+(?:global\s+)?ratings?)?$/i))
+      .filter((match): match is RegExpMatchArray => !!match).map(match => Number(match[1].replaceAll(',', '')));
+    if (counts.length && new Set(counts).size === 1 && Number.isSafeInteger(counts[0]) &&
+        counts[0] >= 0 && counts[0] <= 1000000000) data.reviewCount = counts[0];
   }
   if (allowed.has('reviews')) {
     const reviews: NonNullable<AmazonDisplay['reviews']> = [];
@@ -187,8 +218,15 @@ function parsePublicDisplay($: CheerioAPI, asin: string, observedAt: Date, permi
   // Omit absent keys even before JSON serialization and avoid empty UI cards.
   for (const key of Object.keys(data) as (keyof typeof data)[]) if (data[key] === undefined) delete data[key];
   if (!Object.keys(data).length) return;
+  return data;
+}
+function parsePublicDisplay($: CheerioAPI, asin: string, observedAt: Date, permission?: AmazonDisplayPermission): AmazonDisplay | undefined {
+  if (!permission || !permission.reference.trim() || permission.reference.length > 500 ||
+      /[\u0000-\u001f\u007f]/.test(permission.reference) || !Number.isFinite(observedAt.getTime())) return;
+  const fields = extractDisplayFields($, new Set(permission.fields));
+  if (!fields) return;
   return { provenance: { asin, sourceUrl: `https://www.amazon.co.jp/dp/${asin}`,
-    observedAt: observedAt.toISOString(), permissionReference: permission.reference }, ...data };
+    observedAt: observedAt.toISOString(), permissionReference: permission.reference }, ...fields };
 }
 // Only the selected offer's explicit *standard, unconditional and free* evidence qualifies.
 // Do not infer free standard shipping from generic free-delivery marketing or thresholds.

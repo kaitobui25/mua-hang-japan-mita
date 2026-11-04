@@ -75,13 +75,50 @@ test('source identity and non-selected price remain excluded on malformed previe
   assert.equal(result?.display, undefined);
 });
 
+test('direct source preview accepts observed price, primary image, product facts and free delivery label', async t => {
+  const result = await rejectedPreview(t, {
+    asin, sourceUrl, observedAt, title: 'Solix C2000 Gen 2',
+    priceJpy: 167990, deliveryText: '無料配送 11月12日 - 13日', freeDelivery: true,
+    observedDetails: {
+      images: ['https://m.media-amazon.com/images/I/primary._AC_SL1500_.jpg'],
+      brand: 'Anker', features: ['2048Wh portable power station'],
+      rating: 4.3, reviewCount: 232,
+    },
+  });
+  assert.equal(result?.priceJpy, 167990);
+  assert.equal(result?.freeDelivery, true);
+  assert.equal(result?.observedDetails?.rating, 4.3);
+  assert.equal(result?.observedDetails?.images?.length, 1);
+  const html = renderToStaticMarkup(createElement(AmazonSourceProductDetail, {
+    preview: result!, error: 'Chưa có báo giá Mita.',
+  }));
+  assert.match(html, /primary\._AC_SL1500_/);
+  assert.match(html, /167.990/);
+  assert.match(html, /Miễn phí vận chuyển/);
+  assert.match(html, /2048Wh portable power station/);
+  assert.match(html, /232 lượt đánh giá/);
+  assert.doesNotMatch(html, /detail-cta|amazon-consent|Thêm vào giỏ hàng/);
+});
+
+test('observed product details never accept untrusted image domains, script URLs or fake free flags', async t => {
+  const result = await rejectedPreview(t, {
+    asin, sourceUrl, observedAt, title: 'Source title',
+    observedDetails: { images: ['javascript:alert(1)', 'https://m.media-amazon.com.evil.test/images/I/a.jpg',
+      'https://m.media-amazon.com/images/I/valid.jpg'], rating: 999 },
+    freeDelivery: true,
+  });
+  assert.deepEqual(result?.observedDetails?.images, ['https://m.media-amazon.com/images/I/valid.jpg']);
+  assert.equal(result?.observedDetails?.rating, undefined);
+  assert.equal(result?.freeDelivery, undefined);
+});
+
 test('display-only product page stays without cart controls and handles Unicode truncation', () => {
   const title = 'A'.repeat(1199) + '😊' + '終';
   const html = renderToStaticMarkup(createElement(AmazonSourceProductDetail, {
     preview: { asin, sourceUrl, observedAt, title },
     error: 'Không xác minh được điều kiện mua.',
   }));
-  assert.match(html, /Chưa có báo giá mua hộ hợp lệ/);
+  assert.match(html, /Đã đọc thông tin sản phẩm từ Amazon/);
   assert.match(html, /Xem sản phẩm gốc trên Amazon/);
   assert.match(html, /Dịch bằng Google/);
   assert.doesNotMatch(html, /detail-cta|amazon-consent|Thêm vào giỏ hàng/);

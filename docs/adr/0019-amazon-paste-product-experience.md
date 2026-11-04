@@ -51,6 +51,18 @@ https://www.amazon.co.jp/Double-Sided-Generator-Phosphate-Disaster-Prevention/dp
 
 ## 4. Điều kiện hiển thị và đặt mua không thay đổi
 
+**Cập nhật yêu cầu 04/11/2026 (sau ADR):** Người dùng ưu tiên **xem đúng
+trang sản phẩm của link đã dán**: tên, giá hiện trên Amazon, ảnh, đặc điểm và
+điểm đánh giá có thể đọc được. Đối với **giao diện thông tin nguồn**, không
+cần xác nhận người bán, selected offer, tồn kho hay phiên bản để hiện các
+trường này. Nếu vùng vận chuyển sản phẩm hiển thị `無料配送` (hoặc `FREE delivery`),
+giao diện ghi **miễn phí vận chuyển theo thông tin Amazon**, kèm nguyên văn.
+Điều này thay thế điều kiện xác minh giao thường áp dụng cho *source preview*
+ở phiên bản trước, không tự tạo báo giá VND/giỏ hàng. Dữ liệu nguồn chỉ là
+quan sát tại thời điểm tra; không tự công bố rằng đã có quyền tái sử dụng nội
+dung Amazon cho môi trường public. Trước triển khai công khai cần xem xét
+quyền hiển thị; checkout vẫn giữ điều kiện riêng đến khi có quyết định mới.
+
 1. **ASIN hợp lệ theo cú pháp ≠ sản phẩm xác minh từ Amazon ≠ quote hợp lệ.** Khi nguồn bị block/cooldown hoặc ASIN không có nguồn, chỉ hiện ASIN, URL chuẩn và trạng thái lỗi, **không hiện tên đã lưu trong catalog Mita**. Không lấy ảnh, giá, seller hay review catalog để bù thiếu; thay đổi Q6 chỉ áp dụng luồng mua hộ Amazon, không xóa catalog Mita.
 2. Nội dung Amazon (ảnh, mô tả, rating/review) cần đúng ASIN, provenance và **quyền công bố cụ thể**. `displayPermission` backend vẫn phải có tài liệu/quyết định xác minh quyền; chỉ đọc được HTML không đồng nghĩa được hiển thị lại thương mại. Không có quyền thì bỏ field hoặc dùng placeholder; không trộn review Amazon với review Mita.
 3. Chỉ phát hành quote/cho thêm giỏ sau khi xác minh **cùng một offer**: ASIN, phiên bản, người bán, số lượng, mua một lần, giá, còn hàng, **miễn phí giao thường nội địa Nhật không cần Prime**. Không dùng Prime, Subscribe & Save, coupon có điều kiện hay offer khác. Thay số lượng phải báo giá lại; không suy ra giá số lượng mới.

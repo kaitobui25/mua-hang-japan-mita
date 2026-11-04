@@ -684,6 +684,8 @@ main { min-height: 65vh; }
 }
 
 /* Hallmark · Garden · floating two-channel contact, using Mita's existing tokens */
+.amazon-source-delivery-text { display: block; margin-top: 6px; font-size: 12px; font-weight: 400; line-height: 1.5; color: var(--color-muted); overflow-wrap: anywhere; }
+.amazon-preview-result-status { line-height: 1.6; }
 .social-launcher { position: fixed; z-index: var(--z-sticky-nav); left: max(var(--space-md), env(safe-area-inset-left)); bottom: calc(var(--space-lg) + env(safe-area-inset-bottom)); display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-sm); }
 .social-launcher-toggle { width: 56px; height: 56px; display: grid; place-items: center; border-radius: var(--radius-pill); border: 1px solid var(--color-accent); background: var(--color-accent); color: var(--color-accent-ink); box-shadow: 0 4px 18px var(--tint-moss); transition: transform var(--dur-short), background-color var(--dur-short); }
 .social-launcher-toggle:hover { background: var(--color-ink); transform: translateY(-2px); }

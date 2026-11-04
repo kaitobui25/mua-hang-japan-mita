@@ -181,16 +181,21 @@ function preview(html: string, allow?: AmazonDisplayPermission, inputAsin = asin
   return (error.details as { preview?: AmazonProductPreview } | undefined)?.preview;
 }
 
-test('product metadata survives missing offer facts only with explicit field permission', () => {
+test('source browsing shows product information while licensed quote metadata still requires permission', () => {
   // Synthetic page for the pasted identity; no assertion about the live product.
   const inputAsin = amazonAsin('https://www.amazon.co.jp/Double-Sided-Generator-Phosphate-Disaster-Prevention/dp/B0FR4GT3R7?ref=tracking');
   const html = `<input id="ASIN" value="${inputAsin}"><span id="productTitle">Synthetic source item</span>${metadata}`;
   const result = preview(html, permission, inputAsin)!;
-  assert.deepEqual(result, { asin: inputAsin, sourceUrl: `https://www.amazon.co.jp/dp/${inputAsin}`,
-    title: 'Synthetic source item', observedAt: observedAt.toISOString(),
-    display: { ...parse().display!, provenance: { asin: inputAsin, sourceUrl: `https://www.amazon.co.jp/dp/${inputAsin}`,
-      observedAt: observedAt.toISOString(), permissionReference: permission.reference } } });
+  assert.equal(result.asin, inputAsin);
+  assert.equal(result.title, 'Synthetic source item');
+  assert.equal(result.sourceUrl, `https://www.amazon.co.jp/dp/${inputAsin}`);
+  assert.equal(result.observedAt, observedAt.toISOString());
+  assert.equal(result.observedDetails?.description, 'Source description & units 200g.');
+  assert.equal(result.observedDetails?.reviews, undefined);
+  assert.deepEqual(result.display?.provenance, { asin: inputAsin, sourceUrl: `https://www.amazon.co.jp/dp/${inputAsin}`,
+    observedAt: observedAt.toISOString(), permissionReference: permission.reference });
   assert.equal(preview(html, undefined, inputAsin)?.display, undefined);
+  assert.equal(preview(html, undefined, inputAsin)?.observedDetails?.images?.[0], 'https://m.media-amazon.com/images/I/main.jpg');
   assert.equal(preview(html, { reference: '', fields: permission.fields }, inputAsin)?.display, undefined);
   assert.deepEqual(Object.keys(preview(html, { reference: permission.reference, fields: ['brand'] }, inputAsin)!.display!).sort(),
     ['brand', 'provenance']);
@@ -216,7 +221,7 @@ test('missing seller, stock or eligible shipping retains metadata without produc
   }
 });
 
-test('legacy preview price remains confined to an unambiguous selected one-time row', () => {
+test('source preview reads visible primary product price without purchase eligibility', () => {
   const html = page().replace('FREE Standard Delivery', 'FREE delivery');
   assert.equal(preview(html)?.priceJpy, 1000);
   assert.equal(preview(html.replace('price_inside_buybox', 'newBuyBoxPrice'))?.priceJpy, 1000);
@@ -225,15 +230,53 @@ test('legacy preview price remains confined to an unambiguous selected one-time 
     html.replace('id="newAccordionRow"', 'id="newAccordionRow" aria-disabled="true"'),
     html.replace('Source seller', 'Subscribe &amp; Save'),
     html.replace('Source seller', 'Prime exclusive'),
-    html.replace('id="price_inside_buybox"', 'id="price_inside_buybox" hidden'),
-    html.replace('</div><span id="availability">', '<span id="newBuyBoxPrice">&#165;900</span></div><span id="availability">'),
     html.replace('</div><span id="availability">', '<div id="newAccordionRow_1" class="a-accordion-active"></div></div><span id="availability">'),
     html.replace('</div><span id="availability">', '</div><div id="subscribeAccordionRow" class="a-accordion-active">Subscribe &amp; Save</div><span id="availability">'),
+  ]) assert.equal(preview(candidate)?.priceJpy, 1000);
+  for (const candidate of [
+    html.replace('id="price_inside_buybox"', 'id="price_inside_buybox" hidden'),
+    html.replace('</div><span id="availability">', '<span id="newBuyBoxPrice">&#165;900</span></div><span id="availability">'),
     html.replace('id="price_inside_buybox"', 'id="unrelated-price"') + '<span id="price_inside_buybox">&#165;900</span>'
   ]) {
     assert.equal(preview(candidate)?.title, 'Source item');
     assert.equal(preview(candidate)?.priceJpy, undefined);
   }
+});
+
+test('live DOM shape: main price, primary image, rating and free delivery label survive quote rejection', () => {
+  const html = `<input id="ASIN" value="${asin}"><span id="productTitle">Power bank + solar panel</span>
+    <link rel="canonical" href="https://www.amazon.co.jp/-/en/a/dp/${asin}">
+    <div id="desktop_buybox"><div id="corePrice_feature_div"><span class="a-price"><span class="a-offscreen">¥167,990</span></span></div>
+      <div id="mir-layout-DELIVERY_BLOCK">FREE delivery November 12 - 13. Details</div></div>
+    <img id="landingImage" data-old-hires="https://m.media-amazon.com/images/I/primary._AC_SL1500_.jpg"
+      src="https://m.media-amazon.com/images/I/thumb.jpg">
+    <div id="feature-bullets"><li><span class="a-list-item">Power capacity 2048Wh</span></li></div>
+    <span id="acrPopover" title="4.3 out of 5 stars"></span>
+    <span id="acrPopover" title="4.3 out of 5 stars"></span>
+    <span id="acrCustomerReviewText">(232)</span><span id="acrCustomerReviewText">(232)</span>`;
+  const observed = preview(html)!;
+  assert.equal(observed.priceJpy, 167990);
+  assert.equal(observed.freeDelivery, true);
+  assert.match(observed.deliveryText ?? '', /FREE delivery/);
+  assert.equal(observed.observedDetails?.images?.[0], 'https://m.media-amazon.com/images/I/primary._AC_SL1500_.jpg');
+  assert.equal(observed.observedDetails?.rating, 4.3);
+  assert.equal(observed.observedDetails?.reviewCount, 232);
+  assert.deepEqual(observed.observedDetails?.features, ['Power capacity 2048Wh']);
+  assert.equal(observed.display, undefined);
+  assert.equal(preview(html.replace('FREE delivery', '無料配送'))?.freeDelivery, true);
+  assert.equal(preview(html.replace(`/dp/${asin}`, '/dp/B000000001')), undefined);
+});
+
+test('source preview excludes reference prices, other products, ambiguous prices and unsafe gallery assets', () => {
+  const main = `<input id="ASIN" value="${asin}"><span id="productTitle">Source item</span>`;
+  const details = `<div id="desktop_buybox"><div id="corePrice_feature_div"><span class="a-offscreen">¥2,000</span></div></div>`;
+  const listPrice = `<div id="corePriceDisplay_desktop_feature_div"><span class="a-price"><span class="a-offscreen">¥9,000</span></span></div>`;
+  assert.equal(preview(main + listPrice)?.priceJpy, undefined);
+  assert.equal(preview(main + details + listPrice)?.priceJpy, 2000);
+  assert.equal(preview(main + details.replace('</div></div>', '<span class="a-offscreen">¥3,000</span></div></div>'))?.priceJpy, undefined);
+  const gallery = `<img id="landingImage" src="https://evil.test/images/I/x.jpg">
+    <div id="altImages"><img src="https://m.media-amazon.com/images/I/valid.jpg"></div>`;
+  assert.deepEqual(preview(main + gallery)?.observedDetails?.images, ['https://m.media-amazon.com/images/I/valid.jpg']);
 });
 
 test('preview omits hidden permissioned content and preserves visible text boundaries', () => {

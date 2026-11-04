@@ -144,44 +144,55 @@ function rejectedPreview(html: string): AmazonProductPreview | undefined {
   return (error.details as { preview: AmazonProductPreview } | undefined)?.preview;
 }
 
-test('modern public product preview survives strict quote rejection without shipping or image claims', () => {
+test('modern source preview shows observed price, image and delivery while rejecting quote issuance', () => {
   const html = modernHtml().replace('Fixture item', 'Source &amp; model 200g <script>secret()</script><span hidden>Other variant</span>') +
     '<img id="landingImage" src="https://m.media-amazon.com/images/I/fixture.jpg">';
-  assert.deepEqual(rejectedPreview(html), { asin, sourceUrl: `https://www.amazon.co.jp/dp/${asin}`,
-    title: 'Source & model 200g', observedAt: now.toISOString(), priceJpy: 1000 });
+  const result = rejectedPreview(html)!;
+  assert.equal(result.asin, asin);
+  assert.equal(result.sourceUrl, `https://www.amazon.co.jp/dp/${asin}`);
+  assert.equal(result.title, 'Source & model 200g');
+  assert.equal(result.observedAt, now.toISOString());
+  assert.equal(result.priceJpy, 1000);
+  assert.deepEqual(result.observedDetails?.images, ['https://m.media-amazon.com/images/I/fixture.jpg']);
+  assert.match(result.deliveryText ?? '', /FREE delivery/);
+  assert.equal(result.freeDelivery, true);
+  assert.equal(Object.hasOwn(result, 'freeJapanShipping'), false);
   // Even a legacy offer rejected only for conditional shipping remains rejected.
   assert.equal(rejectedPreview(offerHtml('FREE Standard Delivery on orders over JPY 3,500'))?.title, 'Fixture item');
 });
-test('active modern one-time accordion without radio exposes only its own displayed JPY price', () => {
+test('modern main price is displayed regardless of selected checkout accordion', () => {
   const active = modernHtml()
     .replace('id="newAccordionRow_0"', 'id="newAccordionRow_0" class="a-accordion-active"')
     .replace('<input type="radio" checked>', '')
     .replace('class="priceToPay"', 'id="corePrice_feature_div"');
   assert.equal(rejectedPreview(active)?.priceJpy, 1000);
-  assert.equal(rejectedPreview(active.replace('class="a-accordion-active"', 'class="a-accordion"'))?.priceJpy, undefined);
+  assert.equal(rejectedPreview(active.replace('class="a-accordion-active"', 'class="a-accordion"'))?.priceJpy, 1000);
   assert.equal(rejectedPreview(active.replace('￥1,000', '￥1,000 or ￥900'))?.priceJpy, undefined);
-  assert.equal(rejectedPreview(active.replace('</div><span id="availability">', '<div id="newAccordionRow_1" class="a-accordion-active">￥900</div></div><span id="availability">'))?.priceJpy, undefined);
+  assert.equal(rejectedPreview(active.replace('</div><span id="availability">', '<div id="newAccordionRow_1" class="a-accordion-active">￥900</div></div><span id="availability">'))?.priceJpy, 1000);
 });
 
-test('preview never invents a price from ambiguous, hidden, subscription or unselected offers', () => {
+test('preview never invents price from invalid, hidden, conflicting or unrelated price elements', () => {
   const html = modernHtml();
   const extraPrice = '<span class="priceToPay"><span class="a-offscreen">￥900</span></span>';
   const withoutPrice = html.replace(/<span class="priceToPay">.*?<\/span><\/span>/, '');
   for (const candidate of [
     html.replace('￥1,000', '￥1,000 or ￥900'), html.replace('￥1,000', '￥0'),
     html.replace('</div><span id="availability">', `${extraPrice}</div><span id="availability">`),
-    html.replace('type="radio" checked', 'type="radio"'),
-    html.replace('type="radio" checked', 'type="radio" checked disabled'),
-    html.replace('Fixture seller', 'Subscribe &amp; Save'), html.replace('Fixture seller', '定期おトク便'),
-    html.replace('type="radio" checked', 'type="radio" checked><input type="radio" checked'),
     withoutPrice + extraPrice,
     withoutPrice + '<script>{"priceJpy":900,"asin":"B000000001"}</script>',
-    html.replace('id="newAccordionRow_0"', 'id="subscribeAccordionRow"')
   ]) {
     const preview = rejectedPreview(candidate);
     assert.equal(preview?.title, 'Fixture item');
     assert.equal(Object.hasOwn(preview!, 'priceJpy'), false);
   }
+  for (const candidate of [
+    html.replace('type="radio" checked', 'type="radio"'),
+    html.replace('type="radio" checked', 'type="radio" checked disabled'),
+    html.replace('Fixture seller', 'Subscribe &amp; Save'),
+    html.replace('Fixture seller', '定期おトク便'),
+    html.replace('type="radio" checked', 'type="radio" checked><input type="radio" checked'),
+    html.replace('id="newAccordionRow_0"', 'id="subscribeAccordionRow"')
+  ]) assert.equal(rejectedPreview(candidate)?.priceJpy, 1000);
   for (const attribute of ['hidden', 'aria-hidden="true"', 'class="aok-hidden"', 'class="a-hidden"',
     'style="display:none !important"', 'style="visibility:collapse"']) {
     for (const target of ['id="newAccordionRow_0"', 'id="desktop_buybox"', 'class="priceToPay"']) {
