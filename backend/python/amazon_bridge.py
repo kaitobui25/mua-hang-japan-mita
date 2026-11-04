@@ -11,7 +11,9 @@ from amazon_parser import canonical, identity, listing, detail, ASIN
 
 MAX_LINE = 2 * 1024 * 1024
 MAX_BODY = 8 * 1024 * 1024
-MAX_QUOTE_BODY = 3_000_000
+# Amazon detail pages may exceed 3 MB. Bound the *complete* HTML before
+# checking source identity/challenges; never parse an incomplete response.
+MAX_QUOTE_BODY = 8_000_000
 MAX_QUOTE_COMPRESSED = 1_500_000
 
 class SourceFailure(Exception):

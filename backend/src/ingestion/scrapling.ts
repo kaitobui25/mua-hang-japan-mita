@@ -8,7 +8,8 @@ export class QuoteTransportError extends Error {
   constructor(public code: 'amazon_unavailable' | 'amazon_blocked' | 'amazon_rate_limited' | 'amazon_response_too_large',
     public retryAfterAt?: string) { super(code); }
 }
-const maxQuoteBody = 3_000_000;
+// Match the Python bridge's complete-page cap; compressed IPC remains 1.5 MB.
+const maxQuoteBody = 8_000_000;
 const maxQuoteCompressed = 1_500_000;
 let stopping = false;
 export const isScraplingStopping = () => stopping;

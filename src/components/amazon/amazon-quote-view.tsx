@@ -123,6 +123,7 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
       <p className="amazon-source">SẢN PHẨM TỪ AMAZON.CO.JP</p>
       <h2>{preview.title}</h2>
       <p className="amazon-preview-asin">ASIN: {preview.asin}</p>
+      <p className="amazon-preview-asin">Thông tin nguồn quan sát lúc <time dateTime={preview.observedAt}>{new Intl.DateTimeFormat("vi-VN", { dateStyle: "short", timeStyle: "short", timeZone: "Asia/Tokyo" }).format(new Date(preview.observedAt))} JST</time>.</p>
       {preview.priceJpy !== undefined && <p className="amazon-preview-price">¥{preview.priceJpy.toLocaleString("ja-JP")} <span>Giá nguồn tham khảo, chưa phải báo giá Mita</span></p>}
       <p className="amazon-preview-warning">{error} Đây chỉ là thông tin sản phẩm từ nguồn, không phải báo giá. Chưa thể thêm vào giỏ hoặc đặt hàng.</p>
       <a href={preview.sourceUrl} target="_blank" rel="noopener noreferrer" className="button button-outline">Xem sản phẩm gốc trên Amazon</a>

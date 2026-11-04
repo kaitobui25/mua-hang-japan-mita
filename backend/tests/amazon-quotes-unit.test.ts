@@ -64,6 +64,7 @@ test('active modern one-time buybox verifies only its selected offer facts', () 
   const radio = html.replace('<span>One-time purchase</span>', '<input type="radio" name="purchaseOption" checked><span>One-time purchase</span>');
   assert.equal(parsePublicOffer(radio, asin, 1, now).offerId, 'selected-offer-token');
   assert.equal(parsePublicOffer(html.replace('name="offeringID.1" value="selected-offer-token"', 'value="selected-offer-token"'), asin, 1, now).offerId, 'selected-offer-token');
+  assert.equal(parsePublicOffer(html.replace('</body>', '<input id="productTitle" value="tracking"></body>'), asin, 1, now).title, 'Fixture item 200g');
   assert.equal(parsePublicOffer(html.replace('value="1" selected', 'value="1"').replace('value="2"', 'value="2" selected'), asin, 2, now).quantity, 2);
 });
 

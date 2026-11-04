@@ -2,7 +2,7 @@ import { ScraplingSession, QuoteTransportError } from '../src/ingestion/scraplin
 import { config } from '../src/config.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parsePublicOffer, readPublicOffer, QuoteError, type AmazonDisplayPermission } from '../src/amazon-quote-source.js';
+import { amazonAsin, parsePublicOffer, readPublicOffer, QuoteError, type AmazonDisplayPermission, type AmazonProductPreview } from '../src/amazon-quote-source.js';
 import { buildQuote } from '../src/amazon-quotes.js';
 
 const asin = 'B08FTSH6KP';
@@ -170,4 +170,101 @@ test('invalid quote inputs fail before opening transport', async t => {
     await assert.rejects(readPublicOffer(asin, quantity as number), (e: unknown) => e instanceof QuoteError && e.code === 'invalid_quantity');
   }
   assert.equal(transport.mock.callCount(), 0);
+});
+
+function preview(html: string, allow?: AmazonDisplayPermission, inputAsin = asin): AmazonProductPreview | undefined {
+  let error: unknown;
+  try { parsePublicOffer(html, inputAsin, 1, observedAt, allow); } catch (e) { error = e; }
+  assert.ok(error instanceof QuoteError);
+  assert.equal(error.code, 'offer_not_verified');
+  assert.equal(error.status, 422);
+  return (error.details as { preview?: AmazonProductPreview } | undefined)?.preview;
+}
+
+test('product metadata survives missing offer facts only with explicit field permission', () => {
+  // Synthetic page for the pasted identity; no assertion about the live product.
+  const inputAsin = amazonAsin('https://www.amazon.co.jp/Double-Sided-Generator-Phosphate-Disaster-Prevention/dp/B0FR4GT3R7?ref=tracking');
+  const html = `<input id="ASIN" value="${inputAsin}"><span id="productTitle">Synthetic source item</span>${metadata}`;
+  const result = preview(html, permission, inputAsin)!;
+  assert.deepEqual(result, { asin: inputAsin, sourceUrl: `https://www.amazon.co.jp/dp/${inputAsin}`,
+    title: 'Synthetic source item', observedAt: observedAt.toISOString(),
+    display: { ...parse().display!, provenance: { asin: inputAsin, sourceUrl: `https://www.amazon.co.jp/dp/${inputAsin}`,
+      observedAt: observedAt.toISOString(), permissionReference: permission.reference } } });
+  assert.equal(preview(html, undefined, inputAsin)?.display, undefined);
+  assert.equal(preview(html, { reference: '', fields: permission.fields }, inputAsin)?.display, undefined);
+  assert.deepEqual(Object.keys(preview(html, { reference: permission.reference, fields: ['brand'] }, inputAsin)!.display!).sort(),
+    ['brand', 'provenance']);
+  assert.equal(preview(html.replace(inputAsin, 'B000000001'), permission, inputAsin), undefined);
+});
+
+test('source title preview ignores a duplicate empty productTitle input, but not a second visible title', () => {
+  const html = `<input id="ASIN" value="${asin}"><span id="productTitle">Verified source title</span>
+    <input id="productTitle" type="text" value="tracking">`;
+  assert.equal(preview(html)?.title, 'Verified source title');
+  assert.equal(preview(html + '<span id="productTitle">Another visible title</span>'), undefined);
+});
+
+test('missing seller, stock or eligible shipping retains metadata without producing a quote', () => {
+  for (const html of [page(metadata).replace('Source seller', ''), page(metadata).replace('In stock', 'Out of stock'),
+    page(metadata).replace('FREE Standard Delivery', 'FREE delivery on orders over JPY 3,500')]) {
+    const result = preview(html, permission)!;
+    assert.equal(result.display?.description, 'Source description & units 200g.');
+    assert.equal(result.priceJpy, 1000);
+    for (const key of ['offerId', 'seller', 'quantity', 'freeJapanShipping', 'amazonDelivery', 'expiresAt', 'unitPriceVnd']) {
+      assert.equal(Object.hasOwn(result, key), false, key);
+    }
+  }
+});
+
+test('legacy preview price remains confined to an unambiguous selected one-time row', () => {
+  const html = page().replace('FREE Standard Delivery', 'FREE delivery');
+  assert.equal(preview(html)?.priceJpy, 1000);
+  assert.equal(preview(html.replace('price_inside_buybox', 'newBuyBoxPrice'))?.priceJpy, 1000);
+  for (const candidate of [
+    html.replace('checked', ''), html.replace('checked', 'checked disabled'),
+    html.replace('id="newAccordionRow"', 'id="newAccordionRow" aria-disabled="true"'),
+    html.replace('Source seller', 'Subscribe &amp; Save'),
+    html.replace('Source seller', 'Prime exclusive'),
+    html.replace('id="price_inside_buybox"', 'id="price_inside_buybox" hidden'),
+    html.replace('</div><span id="availability">', '<span id="newBuyBoxPrice">&#165;900</span></div><span id="availability">'),
+    html.replace('</div><span id="availability">', '<div id="newAccordionRow_1" class="a-accordion-active"></div></div><span id="availability">'),
+    html.replace('id="price_inside_buybox"', 'id="unrelated-price"') + '<span id="price_inside_buybox">&#165;900</span>'
+  ]) {
+    assert.equal(preview(candidate)?.title, 'Source item');
+    assert.equal(preview(candidate)?.priceJpy, undefined);
+  }
+});
+
+test('preview omits hidden permissioned content and preserves visible text boundaries', () => {
+  for (const attribute of ['hidden', 'aria-hidden="true"', 'class="a-hidden"', 'class="aok-hidden"',
+    'style="display:none !important"', 'style="visibility:collapse"']) {
+    const html = page(`<div ${attribute}>${metadata}</div>`).replace('Source seller', '');
+    assert.equal(preview(html, permission)?.display, undefined, attribute);
+  }
+  const html = page(`<div id="productDescription">Water 20ml<span style="display:none">Other variant</span><br>Salt 2g</div>`)
+    .replace('Source seller', '').replace('Source item', '<div>Source</div><div>item</div>');
+  assert.equal(preview(html, permission)?.title, 'Source item');
+  assert.equal(preview(html, permission)?.display?.description, 'Water 20ml Salt 2g');
+});
+
+test('reader preserves permissioned preview from one response and never previews transport failures', async t => {
+  const html = page(metadata).replace('Source seller', '');
+  const transport = t.mock.method(ScraplingSession.prototype, 'quote', async () => ({ html, observedAt }));
+  const close = t.mock.method(ScraplingSession.prototype, 'close', () => {});
+  await assert.rejects(readPublicOffer(asin, 1, permission), (error: unknown) => {
+    assert.ok(error instanceof QuoteError);
+    assert.deepEqual(error.details, { preview: preview(html, permission) });
+    return true;
+  });
+  assert.equal(transport.mock.callCount(), 1);
+  transport.mock.mockImplementation(async () => ({ html: html + 'captcha', observedAt }));
+  await assert.rejects(readPublicOffer(asin, 1, permission), (error: unknown) =>
+    error instanceof QuoteError && error.code === 'amazon_blocked' && error.details === undefined);
+  for (const code of ['amazon_blocked', 'amazon_rate_limited', 'amazon_response_too_large', 'amazon_unavailable'] as const) {
+    transport.mock.mockImplementation(async () => { throw new QuoteTransportError(code); });
+    await assert.rejects(readPublicOffer(asin, 1, permission), (error: unknown) =>
+      error instanceof QuoteError && error.code === code && error.details === undefined);
+  }
+  assert.equal(transport.mock.callCount(), 6);
+  assert.equal(close.mock.callCount(), 6);
 });

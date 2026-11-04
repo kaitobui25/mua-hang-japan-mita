@@ -31,14 +31,14 @@ for line in sys.stdin:
         if asin == 'B000000011': result['htmlZlibBase64'] = 'abcd'
         if asin == 'B000000012': result['htmlBytes'] = 1
         if asin in ('B000000013', 'B000000017'):
-            body = b'x' * (3_000_001 if asin == 'B000000013' else 3_000_000)
-            result.update(htmlBytes=3_000_000, htmlZlibBase64=base64.b64encode(zlib.compress(body)).decode())
+            body = b'x' * (8_000_001 if asin == 'B000000013' else 8_000_000)
+            result.update(htmlBytes=8_000_000, htmlZlibBase64=base64.b64encode(zlib.compress(body)).decode())
         if asin == 'B000000014':
             result.update(htmlBytes=1, htmlZlibBase64=base64.b64encode(zlib.compress(b'\xff')).decode())
         if asin == 'B000000015':
             print(json.dumps(dict(id=request['id'], ok=False, state='rate_limited', message='fixture', retryAfterAt='2030-01-01T00:00:00.000Z')), flush=True)
             continue
-        if asin == 'B000000016': result['htmlBytes'] = 3_000_001
+        if asin == 'B000000016': result['htmlBytes'] = 8_000_001
         if asin == 'B000000018': result['htmlZlibBase64'] = 'a' * 2_000_004
         if asin == 'B000000019': result['url'] = request['url'].replace('quantity=1', 'quantity=2')
         print(json.dumps(dict(id=request['id'], ok=True, result=result)), flush=True)

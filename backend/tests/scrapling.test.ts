@@ -79,7 +79,7 @@ test('quote IPC returns validated Unicode and accepts the exact body size limit'
     const result = await session.quote('B000000001', 1, 5000);
     assert.equal(result.html, '\u65e5\u672c\u8a9e fixture');
     assert.ok(Number.isFinite(result.observedAt.getTime()));
-    assert.equal((await session.quote('B000000017', 1, 5000)).html.length, 3_000_000);
+    assert.equal((await session.quote('B000000017', 1, 5000)).html.length, 8_000_000);
   } finally { session.close(); }
 });
 
@@ -141,8 +141,8 @@ test('quote decoder validates bounded transport fixtures without a subprocess', 
   try {
     payload = encode(Buffer.from('\u65e5\u672c\u8a9e fixture'));
     assert.equal((await session.quote(asin, quantity, 5000)).html, '\u65e5\u672c\u8a9e fixture');
-    payload = encode(Buffer.alloc(3_000_000, 120));
-    assert.equal((await session.quote(asin, quantity, 5000)).html.length, 3_000_000);
+    payload = encode(Buffer.alloc(8_000_000, 120));
+    assert.equal((await session.quote(asin, quantity, 5000)).html.length, 8_000_000);
     for (const [override, code] of [
       [{ asin: 'B000000002' }, 'amazon_unavailable'],
       [{ quantity: 2 }, 'amazon_unavailable'],
@@ -150,13 +150,13 @@ test('quote decoder validates bounded transport fixtures without a subprocess', 
       [{ observedAt: 'invalid' }, 'amazon_unavailable'],
       [{ observedAt: '2020-01-01T00:00:00.000Z' }, 'amazon_unavailable'],
       [{ observedAt: '2099-01-01T00:00:00.000Z' }, 'amazon_unavailable'],
-      [{ htmlBytes: 3_000_001 }, 'amazon_response_too_large'],
+      [{ htmlBytes: 8_000_001 }, 'amazon_response_too_large'],
       [{ htmlZlibBase64: 'a'.repeat(2_000_004) }, 'amazon_response_too_large'],
       [{ htmlZlibBase64: '%%%%' }, 'amazon_unavailable'],
       [{ htmlZlibBase64: 'abcd' }, 'amazon_unavailable'],
       [{ htmlBytes: 2 }, 'amazon_unavailable'],
       [encode(Buffer.from([255])), 'amazon_unavailable'],
-      [{ ...encode(Buffer.alloc(3_000_001)), htmlBytes: 3_000_000 }, 'amazon_response_too_large'],
+      [{ ...encode(Buffer.alloc(8_000_001)), htmlBytes: 8_000_000 }, 'amazon_response_too_large'],
       [{ htmlZlibBase64: Buffer.concat([deflateSync(Buffer.from('fixture')), Buffer.from('trailing')]).toString('base64') }, 'amazon_unavailable']
     ] as const) {
       payload = { ...encode(Buffer.from('fixture')), ...override };
