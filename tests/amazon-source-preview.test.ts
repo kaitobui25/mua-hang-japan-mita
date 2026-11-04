@@ -90,13 +90,18 @@ test('direct source preview accepts observed price, primary image, product facts
   assert.equal(result?.observedDetails?.rating, 4.3);
   assert.equal(result?.observedDetails?.images?.length, 1);
   const html = renderToStaticMarkup(createElement(AmazonSourceProductDetail, {
-    preview: result!, error: 'Chưa có báo giá Mita.',
+    preview: result!,
   }));
   assert.match(html, /primary\._AC_SL1500_/);
   assert.match(html, /167.990/);
   assert.match(html, /Miễn phí vận chuyển/);
   assert.match(html, /2048Wh portable power station/);
   assert.match(html, /232 lượt đánh giá/);
+  assert.match(html, /Mã sản phẩm/);
+  assert.match(html, /Chi tiết thông tin Amazon/);
+  assert.match(html, /無料配送 11月12日 - 13日/);
+  assert.match(html, /Sản phẩm hiện chưa nhận đặt hàng trực tuyến qua Mita/);
+  assert.doesNotMatch(html, /amazon-preview-warning|inline-alert|Đã đọc thông tin sản phẩm từ Amazon/);
   assert.doesNotMatch(html, /detail-cta|amazon-consent|Thêm vào giỏ hàng/);
 });
 
@@ -112,14 +117,33 @@ test('observed product details never accept untrusted image domains, script URLs
   assert.equal(result?.freeDelivery, undefined);
 });
 
-test('display-only product page stays without cart controls and handles Unicode truncation', () => {
+test('display-only product page stays compact without cart controls and handles Unicode truncation', () => {
   const title = 'A'.repeat(1199) + '😊' + '終';
   const html = renderToStaticMarkup(createElement(AmazonSourceProductDetail, {
     preview: { asin, sourceUrl, observedAt, title },
-    error: 'Không xác minh được điều kiện mua.',
   }));
-  assert.match(html, /Đã đọc thông tin sản phẩm từ Amazon/);
+  assert.match(html, /<h1 class="amazon-preview-title amazon-preview-title-jp">/);
+  assert.equal((html.match(/<h1\b/g) ?? []).length, 1);
+  assert.match(html, /終/);
   assert.match(html, /Xem sản phẩm gốc trên Amazon/);
   assert.match(html, /Dịch bằng Google/);
+  assert.match(html, /Giá đang cập nhật/);
+  assert.match(html, /Chưa có thông tin miễn phí vận chuyển/);
+  assert.match(html, /<details class="amazon-preview-provenance">/);
+  assert.doesNotMatch(html, /<div class="amazon-detail-rating"/);
+  assert.doesNotMatch(html, /amazon-translation-bar|amazon-preview-result-status|Ảnh quan sát/);
   assert.doesNotMatch(html, /detail-cta|amazon-consent|Thêm vào giỏ hàng/);
+});
+
+test('source preview renders rating count without a fabricated score or delivery claim', () => {
+  const html = renderToStaticMarkup(createElement(AmazonSourceProductDetail, {
+    preview: {
+      asin, sourceUrl, observedAt, title: 'Synthetic source title',
+      observedDetails: { reviewCount: 9, images: ['https://bad.example/not-amazon.jpg'] },
+    },
+  }));
+  assert.match(html, /9 lượt đánh giá trên Amazon/);
+  assert.doesNotMatch(html, /amazon-rating-stars|Miễn phí vận chuyển nội địa Nhật/);
+  assert.match(html, /Chưa có thông tin miễn phí vận chuyển nội địa Nhật/);
+  assert.doesNotMatch(html, /bad\.example/);
 });

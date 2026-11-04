@@ -105,21 +105,21 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
   const expired = quote ? now >= Date.parse(quote.expiresAt) : false;
   return <section className="container amazon-quote-page">
     <nav className="breadcrumb detail-breadcrumb" aria-label="Đường dẫn"><Link href="/">Trang chủ</Link><span>/</span><span>Mua hộ Amazon</span>{sourceAsin && <><span>/</span><span>{sourceAsin}</span></>}</nav>
-    <div className="amazon-quote-intro">
-      {!quote && <h1>Mua hộ Amazon Nhật</h1>}
-      {quote && <p className="amazon-source">Mua hộ Amazon Nhật</p>}
-      <p>Dán link Amazon.co.jp hoặc nhập ASIN để xem thông tin, giá bán và ngày giao dự kiến.</p>
+    <div className={quote || preview ? "amazon-quote-intro amazon-quote-intro--result" : "amazon-quote-intro"}>
+      {!quote && !preview && <h1>Mua hộ Amazon Nhật</h1>}
+      {(quote || preview) && <p className="amazon-source">Mua hộ Amazon Nhật</p>}
+      {!quote && !preview && <p>Dán link Amazon.co.jp hoặc nhập ASIN để xem thông tin, giá bán và ngày giao dự kiến.</p>}
     </div>
-    <form className="amazon-quote-form" onSubmit={submit} role="search">
+    <form className={preview ? "amazon-quote-form amazon-quote-form--result" : "amazon-quote-form"} onSubmit={submit} role="search">
       <label htmlFor="amazon-link">Link sản phẩm Amazon.co.jp hoặc ASIN</label>
       <div className="amazon-quote-controls">
         <input id="amazon-link" type="search" autoComplete="off" value={input} onChange={event => updateInput(event.target.value)} maxLength={2048} placeholder="https://www.amazon.co.jp/dp/B0…" enterKeyHint="search" aria-invalid={Boolean(error && !recognizedAsin)} aria-describedby={error && !recognizedAsin ? "amazon-input-error" : undefined} required/>
         <button className="button button-primary" type="submit" disabled={loading}>{loading ? "Đang tra thông tin…" : "Xem thông tin sản phẩm"}</button>
       </div>
       {error && !recognizedAsin && <p id="amazon-input-error" className="inline-alert amazon-quote-alert" role="alert">{error}</p>}
-      <p className="amazon-note">Thông tin hiển thị theo trang Amazon tại thời điểm tra cứu. Giá đặt mua qua Mita và phí vận chuyển về Việt Nam được báo riêng.</p>
+      {!preview && <p className="amazon-note">Thông tin hiển thị theo trang Amazon tại thời điểm tra cứu. Giá đặt mua qua Mita và phí vận chuyển về Việt Nam được báo riêng.</p>}
     </form>
-    {preview && <AmazonSourceProductDetail preview={preview} error={error}/>}
+    {preview && <AmazonSourceProductDetail preview={preview}/>}
     {recognizedAsin && !quote && !preview && !loading && <section className="amazon-source-preview" role="status" aria-label="Đã nhận diện ASIN, chưa xác minh sản phẩm">
       <p className="amazon-source">ĐÃ NHẬN DIỆN ASIN</p>
       <h2>ASIN: {recognizedAsin}</h2>
@@ -131,7 +131,7 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
       {retryAfterAt ? <>Mốc sớm nhất được phép xét lại: <time dateTime={retryAfterAt}>{new Intl.DateTimeFormat("vi-VN", { dateStyle: "short", timeStyle: "short", timeZone: "Asia/Tokyo" }).format(new Date(retryAfterAt))} JST</time>.</> : "Mốc được phép xét lại: chưa xác định."}
       {" "}Mốc này không bảo đảm khôi phục truy cập Amazon. Mita không tự động tra lại khi đến giờ.
     </p>}
-    {loading && <div className="detail-loading amazon-detail-loading" role="status" aria-label="Đang tra thông tin sản phẩm"><div className="product-skeleton large" aria-hidden="true"><div/><span/><span/><span/></div><div className="product-skeleton large" aria-hidden="true"><div/><span/><span/><span/></div><p>Đang xác minh thông tin và điều kiện mua từ Amazon.</p></div>}
+    {loading && <div className="detail-loading amazon-detail-loading" role="status" aria-label="Đang tra thông tin sản phẩm"><div className="product-skeleton large" aria-hidden="true"><div/><span/><span/><span/></div><div className="product-skeleton large" aria-hidden="true"><div/><span/><span/><span/></div><p>Đang lấy thông tin sản phẩm từ Amazon.</p></div>}
     {quote && <AmazonProductDetail key={quote.quoteId} quote={quote} quantity={quantity} onQuantityChange={value => { setQuantity(value); setConfirmed(false); setAdded(false); }}
       onRefresh={() => { setInput(quote.asin); void loadQuote(quote.asin, quantity); }} refreshing={loading} expired={expired}
       confirmed={confirmed} onConfirm={setConfirmed} added={added} onAdd={() => {

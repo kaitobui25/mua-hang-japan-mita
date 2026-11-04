@@ -48,7 +48,10 @@ main { min-height: 65vh; }
 .amazon-quote-intro { padding: 18px 0 28px; }
 .amazon-quote-intro h1 { font-size: clamp(2.3rem, 4vw, 4.4rem); margin-bottom: 10px; }
 .amazon-quote-intro p, .amazon-note { color: var(--color-muted); font-size: 14px; }
+.amazon-quote-intro--result { padding-block: var(--space-sm); }
+.amazon-quote-intro--result .amazon-source { margin: 0; font-size: 13px; }
 .amazon-quote-form { border: 1px solid var(--color-rule-2); background: var(--color-paper-2); padding: clamp(20px,3vw,36px); }
+.amazon-quote-form--result { padding: var(--space-md); }
 .amazon-quote-form > label { display: block; font-weight: 600; margin-bottom: var(--space-sm); }
 .amazon-quote-controls { display: flex; gap: var(--space-sm); align-items: center; }
 .amazon-quote-controls > input[type=search] { flex: 1 1 auto; min-width: 0; height: 56px; padding: 0 var(--space-md); background: var(--color-paper); border: 1px solid var(--color-muted); border-radius: var(--radius-card); font-size: 16px; }
@@ -66,16 +69,27 @@ main { min-height: 65vh; }
 .amazon-preview-asin { color: var(--color-muted); font-size: 13px; }
 .amazon-preview-price { font-size: 24px; font-weight: 700; }
 .amazon-preview-price span { display: block; font-size: 13px; font-weight: 400; color: var(--color-muted); }
-.amazon-preview-warning { max-width: 74ch; font-size: 14px; color: var(--color-ink-2); }
 .amazon-source-preview .button { display: inline-flex; align-items: center; min-height: 48px; margin-top: var(--space-xs); }
 .amazon-quote-result { margin-top: var(--space-lg); }
 /* Amazon proxy detail: share Mita's catalog grid without catalog purchase behavior. */
 .amazon-product-detail { padding-top: var(--space-md); }
 .amazon-product-detail > * { min-width: 0; }
-.amazon-source-result .amazon-preview-title { font: 600 clamp(1.65rem,2.9vw,2.5rem)/1.25 var(--font-display); margin-bottom: var(--space-md); overflow-wrap: anywhere; }
-.amazon-source-result .amazon-preview-result-status { font-size: 13px; color: var(--color-muted); margin: 0 0 var(--space-sm); }
-.amazon-source-result .amazon-preview-warning { margin: var(--space-lg) 0; line-height: 1.65; }
-.amazon-source-result .amazon-preview-terms { margin-top: var(--space-md); }
+.amazon-source-result .amazon-preview-title { overflow-wrap: anywhere; word-break: normal; }
+.amazon-source-result .amazon-preview-title-jp { font-family: var(--font-body); font-size: clamp(1.5rem,2vw,2.05rem); line-height: 1.4; }
+.amazon-preview-links { display: flex; flex-wrap: wrap; gap: 0 var(--space-md); margin-top: calc(-1 * var(--space-xs)); }
+.amazon-preview-links a { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding-block: 8px; font-size: 13px; line-height: 1.5; font-weight: 600; color: var(--color-accent); text-decoration: underline; text-underline-offset: 4px; }
+.amazon-preview-links a:hover { color: var(--color-ink); }
+.amazon-preview-links a:focus-visible, .amazon-preview-provenance summary:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 3px; }
+.amazon-preview-facts { padding-block: var(--space-md); }
+.amazon-preview-facts p { line-height: 1.5; }
+.amazon-preview-notice { margin-top: var(--space-md); font-size: 13px; line-height: 1.6; color: var(--color-ink-2); }
+.amazon-preview-provenance { margin-top: var(--space-sm); border-top: 1px solid var(--color-rule); }
+.amazon-preview-provenance summary { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); min-height: 44px; padding-block: var(--space-xs); font-size: 13px; color: var(--color-accent); font-weight: 600; cursor: pointer; list-style: none; }
+.amazon-preview-provenance summary::-webkit-details-marker { display: none; }
+.amazon-preview-provenance summary svg { flex: none; transition: transform var(--dur-short); }
+.amazon-preview-provenance[open] summary svg { transform: rotate(180deg); }
+.amazon-preview-provenance > div { display: grid; gap: var(--space-sm); padding: 0 0 var(--space-md); }
+.amazon-preview-provenance p { font-size: 13px; line-height: 1.65; color: var(--color-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .amazon-product-detail .gallery-thumb .product-image { width: 100%; height: 100%; }
 .amazon-product-detail .gallery-thumb .product-image img { width: 100%; height: 100%; padding: 0; object-fit: contain; }
 .amazon-product-detail .gallery-thumb .image-placeholder { min-height: 0; height: 100%; padding: 0; }
@@ -684,8 +698,6 @@ main { min-height: 65vh; }
 }
 
 /* Hallmark · Garden · floating two-channel contact, using Mita's existing tokens */
-.amazon-source-delivery-text { display: block; margin-top: 6px; font-size: 12px; font-weight: 400; line-height: 1.5; color: var(--color-muted); overflow-wrap: anywhere; }
-.amazon-preview-result-status { line-height: 1.6; }
 .social-launcher { position: fixed; z-index: var(--z-sticky-nav); left: max(var(--space-md), env(safe-area-inset-left)); bottom: calc(var(--space-lg) + env(safe-area-inset-bottom)); display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-sm); }
 .social-launcher-toggle { width: 56px; height: 56px; display: grid; place-items: center; border-radius: var(--radius-pill); border: 1px solid var(--color-accent); background: var(--color-accent); color: var(--color-accent-ink); box-shadow: 0 4px 18px var(--tint-moss); transition: transform var(--dur-short), background-color var(--dur-short); }
 .social-launcher-toggle:hover { background: var(--color-ink); transform: translateY(-2px); }

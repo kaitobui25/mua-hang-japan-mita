@@ -59,8 +59,8 @@ function SourceRating({ rating, count }: { rating?: number; count?: number }) {
   </div>;
 }
 
-/** Product-page layout for source evidence only. It never enables quote/cart actions. */
-export function AmazonSourceProductDetail({ preview, error }: { preview: AmazonSourcePreview; error: string }) {
+/** Match the catalog detail hierarchy without turning source facts into a purchase quote. */
+export function AmazonSourceProductDetail({ preview }: { preview: AmazonSourcePreview }) {
   const [selectedImage, setSelectedImage] = useState("");
   const display = preview.display ?? preview.observedDetails;
   const pictures = [...new Set((display?.images ?? []).filter(sourceImage))].slice(0, 10);
@@ -76,9 +76,9 @@ export function AmazonSourceProductDetail({ preview, error }: { preview: AmazonS
   const translationText = Array.from([preview.title, display?.description, ...(display?.features ?? [])]
     .filter(Boolean).join("\n\n").toWellFormed()).slice(0, 1200).join("");
   const googleTranslateUrl = `https://translate.google.com/?sl=auto&tl=vi&text=${encodeURIComponent(translationText)}&op=translate`;
+  const japaneseTitle = /[\u3040-\u30ff\u3400-\u9fff]/u.test(preview.title);
 
   return <article className="amazon-quote-result amazon-source-result" aria-label="Thông tin sản phẩm từ Amazon">
-    <p className="amazon-preview-result-status" role="status">Đã đọc thông tin sản phẩm từ Amazon. Giá và vận chuyển dưới đây là thông tin trên trang nguồn.</p>
     <section className="product-detail amazon-product-detail" aria-label="Sản phẩm quan sát từ Amazon">
       <div className="detail-image">
         <ProductImage key={currentImage ?? "empty"} src={currentImage} name={preview.title} priority/>
@@ -88,38 +88,34 @@ export function AmazonSourceProductDetail({ preview, error }: { preview: AmazonS
             <ProductImage src={src} name={`Ảnh ${index + 1} của ${preview.title}`}/>
           </button>)}
         </div>}
-        <p>{pictures.length ? "Ảnh quan sát từ trang sản phẩm Amazon." : "Amazon chưa trả về ảnh sản phẩm; đang dùng ảnh dự phòng Mita."}</p>
       </div>
       <div className="detail-content amazon-detail-content">
         {display?.brand && <p className="product-brand">{display.brand}</p>}
-        <p className="amazon-source">THÔNG TIN SẢN PHẨM TỪ AMAZON.CO.JP</p>
-        <h2 className="amazon-preview-title">{preview.title}</h2>
+        <h1 className={japaneseTitle ? "amazon-preview-title amazon-preview-title-jp" : "amazon-preview-title"}>{preview.title}</h1>
         <SourceRating rating={display?.rating} count={display?.reviewCount}/>
-        <div className="amazon-detail-identifiers">
-          <p><strong>ASIN:</strong> {preview.asin}</p>
-          <p><strong>Quan sát nguồn:</strong> <time dateTime={preview.observedAt}>{deadline(preview.observedAt)}</time></p>
+        <p className="amazon-preview-links">
+          <a href={preview.sourceUrl} target="_blank" rel="noopener noreferrer">Xem sản phẩm gốc trên Amazon Japan <Icon name="arrow" size={13}/></a>
+          <a href={googleTranslateUrl} target="_blank" rel="noopener noreferrer">Dịch bằng Google <Icon name="arrow" size={13}/></a>
+        </p>
+        <div className="detail-price-block">
+          <p className="amazon-price-caption">Giá Amazon</p>
+          <div className="detail-price">{preview.priceJpy !== undefined ? jpy(preview.priceJpy) : "Giá đang cập nhật"}</div>
         </div>
-        <div className="amazon-detail-links">
-          <a href={preview.sourceUrl} target="_blank" rel="noopener noreferrer" className="inline-link">Xem sản phẩm gốc trên Amazon <Icon name="arrow" size={15}/></a>
+        <div className="detail-facts amazon-preview-facts">
+          <p><Icon name="truck" size={18}/> {preview.freeDelivery ? "Miễn phí vận chuyển nội địa Nhật." : "Chưa có thông tin miễn phí vận chuyển nội địa Nhật."}</p>
+          <p><Icon name="bag" size={18}/> Phí vận chuyển về Việt Nam tính riêng.</p>
         </div>
-        {preview.priceJpy !== undefined && <div className="detail-price-block">
-          <p className="amazon-price-caption">Giá hiển thị trên Amazon khi tra cứu</p>
-          <div className="detail-price">{jpy(preview.priceJpy)}</div>
-        </div>}
-        {preview.priceJpy === undefined && <p className="amazon-price-caption">Chưa đọc được giá trên trang sản phẩm Amazon.</p>}
-        <dl className="amazon-delivery-details amazon-preview-terms">
-          <div><dt>Vận chuyển nội địa Nhật theo Amazon</dt><dd>{preview.freeDelivery ? "Miễn phí vận chuyển" : "Chưa thấy nhãn miễn phí vận chuyển"}{preview.deliveryText && <small className="amazon-source-delivery-text">{preview.deliveryText}</small>}</dd></div>
-          <div><dt>Báo giá VND và phí vận chuyển về Việt Nam</dt><dd>Chưa có báo giá Mita · phí vận chuyển tính riêng</dd></div>
-        </dl>
-        <p className="inline-alert amazon-preview-warning" role="status">{error} Giá và nhãn miễn phí vận chuyển trên Amazon có thể thay đổi. Chưa thể thêm vào giỏ Mita.</p>
+        <p className="amazon-preview-notice" role="status">Sản phẩm hiện chưa nhận đặt hàng trực tuyến qua Mita.</p>
+        <dl className="detail-metadata"><div><dt>Mã sản phẩm</dt><dd>{preview.asin}</dd></div></dl>
+        <details className="amazon-preview-provenance">
+          <summary>Chi tiết thông tin Amazon <Icon name="chevron" size={16}/></summary>
+          <div>
+            <p>Tra cứu lúc <time dateTime={preview.observedAt}>{deadline(preview.observedAt)}</time>.</p>
+            <p>Giá và điều kiện vận chuyển có thể thay đổi trên Amazon. Đây chưa phải báo giá đặt mua tại Mita.</p>
+            {preview.deliveryText && <p><strong>Thông tin giao hàng trên Amazon:</strong> <span lang="ja">{preview.deliveryText}</span></p>}
+          </div>
+        </details>
       </div>
-    </section>
-    <section className="amazon-translation-bar" aria-label="Dịch tên và thông tin nguồn">
-      <div>
-        <h2>Thông tin nguồn Amazon</h2>
-        <p>Giữ nguyên ngôn ngữ từ nguồn. Google Dịch chỉ mở khi bạn chọn; không tự dịch nội dung.</p>
-      </div>
-      <a className="button button-outline" href={googleTranslateUrl} target="_blank" rel="noopener noreferrer">Dịch bằng Google <Icon name="arrow" size={18}/></a>
     </section>
     {display && <ProductInformation description={display.description} detail={detail}
       hasStructuredRatings={display.rating !== undefined || display.reviewCount !== undefined}
