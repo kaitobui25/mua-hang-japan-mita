@@ -33,20 +33,39 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
     setCachedPreview(null);
     setConfirmed(false);
     setAdded(false);
+    // Show a previously saved title while the quote source is still being checked.
+    // The catalog lookup never supplies a live price or checkout permission.
+    let acceptCached = true;
+    const cachedLookup = lookupLocalAmazonPreview(value);
+    void cachedLookup.then(cached => {
+      if (acceptCached && cached?.title && sequence === requestSequence.current) setCachedPreview(cached);
+    });
     try {
       const next = await createAmazonQuote(value.trim(), count);
       if (sequence !== requestSequence.current) return;
+      acceptCached = false;
+      setCachedPreview(null);
       setNow(Date.now());
       setQuote(next);
     } catch (cause) {
       if (sequence === requestSequence.current) {
         setError(cause instanceof Error ? cause.message : "Không thể báo giá.");
         if (cause instanceof AmazonQuoteApiError) {
-          if (cause.preview) setPreview(cause.preview);
-          else if (["amazon_quotes_disabled", "offer_not_verified", "amazon_cooldown", "amazon_busy", "amazon_blocked", "amazon_rate_limited", "quote_rate_limited", "amazon_unavailable", "quote_schema_unavailable", "quote_unavailable", "quote_service_unavailable"].includes(cause.code ?? "")) {
-            const cached = await lookupLocalAmazonPreview(value);
-            if (sequence === requestSequence.current) setCachedPreview(cached);
+          if (cause.preview) {
+            acceptCached = false;
+            setCachedPreview(null);
+            setPreview(cause.preview);
           }
+          else if (["amazon_quotes_disabled", "offer_not_verified", "amazon_cooldown", "amazon_busy", "amazon_blocked", "amazon_rate_limited", "quote_rate_limited", "amazon_unavailable", "quote_schema_unavailable", "quote_unavailable", "quote_service_unavailable"].includes(cause.code ?? "")) {
+            const cached = await cachedLookup;
+            if (sequence === requestSequence.current) setCachedPreview(cached);
+          } else {
+            acceptCached = false;
+            setCachedPreview(null);
+          }
+        } else {
+          acceptCached = false;
+          setCachedPreview(null);
         }
       }
     } finally {
@@ -111,7 +130,7 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
         : "Chỉ nhận diện được ASIN trong link; danh mục Mita chưa có thông tin sản phẩm này."} Chưa có giá mua hộ, điều kiện giao hàng hay quyền thêm vào giỏ từ link này.</p>
       <a href={cachedPreview.sourceUrl} target="_blank" rel="noopener noreferrer" className="button button-outline">Xem sản phẩm gốc trên Amazon</a>
     </section>}
-    {loading && <div className="detail-loading amazon-detail-loading" role="status" aria-label="Đang tra thông tin sản phẩm"><div className="product-skeleton large"><div/><span/><span/><span/></div><div className="product-skeleton large"><div/><span/><span/><span/></div></div>}
+    {loading && !cachedPreview && <div className="detail-loading amazon-detail-loading" role="status" aria-label="Đang tra thông tin sản phẩm"><div className="product-skeleton large"><div/><span/><span/><span/></div><div className="product-skeleton large"><div/><span/><span/><span/></div></div>}
     {quote && <AmazonProductDetail key={quote.quoteId} quote={quote} quantity={quantity} onQuantityChange={value => { setQuantity(value); setConfirmed(false); }}
       onRefresh={() => { setInput(quote.asin); void loadQuote(quote.asin, quantity); }} refreshing={loading} expired={expired}
       confirmed={confirmed} onConfirm={setConfirmed} added={added} onAdd={() => {
