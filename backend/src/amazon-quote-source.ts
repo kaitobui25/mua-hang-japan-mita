@@ -46,8 +46,9 @@ function parseProductPreview($: CheerioAPI, asin: string, observedAt: Date, perm
     title, observedAt: observedAt.toISOString() };
   const box = $('[id="desktop_buybox"]');
   const selected = box.find('input[type="radio"]:checked');
-  // Modern accordion exposes its selected row with an active class rather than a radio.
-  const active = box.find('[id^="newAccordionRow_"].a-accordion-active');
+  // Check *all* active rows: a subscription row active alongside a checked
+  // one-time radio makes the selected price ambiguous.
+  const active = box.find('.a-accordion-active');
   const row = selected.length === 1 ? selected.closest('[id="newAccordionRow"], [id^="newAccordionRow_"]') :
     selected.length === 0 && active.length === 1 ? active : $();
   const selectedOffer = selected.length === 1

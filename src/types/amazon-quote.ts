@@ -21,6 +21,8 @@ export type AmazonSourcePreview = {
   sourceUrl: string;
   observedAt: string;
   priceJpy?: number;
+  /** Only fields specifically permitted by the trusted Amazon source display gate. */
+  display?: AmazonQuoteDisplay;
 };
 
 export type AmazonQuote = {

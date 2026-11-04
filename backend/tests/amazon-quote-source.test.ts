@@ -228,6 +228,7 @@ test('legacy preview price remains confined to an unambiguous selected one-time 
     html.replace('id="price_inside_buybox"', 'id="price_inside_buybox" hidden'),
     html.replace('</div><span id="availability">', '<span id="newBuyBoxPrice">&#165;900</span></div><span id="availability">'),
     html.replace('</div><span id="availability">', '<div id="newAccordionRow_1" class="a-accordion-active"></div></div><span id="availability">'),
+    html.replace('</div><span id="availability">', '</div><div id="subscribeAccordionRow" class="a-accordion-active">Subscribe &amp; Save</div><span id="availability">'),
     html.replace('id="price_inside_buybox"', 'id="unrelated-price"') + '<span id="price_inside_buybox">&#165;900</span>'
   ]) {
     assert.equal(preview(candidate)?.title, 'Source item');

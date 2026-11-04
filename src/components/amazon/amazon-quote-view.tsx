@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useCart } from "@/context/cart";
 import { AmazonQuoteApiError, createAmazonQuote } from "@/lib/amazon-quotes";
 import { amazonInputAsin } from "@/lib/amazon-input";
-import { AmazonProductDetail } from "@/components/amazon/amazon-product-detail";
+import { AmazonProductDetail, AmazonSourceProductDetail } from "@/components/amazon/amazon-product-detail";
 import type { AmazonQuote, AmazonSourcePreview } from "@/types/amazon-quote";
 
 export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }) {
@@ -119,15 +119,7 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
       {error && !recognizedAsin && <p id="amazon-input-error" className="inline-alert amazon-quote-alert" role="alert">{error}</p>}
       <p className="amazon-note">Chỉ nhận mua một lần, giao thường miễn phí tại Nhật, không Prime. Phí vận chuyển về Việt Nam tính riêng sau.</p>
     </form>
-    {preview && <section className="amazon-source-preview" role="status" aria-label="Thông tin sản phẩm từ Amazon">
-      <p className="amazon-source">SẢN PHẨM TỪ AMAZON.CO.JP</p>
-      <h2>{preview.title}</h2>
-      <p className="amazon-preview-asin">ASIN: {preview.asin}</p>
-      <p className="amazon-preview-asin">Thông tin nguồn quan sát lúc <time dateTime={preview.observedAt}>{new Intl.DateTimeFormat("vi-VN", { dateStyle: "short", timeStyle: "short", timeZone: "Asia/Tokyo" }).format(new Date(preview.observedAt))} JST</time>.</p>
-      {preview.priceJpy !== undefined && <p className="amazon-preview-price">¥{preview.priceJpy.toLocaleString("ja-JP")} <span>Giá nguồn tham khảo, chưa phải báo giá Mita</span></p>}
-      <p className="amazon-preview-warning">{error} Đây chỉ là thông tin sản phẩm từ nguồn, không phải báo giá. Chưa thể thêm vào giỏ hoặc đặt hàng.</p>
-      <a href={preview.sourceUrl} target="_blank" rel="noopener noreferrer" className="button button-outline">Xem sản phẩm gốc trên Amazon</a>
-    </section>}
+    {preview && <AmazonSourceProductDetail preview={preview} error={error}/>}
     {recognizedAsin && !quote && !preview && !loading && <section className="amazon-source-preview" role="status" aria-label="Đã nhận diện ASIN, chưa xác minh sản phẩm">
       <p className="amazon-source">ĐÃ NHẬN DIỆN ASIN</p>
       <h2>ASIN: {recognizedAsin}</h2>

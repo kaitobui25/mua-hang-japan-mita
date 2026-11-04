@@ -7,7 +7,7 @@ import { ProductImage } from "@/components/ui/product-image";
 import { ProductInformation } from "@/components/catalog/product-information";
 import { QuantitySelector } from "@/components/cart/quantity-selector";
 import { formatVnd } from "@/lib/format";
-import type { AmazonQuote } from "@/types/amazon-quote";
+import type { AmazonQuote, AmazonSourcePreview } from "@/types/amazon-quote";
 
 type Props = {
   quote: AmazonQuote;
@@ -59,6 +59,83 @@ function SourceRating({ rating, count }: { rating?: number; count?: number }) {
   </div>;
 }
 
+/** Product-page layout for source evidence only. It never enables quote/cart actions. */
+export function AmazonSourceProductDetail({ preview, error }: { preview: AmazonSourcePreview; error: string }) {
+  const [selectedImage, setSelectedImage] = useState("");
+  const display = preview.display;
+  const pictures = [...new Set((display?.images ?? []).filter(sourceImage))].slice(0, 10);
+  const currentImage = pictures.includes(selectedImage) ? selectedImage : pictures[0];
+  const detail = display && {
+    features: display.features ?? [],
+    ingredients: display.ingredients ? [display.ingredients] : [],
+    usage: display.usage ? [display.usage] : [],
+    cautions: display.warnings ? [display.warnings] : [],
+    specs: Object.fromEntries((display.specifications ?? []).map(({ name, value }) => [name, value])),
+    variantAttributes: {},
+  };
+  const translationText = Array.from([preview.title, display?.description, ...(display?.features ?? [])]
+    .filter(Boolean).join("\n\n").toWellFormed()).slice(0, 1200).join("");
+  const googleTranslateUrl = `https://translate.google.com/?sl=auto&tl=vi&text=${encodeURIComponent(translationText)}&op=translate`;
+
+  return <article className="amazon-quote-result amazon-source-result" aria-label="Thông tin sản phẩm từ Amazon">
+    <p className="amazon-preview-result-status" role="status">Đã đọc thông tin sản phẩm từ Amazon. Chưa có báo giá mua hộ hợp lệ.</p>
+    <section className="product-detail amazon-product-detail" aria-label="Sản phẩm quan sát từ Amazon">
+      <div className="detail-image">
+        <ProductImage key={currentImage ?? "empty"} src={currentImage} name={preview.title} priority/>
+        {pictures.length > 1 && <div className="detail-gallery" aria-label="Ảnh sản phẩm từ Amazon">
+          {pictures.map((src, index) => <button key={src} type="button" className={src === currentImage ? "gallery-thumb active" : "gallery-thumb"}
+            onClick={() => setSelectedImage(src)} aria-pressed={src === currentImage} aria-label={`Xem ảnh ${index + 1}`}>
+            <ProductImage src={src} name={`Ảnh ${index + 1} của ${preview.title}`}/>
+          </button>)}
+        </div>}
+        <p>{pictures.length ? "Ảnh sản phẩm từ Amazon." : "Chưa có ảnh được phép hiển thị; đang dùng ảnh dự phòng Mita."}</p>
+      </div>
+      <div className="detail-content amazon-detail-content">
+        {display?.brand && <p className="product-brand">{display.brand}</p>}
+        <p className="amazon-source">THÔNG TIN SẢN PHẨM TỪ AMAZON.CO.JP</p>
+        <h2 className="amazon-preview-title">{preview.title}</h2>
+        <SourceRating rating={display?.rating} count={display?.reviewCount}/>
+        <div className="amazon-detail-identifiers">
+          <p><strong>ASIN:</strong> {preview.asin}</p>
+          <p><strong>Quan sát nguồn:</strong> <time dateTime={preview.observedAt}>{deadline(preview.observedAt)}</time></p>
+        </div>
+        <div className="amazon-detail-links">
+          <a href={preview.sourceUrl} target="_blank" rel="noopener noreferrer" className="inline-link">Xem sản phẩm gốc trên Amazon <Icon name="arrow" size={15}/></a>
+        </div>
+        {preview.priceJpy !== undefined && <div className="detail-price-block">
+          <p className="amazon-price-caption">Giá Amazon tham khảo, chưa phải báo giá Mita</p>
+          <div className="detail-price">{jpy(preview.priceJpy)}</div>
+        </div>}
+        <p className="inline-alert amazon-preview-warning" role="alert">{error} Đây là thông tin nguồn, chưa phải báo giá. Chưa thể thêm vào giỏ hoặc đặt hàng.</p>
+        <dl className="amazon-delivery-details amazon-preview-terms">
+          <div><dt>Giá bán VND tại Mita</dt><dd>Chưa có báo giá hợp lệ</dd></div>
+          <div><dt>Giao thường miễn phí tại Nhật</dt><dd>Chưa xác minh</dd></div>
+          <div><dt>Ngày giao và phí vận chuyển</dt><dd>Chưa xác định</dd></div>
+        </dl>
+      </div>
+    </section>
+    <section className="amazon-translation-bar" aria-label="Dịch tên và thông tin nguồn">
+      <div>
+        <h2>Thông tin nguồn Amazon</h2>
+        <p>Giữ nguyên ngôn ngữ từ nguồn. Google Dịch chỉ mở khi bạn chọn; không tự dịch nội dung.</p>
+      </div>
+      <a className="button button-outline" href={googleTranslateUrl} target="_blank" rel="noopener noreferrer">Dịch bằng Google <Icon name="arrow" size={18}/></a>
+    </section>
+    {display && <ProductInformation description={display.description} detail={detail}
+      hasStructuredRatings={display.rating !== undefined || display.reviewCount !== undefined}
+      className="detail-description amazon-detail-description"/>}
+    {!!display?.reviews?.length && <section className="amazon-detail-reviews" aria-label="Đánh giá từ nguồn Amazon">
+      <h2>Đánh giá từ Amazon</h2>
+      <p>Đánh giá của nguồn Amazon, không phải đánh giá của khách Mita.</p>
+      <div className="amazon-review-list">{display.reviews.map((review, index) => <article key={index} className="detail-info-card">
+        {review.title && <h3>{review.title}</h3>}
+        {review.rating !== undefined && <p>{review.rating.toLocaleString("vi-VN")} / 5 sao</p>}
+        <p>{review.body}</p>
+      </article>)}</div>
+    </section>}
+  </article>;
+}
+
 export function AmazonProductDetail({
   quote, quantity, onQuantityChange, onRefresh, refreshing, expired,
   confirmed, onConfirm, added, onAdd,
@@ -84,8 +161,9 @@ export function AmazonProductDetail({
     quote.name, display?.description, ...(display?.features ?? []),
     ...(display?.specifications ?? []).map(({ name, value }) => `${name}: ${value}`),
     display?.ingredients, display?.usage, display?.warnings,
-  ].filter(Boolean).join("\n\n").slice(0, 1200);
-  const googleTranslateUrl = `https://translate.google.com/?sl=auto&tl=vi&text=${encodeURIComponent(translationText)}&op=translate`;
+  ].filter(Boolean).join("\n\n").toWellFormed();
+  const shortTranslationText = Array.from(translationText).slice(0, 1200).join("");
+  const googleTranslateUrl = `https://translate.google.com/?sl=auto&tl=vi&text=${encodeURIComponent(shortTranslationText)}&op=translate`;
   const amazonUrl = `https://www.amazon.co.jp/dp/${encodeURIComponent(quote.asin)}`;
 
   return <article className="amazon-quote-result" aria-live="polite">

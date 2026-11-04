@@ -122,14 +122,16 @@ export class AmazonQuoteApiError extends Error {
 }
 
 function parseSourcePreview(value: unknown): AmazonSourcePreview | null {
-  if (!value || typeof value !== "object") return null;
-  const raw = value as Partial<AmazonSourcePreview>;
+  if (!record(value)) return null;
+  const raw = value;
   if (typeof raw.asin !== "string" || !/^[A-Z0-9]{10}$/.test(raw.asin) ||
       raw.sourceUrl !== `https://www.amazon.co.jp/dp/${raw.asin}` ||
       typeof raw.title !== "string" || !raw.title.trim() || raw.title.length > 1000 ||
       !timestamp(raw.observedAt)) return null;
+  const display = parseDisplay(raw.display, raw.asin, raw.sourceUrl);
   return { asin: raw.asin, title: raw.title.trim(), sourceUrl: raw.sourceUrl, observedAt: raw.observedAt,
-    ...(Number.isSafeInteger(raw.priceJpy) && Number(raw.priceJpy) > 0 && Number(raw.priceJpy) <= 100000000 ? { priceJpy: raw.priceJpy } : {}) };
+    ...(Number.isSafeInteger(raw.priceJpy) && Number(raw.priceJpy) > 0 && Number(raw.priceJpy) <= 100000000 ? { priceJpy: Number(raw.priceJpy) } : {}),
+    ...(display?.provenance.observedAt === raw.observedAt ? { display } : {}) };
 }
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {

@@ -72,6 +72,10 @@ main { min-height: 65vh; }
 /* Amazon proxy detail: share Mita's catalog grid without catalog purchase behavior. */
 .amazon-product-detail { padding-top: var(--space-md); }
 .amazon-product-detail > * { min-width: 0; }
+.amazon-source-result .amazon-preview-title { font: 600 clamp(1.65rem,2.9vw,2.5rem)/1.25 var(--font-display); margin-bottom: var(--space-md); overflow-wrap: anywhere; }
+.amazon-source-result .amazon-preview-result-status { font-size: 13px; color: var(--color-muted); margin: 0 0 var(--space-sm); }
+.amazon-source-result .amazon-preview-warning { margin: var(--space-lg) 0; line-height: 1.65; }
+.amazon-source-result .amazon-preview-terms { margin-top: var(--space-md); }
 .amazon-product-detail .gallery-thumb .product-image { width: 100%; height: 100%; }
 .amazon-product-detail .gallery-thumb .product-image img { width: 100%; height: 100%; padding: 0; object-fit: contain; }
 .amazon-product-detail .gallery-thumb .image-placeholder { min-height: 0; height: 100%; padding: 0; }
