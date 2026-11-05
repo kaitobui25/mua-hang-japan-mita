@@ -170,6 +170,7 @@ async function activeLocks(){
     const known=new Set(rows.map(row=>Number(row.key)));
     const latest=(await client.query(`SELECT id,started_at,finished_at,state
       FROM sync_runs WHERE started_at >= (now() AT TIME ZONE 'Asia/Tokyo')::date AT TIME ZONE 'Asia/Tokyo'
+        AND (note IS NULL OR note NOT LIKE '%"trigger":"manual"%')
       ORDER BY id DESC LIMIT 2`)).rows;
     let schedules=null;
     try{
@@ -280,7 +281,7 @@ export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
       // Leave the pilot armed until DuckDNS QA; an explicit "verified" setting
       // is required to resume normal scheduled discovery on later days.
       env:{...process.env,LLAMA_BASE_URL:'http://127.0.0.1:8080/v1',LLAMA_MODEL:'Index-Translate-2B',
-        ...(name==='amazon' ? {AMAZON_GALLERY_PILOT_DATE:process.env.AMAZON_GALLERY_PILOT_DATE ?? '2026-10-30'} : {})}
+        ...(name==='amazon' ? {AMAZON_GALLERY_PILOT_DATE:process.env.AMAZON_GALLERY_PILOT_DATE ?? 'verified'} : {})}
     });
     const startedAt=new Date();
     const entryInfo={child,startedAt,fingerprint:fingerprint(name),healthy:true};

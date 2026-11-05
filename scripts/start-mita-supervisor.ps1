@@ -4,6 +4,9 @@ $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $runtime = Join-Path $root '.agents/runtime'
 $backend = Join-Path $root 'backend'
+# The five-ASIN pilot has been completed; the owner explicitly approved full
+# scheduled scanning. Do not inherit an old pilot date from this shell.
+$env:AMAZON_GALLERY_PILOT_DATE = 'verified'
 New-Item -ItemType Directory -Force -Path $runtime | Out-Null
 if (!(Test-Path (Join-Path $backend 'node_modules/tsx'))) { throw 'Install backend dependencies before enabling workers.' }
 if (!(Test-NetConnection -ComputerName 127.0.0.1 -Port 5433 -InformationLevel Quiet -WarningAction SilentlyContinue)) {

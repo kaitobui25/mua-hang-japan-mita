@@ -68,14 +68,21 @@ export async function backfillFrozenEnglishSlots(
 export async function translatePendingDetails(options: {
   limit?: number; signal?: AbortSignal; log?: typeof logTranslationEvent; translate?: typeof translateLocalString;
   connect?: () => Promise<Pick<PoolClient, 'query' | 'release'>>;
+  onItemResult?: (item: { asin: string; slot: string; outcome: 'translated' | 'failed'; reason?: string }) => void;
+  manualExclusive?: boolean;
 } = {}): Promise<Run> {
   const limit = detailLimit(options.limit ?? process.env.DETAIL_TRANSLATION_LIMIT ?? 100);
   const result: Run = { translated: 0, failed: 0, skipped: 0, paused: false };
   const client = await (options.connect ?? (() => db.connect()))();
   let acquired = false;
+  const locks: number[] = [];
+  let discard = false;
   try {
-    acquired = Boolean((await client.query('SELECT pg_try_advisory_lock(70400301) AS acquired')).rows[0]?.acquired);
-    if (!acquired) return { ...result, paused: true };
+    for (const key of options.manualExclusive ? [70400200,70400300,70400301] : [70400301]) {
+      acquired = Boolean((await client.query('SELECT pg_try_advisory_lock($1) AS acquired',[key])).rows[0]?.acquired);
+      if (!acquired) return { ...result, paused: true };
+      locks.push(key);
+    }
     // Catch up existing immutable snapshots before the normal pending-item
     // selection. A durable checkpoint prevents rescanning completed products.
     await backfillFrozenEnglishSlots(client, 1000, options.signal);
@@ -136,10 +143,12 @@ export async function translatePendingDetails(options: {
             model: output.model, attempt, original: item.source, candidate: text, issues,
             result: issues.length ? 'warning' : 'success' });
           result.translated++;
+          options.onItemResult?.({ asin:row.asin,slot:item.slot,outcome:'translated' });
         } catch (error) {
           if (!(error instanceof LocalTranslationError) && !(error instanceof Error && error.message === 'invalid_output')) throw error;
           if (options.signal?.aborted) return { ...result, paused: true };
           result.failed++;
+          options.onItemResult?.({ asin:row.asin,slot:item.slot,outcome:'failed',reason:error.message });
           await client.query(`UPDATE local_detail_translation_items SET retry_after=now()+interval '12 hours',error_code=$3,updated_at=now()
             WHERE asin=$1 AND slot=$2 AND (translated IS NULL OR warning)`, [row.asin, item.slot, error.message]);
           await (options.log ?? logTranslationEvent)({ asin: row.asin, locale: 'vi', field: item.slot, engine: 'gguf', model: null,
@@ -150,7 +159,10 @@ export async function translatePendingDetails(options: {
     }
     return result;
   } finally {
-    try { if (acquired) await client.query('SELECT pg_advisory_unlock(70400301)'); }
-    finally { client.release(); }
+    for (const key of locks.reverse()) {
+      try { await client.query('SELECT pg_advisory_unlock($1)',[key]); }
+      catch { discard=true; }
+    }
+    client.release(discard);
   }
 }

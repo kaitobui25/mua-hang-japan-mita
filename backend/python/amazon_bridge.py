@@ -7,7 +7,7 @@ import base64
 import zlib
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from amazon_parser import canonical, identity, listing, detail, ASIN
+from amazon_parser import canonical, identity, listing, detail, ASIN, price, text
 
 MAX_LINE = 2 * 1024 * 1024
 MAX_BODY = 8 * 1024 * 1024
@@ -202,6 +202,48 @@ class Client:
         if category not in ('thuc-pham-bo-sung', 'thuc-pham-cho-be'):
             raise ValueError('Invalid category')
         observed = datetime.now(timezone.utc).isoformat()
+        if op == 'inspect':
+            # Price/presence must not depend on image gallery availability.
+            asin = request['asin']
+            if not isinstance(asin, str) or not ASIN.fullmatch(asin):
+                raise ValueError('Invalid ASIN')
+            try:
+                html, status, url = self.fetch(f'https://www.amazon.co.jp/dp/{asin}')
+            except SourceFailure as exc:
+                # HTTP 404 is a page observation, never a deletion decision.
+                if exc.state == 'parse_error' and str(exc).startswith('Amazon HTTP 404;'):
+                    return dict(result=dict(asin=asin, observedAt=observed,
+                                            presence='not_found_http_404', priceJpy=None,
+                                            availability='unknown'))
+                raise
+            if status != 200 or identity(url) != asin:
+                raise SourceFailure('parse_error', 'Amazon response ASIN/status unverified')
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, 'html.parser')
+            ids = [node.get('value', '').strip().upper() for node in
+                   soup.select('input#ASIN, input[name="ASIN"]')]
+            for node in soup.select('link[rel="canonical"]'):
+                try:
+                    ids.append(identity(node.get('href', '')))
+                except ValueError:
+                    ids.append('invalid')
+            if not ids or any(value != asin for value in ids) or len(text(soup.select_one('#productTitle'))) < 8:
+                raise SourceFailure('parse_error', 'Amazon page/ASIN identity not confirmed')
+            # A generic first `.a-price` may be an old/reference (strikethrough)
+            # price. Only a specifically marked current purchase price is safe.
+            price_nodes = soup.select(
+                '#corePriceDisplay_desktop_feature_div .priceToPay .a-offscreen, '
+                '#corePrice_feature_div .priceToPay .a-offscreen, '
+                '#corePriceDisplay_desktop_feature_div .apexPriceToPay .a-offscreen, '
+                '#corePrice_feature_div .apexPriceToPay .a-offscreen, '
+                '#priceblock_ourprice, #price_inside_buybox')
+            prices = {value for node in price_nodes if (value := price(text(node))) is not None}
+            current_price = next(iter(prices)) if len(prices) == 1 else None
+            stock = text(soup.select_one('#availability'))
+            availability = ('out_of_stock' if re.search('在庫切れ|現在お取り扱いできません|currently unavailable|out of stock', stock, re.I)
+                            else 'in_stock' if re.search('在庫あり|in stock', stock, re.I) else 'unknown')
+            return dict(result=dict(asin=asin, observedAt=observed,
+                                    presence='present', priceJpy=current_price, availability=availability))
         if op == 'detail':
             asin = request['asin']
             if not ASIN.fullmatch(asin):

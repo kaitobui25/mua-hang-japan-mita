@@ -32,6 +32,50 @@ class Session:
         return SimpleNamespace(status=response[0], body=body, url=response[2] if len(response) > 2 else url, encoding='utf-8', headers=response[3] if len(response) > 3 else {})
 
 class Tests(unittest.TestCase):
+    def test_inspect_presence_and_price_do_not_require_a_gallery(self):
+        url=f'https://www.amazon.co.jp/dp/{ASIN}'
+        html=f'<input id="ASIN" value="{ASIN}"><span id="productTitle">Real existing product name</span><div id="availability">在庫切れ</div>'
+        session=Session([(200,html,url)])
+        result=Client(session).request(dict(op='inspect',asin=ASIN,category=CATEGORY))['result']
+        self.assertEqual(result['presence'],'present')
+        self.assertEqual(result['availability'],'out_of_stock')
+        self.assertIsNone(result['priceJpy'])
+        self.assertEqual(len(session.calls),1)
+        self.assertFalse(session.calls[0][1]['follow_redirects'])
+
+    def test_inspect_price_ignores_reference_and_strikethrough_price(self):
+        url=f'https://www.amazon.co.jp/dp/{ASIN}'
+        html=(f'<input id="ASIN" value="{ASIN}"><span id="productTitle">Real existing product name</span>'
+              '<div id="corePriceDisplay_desktop_feature_div">'
+              '<span class="basisPrice"><span class="a-price"><span class="a-offscreen">￥9,999</span></span></span>'
+              '<span class="priceToPay"><span class="a-offscreen">￥2,380</span></span></div>')
+        result=Client(Session([(200,html,url)])).request(dict(op='inspect',asin=ASIN,category=CATEGORY))['result']
+        self.assertEqual(result['priceJpy'],2380)
+        reference_only=html.replace('class="priceToPay"','class="basisPrice"')
+        missing=Client(Session([(200,reference_only,url)])).request(dict(op='inspect',asin=ASIN,category=CATEGORY))['result']
+        self.assertIsNone(missing['priceJpy'])
+        conflicting=html.replace('</div>',
+            '<div id="priceblock_ourprice">￥3,500</div></div>')
+        uncertain=Client(Session([(200,conflicting,url)])).request(dict(op='inspect',asin=ASIN,category=CATEGORY))['result']
+        self.assertIsNone(uncertain['priceJpy'])
+
+    def test_inspect_http_404_is_evidence_only_not_a_deletion(self):
+        url=f'https://www.amazon.co.jp/dp/{ASIN}'
+        result=Client(Session([(404,'Not found',url)])).request(
+            dict(op='inspect',asin=ASIN,category=CATEGORY))['result']
+        self.assertEqual(result['presence'],'not_found_http_404')
+        self.assertEqual(result['availability'],'unknown')
+
+    def test_inspect_rejects_wrong_asin_and_challenge(self):
+        url=f'https://www.amazon.co.jp/dp/{ASIN}'
+        wrong='<input id="ASIN" value="B000000002"><span id="productTitle">Some other product name</span>'
+        with self.assertRaises(SourceFailure):
+            Client(Session([(200,wrong,url)])).request(dict(op='inspect',asin=ASIN,category=CATEGORY))
+        with self.assertRaises(SourceFailure) as context:
+            Client(Session([(200,'<title>Amazon Robot Check</title>',url)])).request(
+                dict(op='inspect',asin=ASIN,category=CATEGORY))
+        self.assertEqual(context.exception.state,'blocked')
+
     def quote_request(self, **overrides):
         return dict(op='quote', asin=ASIN, quantity=1, timeoutMs=15000,
                     url=f'https://www.amazon.co.jp/dp/{ASIN}?quantity=1') | overrides

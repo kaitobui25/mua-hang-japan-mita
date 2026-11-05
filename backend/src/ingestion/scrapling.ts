@@ -130,6 +130,18 @@ export class ScraplingSession {
   async detail(asin: string, category: string): Promise<Observation> {
     return await this.request({ op: 'detail', asin, category }) as Observation;
   }
+  /** Explicit ASIN presence + current price. Does not require an image gallery. */
+  async inspect(asin: string, category: string): Promise<{
+    asin: string; observedAt: string; presence: 'present' | 'not_found_http_404';
+    priceJpy: number | null; availability: 'in_stock' | 'out_of_stock' | 'unknown';
+  }> {
+    if (!/^[A-Z0-9]{10}$/.test(asin) || !['thuc-pham-bo-sung','thuc-pham-cho-be'].includes(category))
+      throw new SourceError('parse_error','Invalid Amazon inspect input','scrapling');
+    return await this.request({ op: 'inspect', asin, category }) as {
+      asin: string; observedAt: string; presence: 'present' | 'not_found_http_404';
+      priceJpy: number | null; availability: 'in_stock' | 'out_of_stock' | 'unknown';
+    };
+  }
   async discover(category: string, url: string): Promise<DiscoveryResult> {
     const found = new Map<string, Observation>();
     const issues: DiscoveryResult['issues'] = [];

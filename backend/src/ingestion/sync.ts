@@ -109,6 +109,7 @@ export async function processCategoryDetails(category: string, options: {
 export async function syncCatalog(options: {
   discover?: typeof collectCategory; collect?: DetailCollector; limit?: number; connection?: PoolClient;
   categories?: string[]; scheduled?: boolean; galleryPilotDate?: string; totalLimit?: number;
+  manualExclusive?: boolean;
 } = {}) {
   if (options.totalLimit !== undefined && (!Number.isInteger(options.totalLimit) ||
       options.totalLimit < 1 || options.totalLimit > 300)) throw Error('invalid_manual_amazon_limit');
@@ -118,28 +119,57 @@ export async function syncCatalog(options: {
   const pilot = options.galleryPilotDate !== undefined;
   let pilotClaimed = false;
   const runNote = (note: string, counters = {}) => pilotClaimed
-    ? JSON.stringify({ ...counters, galleryPilot: galleryPilotMarker, summary: note }) : note;
+    ? JSON.stringify({ ...counters, galleryPilot: galleryPilotMarker, summary: note }) :
+    options.manualExclusive ? JSON.stringify({ trigger:'manual', ...counters, summary:note }) : note;
   // A manual run must not overlap the scheduled worker and double the category budget.
   const lock = options.connection ?? await db.connect();
-  const release = () => { if (!options.connection) lock.release(); };
+  let discardConnection=false;
+  const release = () => { if (!options.connection) lock.release(discardConnection); };
+  const extraLocks: number[] = [];
+  let sourceAcquired=false;
   try {
     const locked = await lock.query<{ acquired: boolean }>('SELECT pg_try_advisory_lock($1) AS acquired', [AMAZON_ACCESS_LOCK]);
     if (!locked.rows[0].acquired) { release(); return { state: 'already_running' }; }
-  } catch (error) { release(); throw error; }
+    sourceAcquired=true;
+    if (options.manualExclusive) {
+      for (const key of [70400300,70400301]) {
+        const other = await lock.query<{ acquired: boolean }>('SELECT pg_try_advisory_lock($1) AS acquired',[key]);
+        if (!other.rows[0]?.acquired) {
+          for (const owned of extraLocks.reverse()) await lock.query('SELECT pg_advisory_unlock($1)',[owned]);
+          await lock.query('SELECT pg_advisory_unlock($1)',[AMAZON_ACCESS_LOCK]);
+          release();
+          return { state:'already_running' };
+        }
+        extraLocks.push(key);
+      }
+    }
+  } catch (error) {
+    for (const key of extraLocks.reverse()) {
+      try { await lock.query('SELECT pg_advisory_unlock($1)',[key]); }
+      catch { discardConnection=true; }
+    }
+    if (sourceAcquired) {
+      try { await lock.query('SELECT pg_advisory_unlock($1)',[AMAZON_ACCESS_LOCK]); }
+      catch { discardConnection=true; }
+    }
+    release();throw error;
+  }
   let id: number | undefined;
   let discovered = 0, saved = 0, errors = 0, blocked = false;
   let attempted = 0, newProducts = 0, updatedProducts = 0, warnings = 0;
   const session = new ScraplingSession();
   const deferred: Record<string, number> = {};
   try {
-    const runResult = await lock.query<{ id: string }>('INSERT INTO sync_runs DEFAULT VALUES RETURNING id');
+    const runResult = options.manualExclusive
+      ? await lock.query<{id:string}>("INSERT INTO sync_runs(note) VALUES($1) RETURNING id",[runNote('Manual Amazon full scan started')])
+      : await lock.query<{id:string}>('INSERT INTO sync_runs DEFAULT VALUES RETURNING id');
     id = Number(runResult.rows[0].id);
     // Manual bounded runs must not queue the entire existing catalog before
     // the limit is applied. The scheduled job still seeds the full backlog.
     if (options.totalLimit === undefined) await seedExistingDetails(lock);
     if (!await amazonGate(lock, options.scheduled === true)) {
       const note = 'Amazon source cooldown; waiting for the next eligible daily 04:00 JST scan';
-      await lock.query(`UPDATE sync_runs SET finished_at=now(),state='failed',error_count=1,note=$2 WHERE id=$1`, [id, note]);
+      await lock.query(`UPDATE sync_runs SET finished_at=now(),state='failed',error_count=1,note=$2 WHERE id=$1`, [id, runNote(note)]);
       return { id, state: 'failed', discovered: 0, saved: 0, errors: 1, deferred };
     }
     if (pilot) {
@@ -222,7 +252,14 @@ export async function syncCatalog(options: {
     throw error;
   } finally {
     session.close();
-    try { await lock.query('SELECT pg_advisory_unlock($1)', [AMAZON_ACCESS_LOCK]); }
+    try {
+      for (const key of extraLocks.reverse()) {
+        try { await lock.query('SELECT pg_advisory_unlock($1)',[key]); }
+        catch { discardConnection=true; }
+      }
+      try { await lock.query('SELECT pg_advisory_unlock($1)', [AMAZON_ACCESS_LOCK]); }
+      catch { discardConnection=true; }
+    }
     finally { release(); }
   }
 }
