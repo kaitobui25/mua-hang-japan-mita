@@ -140,5 +140,15 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
         addQuote(quote);
         setAdded(true);
       }}/>}
+    <section className="amazon-service-info" aria-labelledby="amazon-service-title">
+      <h2 id="amazon-service-title">Cách mua hộ từ Amazon.co.jp</h2>
+      <ol>
+        <li><strong>Nhập link hoặc mã ASIN.</strong> Dán đường dẫn sản phẩm Amazon.co.jp hoặc nhập mã ASIN gồm 10 ký tự.</li>
+        <li><strong>Xem thông tin và báo giá.</strong> Kiểm tra đúng sản phẩm, giá và ngày giao dự kiến nếu có. Báo giá có hiệu lực 15 phút từ lúc tạo; hết hạn cần tra lại.</li>
+        <li><strong>Xác nhận yêu cầu mua.</strong> Kiểm tra điều kiện mua trước khi thêm vào giỏ và gửi đơn. Mita xác nhận đơn; giá đặt mua và phí vận chuyển về Việt Nam được báo riêng.</li>
+      </ol>
+      <p>Thông tin Amazon có thể thay đổi hoặc chưa xác minh được tại thời điểm tra cứu. Mita không tự chuyển sang ASIN hoặc lựa chọn hàng khác khi bạn nhập link mua hộ.</p>
+      <Link href="/cach-mua-hang" className="inline-link">Xem hướng dẫn mua hàng</Link>
+    </section>
   </section>;
 }

@@ -7,11 +7,12 @@ import { ProductCard } from "@/components/catalog/product-card";
 import { Icon } from "@/components/ui/icons";
 import type { CatalogProduct } from "@/types/catalog";
 
-export function FeaturedProducts() {
-  const [products, setProducts] = useState<CatalogProduct[]>([]);
-  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+export function FeaturedProducts({ initialProducts }: { initialProducts: CatalogProduct[] | null }) {
+  const [products, setProducts] = useState<CatalogProduct[]>(initialProducts ?? []);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">(initialProducts ? "ready" : "error");
   const [retry, setRetry] = useState(0);
   useEffect(() => {
+    if (retry === 0) return;
     let active = true;
     setStatus("loading");
     fetchCatalog({ limit: 4, page: 1, sort: "newest" }).then(result => { if (active) { setProducts(result.items); setStatus("ready"); } }).catch(() => { if (active) setStatus("error"); });

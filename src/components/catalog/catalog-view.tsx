@@ -55,6 +55,13 @@ export function CatalogView({ category, initialResult, initialParams }: {
     router.push(`${pathname}${next.toString() ? `?${next}` : ""}`);
   }
 
+  function paginationHref(nextPage: number) {
+    const next = new URLSearchParams(searchParams.toString());
+    if (nextPage === 1) next.delete("page");
+    else next.set("page", String(nextPage));
+    return `${pathname}${next.toString() ? `?${next}` : ""}`;
+  }
+
   const totalPages = result ? Math.ceil(result.total / PAGE_SIZE) : 0;
   return <>
     <section className="catalog-intro"><div className="container">
@@ -77,7 +84,7 @@ export function CatalogView({ category, initialResult, initialParams }: {
         {loading ? <div className="product-grid" aria-busy="true" aria-label="Đang tải sản phẩm">{Array.from({length: 8}, (_, index) => <div key={index} className="product-skeleton"><div/><span/><span/><span/></div>)}</div>
           : error ? <div className="state-panel" role="alert"><Icon name="clock" size={30}/><h2>Chưa tải được sản phẩm</h2><p>{error}</p><button type="button" className="button button-primary" onClick={() => setRetry(value => value + 1)}>Thử lại <Icon name="arrow"/></button></div>
           : !result?.items.length ? <div className="state-panel"><Icon name="search" size={34}/><h2>Chưa tìm thấy sản phẩm phù hợp</h2><p>Thử tìm với từ khóa khác hoặc mở toàn bộ danh mục.</p><Link href="/san-pham" className="button button-primary">Xem tất cả sản phẩm <Icon name="arrow"/></Link></div>
-          : <><div className="product-grid">{result.items.map(item => <ProductCard key={item.asin} product={item}/>)}</div>{totalPages > 1 && <nav className="pagination" aria-label="Phân trang"><button type="button" disabled={page <= 1} onClick={() => update({ page: String(page - 1) })}>Trang trước</button><span>Trang {page} / {totalPages}</span><button type="button" disabled={page >= totalPages} onClick={() => update({ page: String(page + 1) })}>Trang sau <Icon name="arrow" size={16}/></button></nav>}</>}
+          : <><div className="product-grid">{result.items.map(item => <ProductCard key={item.asin} product={item}/>)}</div>{totalPages > 1 && <nav className="pagination" aria-label="Phân trang">{page > 1 ? <Link href={paginationHref(page - 1)}>Trang trước</Link> : <span className="pagination-disabled" aria-disabled="true">Trang trước</span>}<span>Trang {page} / {totalPages}</span>{page < totalPages ? <Link href={paginationHref(page + 1)}>Trang sau <Icon name="arrow" size={16}/></Link> : <span className="pagination-disabled" aria-disabled="true">Trang sau <Icon name="arrow" size={16}/></span>}</nav>}</>}
       </div>
     </section>
   </>;

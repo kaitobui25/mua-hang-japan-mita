@@ -2,19 +2,28 @@ import Link from "next/link";
 import { FeaturedProducts } from "@/components/catalog/featured-products";
 import { Icon } from "@/components/ui/icons";
 import { SearchForm } from "@/components/layout/search-form";
+import { getServerCatalog } from "@/lib/server-catalog";
+import type { CatalogProduct } from "@/types/catalog";
 
-export default function HomePage() {
+export default async function HomePage() {
+  let featured: CatalogProduct[] | null = null;
+  try {
+    const catalog = await getServerCatalog({ page: 1, limit: 4, sort: "newest" });
+    featured = catalog.items;
+  } catch {
+    // Keep the homepage available if the catalog API is temporarily unavailable.
+  }
   return <>
     <section className="amazon-home-search"><div className="container amazon-home-search-inner"><label htmlFor="search-prominent">Tìm hàng Nhật hoặc dán link Amazon.co.jp</label><SearchForm className="prominent"/><p>Nhập tên sản phẩm Mita, đường dẫn Amazon JP hoặc mã ASIN để tra giá và ngày giao thường.</p></div></section>
     <section className="hero"><div className="container hero-layout">
-      <div className="hero-copy"><h1>Chăm chút<br/>từng điều nhỏ.</h1><p className="lead">Đồ Nhật cho sức khỏe và những năm đầu của bé.</p><div className="hero-actions"><Link href="/san-pham" className="button button-primary">Khám phá sản phẩm <Icon name="arrow" size={19}/></Link><Link href="#danh-muc" className="button button-outline">Chọn theo danh mục</Link></div></div>
+      <div className="hero-copy"><h1 className="hero-brand">Mita Japan — hàng Nhật cho gia đình Việt</h1><p className="hero-slogan">Chăm chút<br/>từng điều nhỏ.</p><p className="lead">Đồ Nhật cho sức khỏe và những năm đầu của bé.</p><div className="hero-actions"><Link href="/san-pham" className="button button-primary">Khám phá sản phẩm <Icon name="arrow" size={19}/></Link><Link href="#danh-muc" className="button button-outline">Chọn theo danh mục</Link></div></div>
       <div className="hero-art" aria-hidden="true"><div className="art-arch"><div className="art-sun"/><svg className="art-plant" viewBox="0 0 470 560" fill="none"><path d="M224 556C231 433 205 279 181 106" stroke="currentColor" strokeWidth="4" strokeLinecap="round"/><path d="M211 410C140 366 91 294 84 238C149 253 199 321 211 410ZM207 326C266 258 284 191 278 131C231 157 200 228 207 326ZM190 213C121 169 98 116 105 72C157 90 186 136 190 213ZM222 463C272 413 334 383 379 394C348 447 282 469 222 463Z" fill="currentColor" fillOpacity=".74"/><path d="M85 238c60 68 126 172 126 172M278 131c-31 82-58 155-71 195" stroke="var(--color-paper)" strokeOpacity=".48" strokeWidth="2"/></svg><span className="art-shadow"/></div><div className="art-caption"><span>mita japan</span><span>small things, thoughtfully chosen</span></div></div>
     </div></section>
     <section className="categories-section section-space" id="danh-muc"><div className="container"><div className="section-title-row"><div><h2>Chọn theo từng thành viên.</h2></div><p>Mỗi giai đoạn của cuộc sống đều có những điều nhỏ đáng chăm chút.</p></div>
       <div className="category-grid"><Link href="/danh-muc/thuc-pham-bo-sung" className="category-card category-wellness"><div className="category-illustration wellness-illustration"><div className="category-circle"/><Icon name="leaf" size={110}/></div><div className="category-copy"><span>01 / Sức khỏe mỗi ngày</span><h3>Thực phẩm bổ sung</h3><p>Khám phá lựa chọn cho thói quen chăm sóc bản thân.</p><span className="category-cta">Khám phá <Icon name="arrow" size={19}/></span></div></Link><Link href="/danh-muc/thuc-pham-cho-be" className="category-card category-baby"><div className="category-illustration baby-illustration"><div className="category-circle"/><div className="illustration-bowl"/><div className="illustration-spoon"/></div><div className="category-copy"><span>02 / Những năm đầu đời</span><h3>Thực phẩm cho bé</h3><p>Những lựa chọn dành cho bữa ăn đầu đời của bé.</p><span className="category-cta">Khám phá <Icon name="arrow" size={19}/></span></div></Link></div>
     </div></section>
     <section className="story-band"><div className="container story-layout"><div className="story-mark"><Icon name="leaf" size={68}/></div><div><h2>Chọn hàng Nhật,<br/>theo cách gần gũi hơn.</h2></div><p>Khám phá sản phẩm, đặt hàng bằng VND và nhận xác nhận trực tiếp từ Mita Japan.</p></div></section>
-    <FeaturedProducts/>
+    <FeaturedProducts initialProducts={featured}/>
     <section className="how-section section-space"><div className="container"><div className="section-title-row"><div><h2>Ba bước để bắt đầu.</h2></div><Link className="inline-link" href="/cach-mua-hang">Xem cách mua hàng <Icon name="arrow"/></Link></div><div className="steps-grid"><div><span className="step-number">01</span><Icon name="search" size={28}/><h3>Chọn sản phẩm</h3><p>Tìm theo danh mục, thương hiệu hoặc tên sản phẩm.</p></div><div><span className="step-number">02</span><Icon name="bag" size={28}/><h3>Kiểm tra giỏ hàng</h3><p>Kiểm tra số lượng và giá sản phẩm.</p></div><div><span className="step-number">03</span><Icon name="check" size={28}/><h3>Gửi đơn đặt hàng</h3><p>Cửa hàng xác nhận đơn trước khi thanh toán.</p></div></div><div className="home-final-cta"><h2>Chọn những điều tốt đẹp cho mỗi ngày.</h2><Link href="/san-pham" className="button button-primary">Bắt đầu khám phá <Icon name="arrow"/></Link></div></div></section>
   </>;
 }

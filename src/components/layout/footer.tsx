@@ -10,7 +10,7 @@ export function Footer() {
     <div className="container footer-grid">
       <div><Link href="/" className="wordmark footer-wordmark">mita<span>japan</span><span className="wordmark-mark">.</span></Link><p>Những sản phẩm Nhật Bản dành cho nhịp sống mỗi ngày của gia đình Việt.</p></div>
       <div><h3>Khám phá</h3><Link href="/san-pham">Tất cả sản phẩm</Link><Link href="/danh-muc/thuc-pham-bo-sung">Thực phẩm bổ sung</Link><Link href="/danh-muc/thuc-pham-cho-be">Thực phẩm cho bé</Link></div>
-      <div><h3>Hướng dẫn</h3><Link href="/cach-mua-hang">Cách mua hàng</Link><Link href="/danh-gia">Đánh giá khách hàng</Link><Link href="/gio-hang">Giỏ hàng</Link>{process.env.NEXT_PUBLIC_READ_ONLY !== '1' && <Link href="/thanh-toan">Đặt hàng</Link>}
+      <div><h3>Hướng dẫn</h3><Link href="/cach-mua-hang">Cách mua hàng</Link><Link href="/mua-ho-amazon">Mua hộ Amazon Nhật</Link><Link href="/danh-gia">Đánh giá khách hàng</Link><Link href="/gio-hang">Giỏ hàng</Link>{process.env.NEXT_PUBLIC_READ_ONLY !== '1' && <Link href="/thanh-toan">Đặt hàng</Link>}
         {(zalo || facebook) && <h3>Liên hệ trực tiếp</h3>}
         {zalo && <a href={zalo} target="_blank" rel="noopener noreferrer">Liên hệ Zalo</a>}
         {facebook && <FacebookChatPopup href={facebook} />}
