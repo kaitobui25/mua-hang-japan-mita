@@ -30,6 +30,17 @@ export type DbProduct = {
 const allProductsEnabledSql = '(SELECT NOT hide_local_test_only FROM catalog_settings WHERE id=1)';
 const publicRightsSql = `(rights_status = 'verified' OR ${allProductsEnabledSql})`;
 export const publicVisibilitySql = `admin_hidden_at IS NULL AND ${publicRightsSql}`;
+
+export async function listPublicAsins(connection?: Pick<PoolClient, 'query'>) {
+  // One statement/snapshot, including every public variant without enrichment.
+  // The extra row detects overflow instead of silently publishing a partial list.
+  const result = await (connection ?? db).query<{ asin: string }>(
+    `SELECT asin FROM products WHERE ${publicVisibilitySql} ORDER BY asin ASC LIMIT 50001`);
+  if (result.rows.length > 50_000) throw new Error('Public ASIN inventory exceeds sitemap capacity');
+  const asins = result.rows.map(row => row.asin);
+  return { asins, total: asins.length };
+}
+
 export function canCheckoutProduct(p: DbProduct, policy: Pick<PricingPolicy, 'checkPriceExpiry' | 'priceExpiryDays'>) {
   return !config.publicReadOnly && !p.admin_hidden_at && (p.rights_status === 'verified' || p.owner_all_products_enabled === true) &&
     p.sale_status === 'ready' && p.availability === 'in_stock' &&

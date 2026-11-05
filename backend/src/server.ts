@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import { db } from './db/pool.js';
 import { config } from './config.js';
-import { getProductDetails, listCatalog } from './catalog.js';
+import { getProductDetails, listCatalog, listPublicAsins } from './catalog.js';
 import { CheckoutError, createOrder } from './orders.js';
 import { adminRoutes } from './admin/routes.js';
 import { orderAlertRelayRoutes } from './order-alert-relay.js';
@@ -58,6 +58,16 @@ export function buildServer(logger = false) {
     const limit = Number(q.limit ?? 24);
     if (!Number.isInteger(page) || page < 1 || !Number.isInteger(limit) || limit < 1 || limit > 100 || (q.q?.length ?? 0) > 200) return reply.code(400).send({ error: 'Invalid pagination or search' });
     return listCatalog({ category: q.category, q: q.q, sort: q.sort, page, limit });
+  });
+
+  server.get('/api/catalog/asins', async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    try {
+      return await listPublicAsins();
+    } catch {
+      request.log.error({ code: 'public_asin_inventory_failed' }, 'Public ASIN inventory unavailable');
+      return reply.code(503).send({ error: 'Public ASIN inventory unavailable' });
+    }
   });
 
   server.get('/api/catalog/products/:asin', async (request, reply) => {

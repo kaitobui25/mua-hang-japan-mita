@@ -4,6 +4,23 @@ import type { CatalogProduct, CatalogResponse } from "@/types/catalog";
 
 export const SITE_URL = "https://mitajapanshop.duckdns.org";
 
+export async function getServerPublicAsins(): Promise<string[]> {
+  const response = await request('/api/catalog/asins');
+  if (!response.ok) throw new Error(`Public ASIN API returned HTTP ${response.status}`);
+  const inventory: unknown = await response.json();
+  if (!inventory || typeof inventory !== 'object' || !('asins' in inventory) || !('total' in inventory)) {
+    throw new Error('Invalid public ASIN inventory');
+  }
+  const { asins, total } = inventory;
+  if (!Array.isArray(asins) || !Number.isSafeInteger(total) || total !== asins.length ||
+      asins.length === 0 || asins.length > 50_000 ||
+      asins.some(asin => typeof asin !== 'string' || asin.length !== 10 || !/^[A-Z0-9]{10}$/.test(asin)) ||
+      new Set(asins).size !== asins.length) {
+    throw new Error('Invalid or incomplete public ASIN inventory');
+  }
+  return asins;
+}
+
 async function request(path: string): Promise<Response> {
   try {
     return await fetch(`http://127.0.0.1:${process.env.API_PORT ?? "4000"}${path}`, {
@@ -40,7 +57,7 @@ export function catalogSearchParams(params: Record<string, string | string[] | u
 export async function getServerCatalog(params: number | {
   category?: string; q?: string; sort?: string; limit?: number; page?: number;
 }): Promise<CatalogResponse> {
-  // Preserve the sitemap's existing 100-item, name-sorted pagination.
+  // Preserve the numeric caller's existing 100-item, name-sorted pagination.
   const options = typeof params === "number" ? { page: params, limit: 100, sort: "name" } : params;
   const query = new URLSearchParams({
     page: String(options.page ?? 1), limit: String(options.limit ?? 12), sort: options.sort || "reviews",
