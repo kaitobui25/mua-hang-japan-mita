@@ -81,11 +81,11 @@ try {
   $prefix=Join-Path $runtime ("${stamp}-${job}-${mode}-${id}")
   $stdout=$prefix+'.out.log'; $stderr=$prefix+'.err.log'; $report=$prefix+'.json'
   Write-Host ('Bat dau {0}/{1}. Ket qua se xuat khi process ket thuc.' -f $job,$mode)
-  $process=Start-Process -FilePath $node.Source -WorkingDirectory $backend -NoNewWindow -PassThru `
+  # -Wait supplies the final native exit code. Polling HasExited/Refresh alone
+  # can leave ExitCode=$null on Windows PowerShell 5.1 even after completion.
+  $process=Start-Process -FilePath $node.Source -WorkingDirectory $backend -NoNewWindow -Wait -PassThru `
     -ArgumentList @('--import','tsx','src/manual-jobs.ts',$job,$mode,[string]$limit) `
     -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-  while (!$process.HasExited) { Start-Sleep -Seconds 2; $process.Refresh() }
-  $process.Refresh()
   $exitCode=$process.ExitCode
   $matches=@(Get-Content -LiteralPath $stdout -ErrorAction SilentlyContinue | Where-Object { $_.StartsWith('MITA_WORKER_RESULT ') })
   $result=$null
@@ -104,8 +104,9 @@ try {
   } elseif ($job -eq 'amazon') {
     Write-Host ('Da thu: {0}; thanh cong: {1}; that bai: {2}; hoan: {3}' -f `
       (Read-Count $result 'attempted'),(Read-Count $result 'succeeded'),(Read-Count $result 'failed'),(Read-Count $result 'deferred'))
-    Write-Host ('Du lieu cap nhat: {0}; khong doi: {1}; loi nguon: {2}' -f `
-      (Read-Count $result 'updated'),(Read-Count $result 'unchanged'),(Read-Count $result 'sourceErrors'))
+    Write-Host ('Du lieu cap nhat: {0}; khong doi: {1}' -f `
+      (Read-Count $result 'updated'),(Read-Count $result 'unchanged'))
+    if ($mode -eq 'full') { Write-Host ('Loi nguon: '+(Read-Count $result 'sourceErrors')) }
     if ($mode -eq 'presence') { Write-Host ('Trang xac nhan ton tai: {0}; het hang: {1}; ton kho khong ro: {2}' -f `
       (Read-Count $result 'present'),(Read-Count $result 'outOfStock'),(Read-Count $result 'unknownAvailability')) }
   } elseif ($job -eq 'names') {
