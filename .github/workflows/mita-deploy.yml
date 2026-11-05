@@ -4,6 +4,17 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Exact committed HEAD selected by One-Click
+        required: true
+        type: string
+      request_id:
+        description: Unique One-Click request identifier
+        required: true
+        type: string
+
+run-name: Mita One-Click ${{ inputs.request_id || github.sha }}
 
 permissions:
   contents: read
@@ -14,9 +25,9 @@ concurrency:
 
 jobs:
   release:
-    # Only the HEAD commit of a push to main may authorize deployment.
-    # Manual dispatch is a build-only diagnostic; it NEVER uploads to Hermes.
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[deploy]'))
+    # An explicit One-Click dispatch can only deploy its pinned branch HEAD.
+    # Ordinary pushes still require the existing [deploy] marker.
+    if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.release_sha == github.sha && inputs.request_id != '') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[deploy]'))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -58,7 +69,7 @@ jobs:
           retention-days: 7
           if-no-files-found: error
       - name: Deploy exactly this commit to Hermes
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.release_sha == github.sha && inputs.request_id != '')
         env:
           DEPLOY_KEY: ${{ secrets.MITA_DEPLOY_SSH_KEY }}
           DEPLOY_HOST: ${{ secrets.MITA_DEPLOY_HOST }}

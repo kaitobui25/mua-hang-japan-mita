@@ -66,7 +66,12 @@ function SyncVpsData([string]$mode) {
       if ($LASTEXITCODE -ne 0) { throw 'VPS translation migration failed; sync/release not attempted' }
       & node.exe scripts/migrate-vps-sync-ledger.mjs $migrationMode
       if ($LASTEXITCODE -ne 0) { throw 'VPS ledger migration failed; sync/release not attempted' }
+      & node.exe scripts/migrate-vps-title-revisions.mjs $migrationMode
+      if ($LASTEXITCODE -ne 0) { throw 'VPS title revision migration failed; sync/release not attempted' }
     } else {
+      $migrationMode = if ($mode -eq '--dry-run') { '--dry-run' } else { '--apply' }
+      & node.exe scripts/migrate-vps-title-revisions.mjs $migrationMode
+      if ($LASTEXITCODE -ne 0) { throw 'VPS title revision migration failed; sync/release not attempted' }
       & node.exe scripts/sync-catalog-vps.mjs $mode
       if($LASTEXITCODE -ne 0) { throw "VPS catalog $mode failed; code release NOT pushed" }
     }
@@ -110,10 +115,36 @@ try {
   New-Item -ItemType Directory -Path $runtime -Force | Out-Null
   Write-Host ('=== MITA ONE-CLICK DEPLOY ' + (Get-Date -Format o) + ' ===') -ForegroundColor Cyan
   if((git branch --show-current).Trim() -ne 'main') { throw 'Deploy requires main branch' }
+  # Freeze the already committed source immediately. Staged/untracked edits are never published.
+  $clickSha = (& git.exe rev-parse --verify 'HEAD^{commit}').Trim()
+  if ($LASTEXITCODE -ne 0 -or $clickSha -notmatch '^[0-9a-f]{40}$') { throw 'Cannot identify the committed HEAD at click time' }
+  Write-Host "[SOURCE] Pinned committed HEAD: $clickSha"
   if(!(Get-Command gh.exe -ErrorAction SilentlyContinue)) { throw 'GitHub CLI gh.exe is required' }
   RunChecked 'GitHub authentication' { gh.exe auth status 1>$null }
   RunChecked 'Fetch remote main' { git.exe fetch origin main }
-  RunChecked 'Check local history contains origin/main' { git.exe merge-base --is-ancestor origin/main HEAD }
+  RunChecked 'Check pinned history contains origin/main' { git.exe merge-base --is-ancestor origin/main $clickSha }
+  $remoteAtStart = (& git.exe rev-parse --verify origin/main).Trim()
+  if ($LASTEXITCODE -ne 0 -or $remoteAtStart -notmatch '^[0-9a-f]{40}$') { throw 'Cannot identify fetched remote main' }
+  $clickMessage = (& git.exe log -1 --format=%B $clickSha) -join "`n"
+  if ($LASTEXITCODE -ne 0) { throw 'Cannot read pinned commit message' }
+  $taggedPush = $remoteAtStart -ne $clickSha -and $clickMessage.Contains('[deploy]')
+  if (!$DryRun -and !$DataOnly -and !$MigrationsOnly -and !$taggedPush) {
+    # The running script might itself be uncommitted; the pinned commit must
+    # already contain the guarded manual deployment workflow before any DB write.
+    $workflowAtClick = & git.exe show ('{0}:.github/workflows/mita-deploy.yml' -f $clickSha)
+    if ($LASTEXITCODE -ne 0 -or ($workflowAtClick -join "`n") -notmatch 'inputs\.release_sha == github\.sha') {
+      throw 'Commit the guarded One-Click workflow before deploying; no DB changes made'
+    }
+  }
+  if (!$DryRun -and !$MigrationsOnly) {
+    # These executable data tools must also match the click-time commit. Other
+    # working-tree edits remain untouched and are not part of the release.
+    $dataCode = @('scripts/deploy-one-click.ps1','backend/scripts/sync-catalog-vps.mjs',
+      'backend/scripts/gallery-snapshot-policy.mjs','backend/scripts/migrate-vps-title-revisions.mjs',
+      'backend/src/db')
+    & git.exe diff --quiet $clickSha -- @dataCode
+    if ($LASTEXITCODE -ne 0) { throw 'Data sync/migration scripts differ from committed HEAD; commit them before One-Click' }
+  }
 
   if(!$DryRun -and !$MigrationsOnly) {
     # Upgrade local source first, so newly introduced translation metadata is
@@ -123,7 +154,7 @@ try {
 
   SyncVpsData $(if($MigrationsOnly -and $DryRun) {'--migrations-dry-run'} elseif($MigrationsOnly) {'--migrations'} elseif($DryRun) {'--dry-run'} else {'--apply'})
   if ($MigrationsOnly) {
-    Write-Host $(if($DryRun) {'[MIGRATIONS DRY RUN] No VPS writes.'} else {'[MIGRATIONS OK] VPS translation + sync ledger DDL only; no catalog sync, commit or deploy.'}) -ForegroundColor Green
+    Write-Host $(if($DryRun) {'[MIGRATIONS DRY RUN] No VPS writes.'} else {'[MIGRATIONS OK] VPS translation + sync ledger + title revisions only; no catalog sync, commit or deploy.'}) -ForegroundColor Green
   } elseif($DryRun) {
     Write-Host '[DRY RUN PASSED] No Git push and no VPS database changes.' -ForegroundColor Green
   } else {
@@ -141,29 +172,60 @@ try {
     if($DataOnly) {
       Write-Host '[OK] Data synced and verified; code deployment skipped (-DataOnly).' -ForegroundColor Green
     } else {
-      # Explicit HEAD marker is required by the existing GitHub Actions workflow.
-      CallGit @('add','-A')
-      RunChecked 'Validate staged patch' { git.exe diff --cached --check }
-      CallGit @('commit','--allow-empty','-m','One-click verified Mita release [deploy]')
-      $sha = (& git.exe rev-parse HEAD).Trim()
-      CallGit @('push','origin','main')
-      Write-Host "[PUSH OK] $sha" -ForegroundColor Green
+      # Publish only the commit that existed at click time, never staged or
+      # untracked files or a branch tip that changed while syncing data.
+      $headNow = (& git.exe rev-parse --verify HEAD).Trim()
+      if ($LASTEXITCODE -ne 0 -or $headNow -ne $clickSha) { throw 'Local HEAD changed after click; release stopped' }
+      $remoteLines = @(& git.exe ls-remote origin refs/heads/main)
+      $remoteMatch = if ($remoteLines.Count -eq 1) { [regex]::Match($remoteLines[0], '^([0-9a-f]{40})\s+refs/heads/main$') } else { $null }
+      if ($LASTEXITCODE -ne 0 -or !$remoteMatch -or !$remoteMatch.Success) {
+        throw 'Cannot verify current remote main; release stopped'
+      }
+      if ($remoteMatch.Groups[1].Value -ne $remoteAtStart) { throw 'Remote main changed after click; release stopped' }
+      $oldPushRunIds = @()
+      if ($taggedPush) {
+        # A matching SHA alone is insufficient when an old push run exists.
+        $oldPushRuns = & gh.exe run list --workflow mita-deploy.yml --commit $clickSha --event push --limit 100 --json databaseId
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect previous push runs; release stopped' }
+        $oldPushRunIds = @(($oldPushRuns | ConvertFrom-Json) | ForEach-Object { [long]$_.databaseId })
+      }
+      if ($remoteAtStart -ne $clickSha) {
+        # The exact remote lease forbids racing main updates; the fetched main
+        # was already proven an ancestor of clickSha (no history rewrite).
+        CallGit @('push',("--force-with-lease=refs/heads/main:$remoteAtStart"),'origin',("${clickSha}:refs/heads/main"))
+        Write-Host "[PUSH OK] Previously committed source: $clickSha" -ForegroundColor Green
+      } else { Write-Host "[PUSH SKIPPED] Remote already contains $clickSha" }
+      $runEvent = if ($taggedPush) { 'push' } else { 'workflow_dispatch' }
+      $requestId = [guid]::NewGuid().ToString('N')
+      if ($runEvent -eq 'workflow_dispatch') {
+        # The workflow rejects dispatches where main is no longer this SHA.
+        RunChecked 'Dispatch pinned One-Click deployment' {
+          gh.exe workflow run mita-deploy.yml --ref main -f "release_sha=$clickSha" -f "request_id=$requestId"
+        }
+      }
       $runId=$null
       for($attempt=0;$attempt -lt 30;$attempt++) {
-        $runs = & gh.exe run list --workflow mita-deploy.yml --commit $sha --limit 5 --json databaseId,headSha,status,conclusion,url
+        $runs = & gh.exe run list --workflow mita-deploy.yml --commit $clickSha --event $runEvent --limit 40 --json databaseId,headSha,headBranch,event,displayTitle,status,conclusion,url
         if($LASTEXITCODE -ne 0) { throw 'Cannot read GitHub Actions run status' }
-        $entry=@(($runs | ConvertFrom-Json) | Where-Object { $_.headSha -eq $sha } | Select-Object -First 1)
+        $entry=@(($runs | ConvertFrom-Json) | Where-Object {
+          $_.headSha -eq $clickSha -and $_.headBranch -eq 'main' -and $_.event -eq $runEvent -and
+          (($runEvent -eq 'push' -and [long]$_.databaseId -notin $oldPushRunIds) -or
+           ($runEvent -eq 'workflow_dispatch' -and $_.displayTitle -eq "Mita One-Click $requestId"))
+        } | Select-Object -First 1)
         if($entry.Count -gt 0) { $runId=[long]$entry[0].databaseId; break }
         Start-Sleep -Seconds 5
       }
-      if(!$runId) { throw "No workflow run for commit $sha; inspect GitHub Actions" }
+      if(!$runId) { throw "No matching release workflow run for $clickSha; inspect GitHub Actions" }
       Write-Host "[CI] GitHub Actions run #$runId, monitoring build + Hermes deployment..."
       $complete=$false
       for($i=0;$i -lt 160;$i++) {
-        $runInfo=& gh.exe run view $runId --json status,conclusion,url,headSha
+        $runInfo=& gh.exe run view $runId --json status,conclusion,url,headSha,headBranch,event,displayTitle
         if($LASTEXITCODE -ne 0) { throw "Could not inspect GitHub run $runId" }
         $info=($runInfo | ConvertFrom-Json)
-        if($info.headSha -ne $sha) { throw 'CI run commit identity mismatch' }
+        if($info.headSha -ne $clickSha -or $info.headBranch -ne 'main' -or $info.event -ne $runEvent -or
+          ($runEvent -eq 'workflow_dispatch' -and $info.displayTitle -ne "Mita One-Click $requestId")) {
+          throw 'CI run identity mismatch'
+        }
         if($info.status -eq 'completed') {
           $complete=$true
           if($info.conclusion -ne 'success') {
@@ -178,8 +240,8 @@ try {
         Start-Sleep -Seconds 15
       }
       if(!$complete) { throw "GitHub Actions timeout after 40 minutes; run $runId" }
-      VerifyPublic $sha
-      Write-Host '[DEPLOY COMPLETE] Git push, database, website and services verified.' -ForegroundColor Green
+      VerifyPublic $clickSha
+      Write-Host '[DEPLOY COMPLETE] Committed click-time HEAD, database, website and services verified.' -ForegroundColor Green
     }
   }
   exit 0
