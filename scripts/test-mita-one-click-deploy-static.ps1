@@ -19,6 +19,7 @@ Assert-OneClick ($source -notmatch '(?i)git\.exe\s+(?:add|commit|reset|stash)\b'
 Assert-OneClick ($source.Contains('${clickSha}:refs/heads/main')) 'Push must reference pinned SHA, not mutable main'
 Assert-OneClick ($source.Contains('--force-with-lease=refs/heads/main:$remoteAtStart')) 'Push must reject a concurrent remote main update'
 Assert-OneClick ($source.Contains('git.exe diff --quiet $clickSha -- @dataCode')) 'Data-sync executable files must match pinned commit'
+Assert-OneClick ($source.Contains('backend/scripts/migrate-vps-deploy-ledger.mjs')) 'One-Click ledger migration must be pinned to committed source'
 Assert-OneClick ($source.Contains('Local HEAD changed after click') -and
   $source.Contains('Remote main changed after click')) 'Changed HEAD or remote must stop release'
 
@@ -27,6 +28,9 @@ $sync = $source.IndexOf('scripts/sync-catalog-vps.mjs $mode')
 Assert-OneClick ($migrations.Count -eq 2 -and $migrations[1].Index -lt $sync) 'VPS title migration must precede sync in both normal and migrations-only paths'
 Assert-OneClick ($source.Contains("if (`$mode -eq '--dry-run') { '--dry-run' } else { '--apply' }")) 'Dry-run must not apply VPS migration'
 Assert-OneClick ($source.Contains('VPS title revision migration failed; sync/release not attempted')) 'VPS migration errors must stop sync/deploy'
+Assert-OneClick ($source.Contains('& node.exe scripts/migrate-vps-deploy-ledger.mjs $migrationMode')) 'One-Click ledger migration must be available through explicit migrations-only mode'
+Assert-OneClick ($source.Contains("'--deploy-apply'")) 'One-Click must use repeated-deploy sync mode, not daily --apply'
+Assert-OneClick ($source.Contains("'--migrations-dry-run'")) 'Dry-run migration mode must remain accessible without writes'
 
 Assert-OneClick ($workflow.Contains('release_sha:') -and $workflow.Contains('request_id:')) 'Workflow must require immutable SHA and unique request ID'
 Assert-OneClick ($workflow.Contains("github.ref == 'refs/heads/main'") -and

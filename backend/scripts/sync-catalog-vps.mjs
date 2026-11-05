@@ -206,6 +206,35 @@ export async function assertTransferSchema(client, label) {
   }
 }
 
+// A session lock covers the durable reservation as well as the data transaction.
+// Both entry points use it, so a concurrent run cannot reserve behind a writer.
+export async function reserveTransfer(client, {deploy, day, runId, jobs, watermark, sourceHash}) {
+  const locked=(await client.query('SELECT pg_try_advisory_lock(70400421) AS locked')).rows[0].locked;
+  if (!locked) throw Error('Catalog writer is active; no reservation made');
+  const ledgers=(await client.query(`SELECT to_regclass('public.catalog_sync_ledger')::text AS nightly,
+    to_regclass('public.catalog_deploy_ledger')::text AS deploy`)).rows[0];
+  if (!ledgers.nightly) throw Error('Sync ledger is missing; run reviewed migrate-vps-sync-ledger.mjs --apply separately');
+  if (deploy && !ledgers.deploy) throw Error('Deploy ledger is missing; run reviewed migrate-vps-deploy-ledger.mjs --apply separately');
+  if (ledgers.deploy) {
+    const pending=await client.query("SELECT run_id FROM catalog_deploy_ledger WHERE state='running' LIMIT 1");
+    if (pending.rows.length) throw Error('Unresolved deploy batch; manual inspection required');
+  }
+  if (deploy) {
+    const pending=await client.query("SELECT run_id FROM catalog_sync_ledger WHERE state='running' LIMIT 1");
+    if (pending.rows.length) throw Error('Unresolved daily batch; manual inspection required');
+    await client.query(`INSERT INTO catalog_deploy_ledger(run_id,sync_day,state,watermark,source_hash)
+      VALUES($1,$2,'running',$3,$4)`,[runId,day,watermark,sourceHash]);
+    return true;
+  }
+  const claim=await client.query(`INSERT INTO catalog_sync_ledger(sync_day,run_id,state,jobs,watermark,source_hash)
+    VALUES($1,$2,'running',$3,$4,$5) ON CONFLICT(sync_day) DO NOTHING
+    RETURNING run_id`,[day,runId,JSON.stringify(jobs),watermark,sourceHash]);
+  if (claim.rowCount) return true;
+  const existing=(await client.query('SELECT state FROM catalog_sync_ledger WHERE sync_day=$1',[day])).rows[0];
+  if (existing?.state==='completed') return false;
+  throw Error('Daily batch already claimed but not completed; manual inspection required');
+}
+
 export function codexRevisionMissing(incoming, current, targetProduct) {
   if (!incoming || !current || !['success','warning'].includes(incoming.status) ||
       !incoming.name || incoming.name_model!=='gpt-6.1-sol' || !incoming.name_generation ||
@@ -291,11 +320,13 @@ export async function verifyContents(source, targetClient) {
   return {report,mismatched};
 }
 
-export async function main() {
-  const { default: pg } = await import('pg');
+export async function main({Client}={}) {
+  if (!Client) ({Client}= (await import('pg')).default);
   const mode = process.argv[2];
-  if (!['--dry-run', '--apply', '--verify'].includes(mode) || process.argv.length !== 3)
-    throw Error('Usage: node scripts/sync-catalog-vps.mjs --dry-run|--apply|--verify');
+  if (!['--dry-run', '--apply', '--deploy-apply', '--verify'].includes(mode) || process.argv.length !== 3)
+    throw Error('Usage: node scripts/sync-catalog-vps.mjs --dry-run|--apply|--deploy-apply|--verify');
+  const deploy=mode==='--deploy-apply';
+  const ledgerTable=deploy?'catalog_deploy_ledger':'catalog_sync_ledger';
 
   const localUrl = process.env.MITA_LOCAL_DATABASE_URL || 'postgresql://mita_local@127.0.0.1:5433/postgres';
   const remoteUrl = process.env.MITA_VPS_DATABASE_URL;
@@ -305,8 +336,8 @@ export async function main() {
       remote.hostname !== '127.0.0.1' || remote.port !== '15432' || remote.pathname !== '/mita')
     throw Error('Only approved local PostgreSQL and SSH-forwarded VPS Mita database are allowed');
 
-  const from = new pg.Client({ connectionString: localUrl, connectionTimeoutMillis: 12000 });
-  const to = new pg.Client({ connectionString: remoteUrl, connectionTimeoutMillis: 12000 });
+  const from = new Client({ connectionString: localUrl, connectionTimeoutMillis: 12000 });
+  const to = new Client({ connectionString: remoteUrl, connectionTimeoutMillis: 12000 });
   async function syncGallery(source) {
     const current=(await to.query('SELECT asin,position,source_url,source_observed_at FROM product_images ORDER BY asin,position')).rows;
     const groups = rows => {
@@ -356,7 +387,7 @@ export async function main() {
     all.product_images=(await from.query('SELECT asin,position,source_url,source_observed_at FROM product_images ORDER BY asin,position')).rows;
     return all;
   }
-  let localTx=false, remoteTx=false, openedLedger=false, ledgerDay;
+  let localTx=false, remoteTx=false, openedLedger=false, commitAttempted=false, ledgerDay, runId;
   try {
     await from.connect(); await to.connect();
     const srcDb = await from.query('SELECT current_database() AS db, current_user AS role');
@@ -393,27 +424,19 @@ export async function main() {
       console.log(`PUBLIC_EXPECTED_TOTAL=${publicCards.rows[0].total}`);
       console.log('VERIFY_OK');
     } else {
-      const exists=(await to.query("SELECT to_regclass('public.catalog_sync_ledger')::text AS table_name")).rows[0].table_name;
-      if (!exists) throw Error('Sync ledger is missing; run reviewed migrate-vps-sync-ledger.mjs --apply separately');
       ledgerDay=dayJst(new Date());
-      const jobs=parseBarrier();
+      const jobs=deploy?null:parseBarrier();
       const source=await snapshotFrom();
       await assertCompatibleSnapshots(source, to);
       const sourceHash=digest(transferNames.map(name=>[name,
         source[name].map(row=>[rowKey(name,row),digest(row)]).sort(([a],[b])=>a.localeCompare(b))]));
-      const runId=randomUUID();
+      runId=randomUUID();
       // Commit the attempt reservation before any data writes. A crash or
       // disconnect leaves a durable running marker, blocking same-day replay.
-      const claim=await to.query(`INSERT INTO catalog_sync_ledger(sync_day,run_id,state,jobs,watermark,source_hash)
-        VALUES($1,$2,'running',$3,$4,$5) ON CONFLICT(sync_day) DO NOTHING
-        RETURNING run_id`,[ledgerDay,runId,JSON.stringify(jobs),watermark,sourceHash]);
-      if (!claim.rowCount) {
-        const existing=(await to.query('SELECT state FROM catalog_sync_ledger WHERE sync_day=$1', [ledgerDay])).rows[0];
-        if (existing?.state==='completed') {
-          console.log('SYNC_ALREADY_COMPLETED '+ledgerDay+'; no replay or data writes');
-          return; // The wrapper still runs --verify; no second batch is launched.
-        }
-        throw Error('Daily batch already claimed but not completed; manual inspection required');
+      const claimed=await reserveTransfer(to,{deploy,day:ledgerDay,runId,jobs,watermark,sourceHash});
+      if (!claimed) {
+        console.log('SYNC_ALREADY_COMPLETED '+ledgerDay+'; no replay or data writes');
+        return; // The wrapper still runs --verify; no second batch is launched.
       }
       openedLedger=true;
       await to.query('BEGIN'); remoteTx=true;
@@ -446,18 +469,37 @@ export async function main() {
       // The remote COMMIT and the marker are one transaction. Disconnect after
       // COMMIT can safely be diagnosed by inspecting the marker.
       const finalState=gallery.partial?'partial':'completed';
-      await to.query(`UPDATE catalog_sync_ledger SET state=$2,remote_hash=$3,committed_at=now(),
-        note=$4 WHERE sync_day=$1 AND run_id=$5`,
-        [ledgerDay,finalState,remoteHash,gallery.partial?'Partial gallery preserved; verify identities':'',runId]);
+      const finalized=await to.query(`UPDATE ${ledgerTable} SET state=$2,remote_hash=$3,committed_at=now(),
+        note=$4 WHERE run_id=$1 AND state='running'`,
+        [runId,finalState,remoteHash,gallery.partial?'Partial gallery preserved; verify identities':'']);
+      if (finalized.rowCount!==1) throw Error('Catalog ledger reservation changed; refusing commit');
+      commitAttempted=true;
       await to.query('COMMIT');remoteTx=false;
       console.log('SYNC_COMMIT_OK '+JSON.stringify({day:ledgerDay,runId,state:finalState,watermark,sourceHash,remoteHash}));
       console.log('AFTER '+JSON.stringify(await counts()));
     }
   } catch(error) {
-    if(remoteTx) await to.query('ROLLBACK').catch(()=>{});
-    if(openedLedger) {
-      await to.query(`UPDATE catalog_sync_ledger SET state='failed',note='Transfer failed; manual inspection required'
-        WHERE sync_day=$1 AND state='running'`,[ledgerDay]).catch(()=>{});
+    let rollbackConfirmed=!remoteTx;
+    if(remoteTx) {
+      try {
+        await to.query('ROLLBACK');
+        remoteTx=false;
+        rollbackConfirmed=true;
+      } catch {
+        console.error('SYNC_ROLLBACK_UNCONFIRMED: running ledger preserved; manual inspection required');
+      }
+    }
+    // A lost COMMIT response leaves the outcome uncertain. Preserve the durable
+    // marker for inspection; never classify it as a safe-to-retry failure.
+    if(openedLedger && !commitAttempted && rollbackConfirmed) {
+      try {
+        const failed=await to.query(`UPDATE ${ledgerTable} SET state='failed',note='Transfer rolled back before COMMIT'
+          WHERE run_id=$1 AND state='running'`,[runId]);
+        if (failed.rowCount!==1)
+          console.error('SYNC_LEDGER_UNRESOLVED: failure marker not updated; manual inspection required');
+      } catch {
+        console.error('SYNC_LEDGER_UNRESOLVED: failure marker not updated; manual inspection required');
+      }
     }
     console.error('SYNC_FAILED '+(error instanceof Error ? error.message:'unknown'));
     process.exitCode=1;

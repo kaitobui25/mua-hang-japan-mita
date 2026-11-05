@@ -94,6 +94,7 @@ test('generated SQL keeps values parameterized and source-bound slot updates', (
 const emptyCatalog = () => Object.fromEntries(
   [...tableSpecs.map(([name]) => name), 'product_images'].map(name => [name, []]));
 const catalogClient = catalog => ({query:async sql => {
+  if (sql==='SELECT asin,name FROM products') return {rows:catalog.products};
   const table = sql.match(/^SELECT \* FROM "([a-z_]+)"$/)?.[1];
   assert.ok(table, `Unexpected verifier query: ${sql}`);
   return {rows:catalog[table]};

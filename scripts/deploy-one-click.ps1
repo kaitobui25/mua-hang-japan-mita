@@ -66,6 +66,8 @@ function SyncVpsData([string]$mode) {
       if ($LASTEXITCODE -ne 0) { throw 'VPS translation migration failed; sync/release not attempted' }
       & node.exe scripts/migrate-vps-sync-ledger.mjs $migrationMode
       if ($LASTEXITCODE -ne 0) { throw 'VPS ledger migration failed; sync/release not attempted' }
+      & node.exe scripts/migrate-vps-deploy-ledger.mjs $migrationMode
+      if ($LASTEXITCODE -ne 0) { throw 'VPS One-Click ledger migration failed; sync/release not attempted' }
       & node.exe scripts/migrate-vps-title-revisions.mjs $migrationMode
       if ($LASTEXITCODE -ne 0) { throw 'VPS title revision migration failed; sync/release not attempted' }
     } else {
@@ -141,6 +143,7 @@ try {
     # working-tree edits remain untouched and are not part of the release.
     $dataCode = @('scripts/deploy-one-click.ps1','backend/scripts/sync-catalog-vps.mjs',
       'backend/scripts/gallery-snapshot-policy.mjs','backend/scripts/migrate-vps-title-revisions.mjs',
+      'backend/scripts/migrate-vps-deploy-ledger.mjs',
       'backend/src/db')
     & git.exe diff --quiet $clickSha -- @dataCode
     if ($LASTEXITCODE -ne 0) { throw 'Data sync/migration scripts differ from committed HEAD; commit them before One-Click' }
@@ -152,9 +155,9 @@ try {
     RunChecked 'Apply local additive schema' { npm.cmd run db:migrate --prefix backend }
   }
 
-  SyncVpsData $(if($MigrationsOnly -and $DryRun) {'--migrations-dry-run'} elseif($MigrationsOnly) {'--migrations'} elseif($DryRun) {'--dry-run'} else {'--apply'})
+  SyncVpsData $(if($MigrationsOnly -and $DryRun) {'--migrations-dry-run'} elseif($MigrationsOnly) {'--migrations'} elseif($DryRun) {'--dry-run'} else {'--deploy-apply'})
   if ($MigrationsOnly) {
-    Write-Host $(if($DryRun) {'[MIGRATIONS DRY RUN] No VPS writes.'} else {'[MIGRATIONS OK] VPS translation + sync ledger + title revisions only; no catalog sync, commit or deploy.'}) -ForegroundColor Green
+    Write-Host $(if($DryRun) {'[MIGRATIONS DRY RUN] No VPS writes.'} else {'[MIGRATIONS OK] VPS translation + nightly ledger + One-Click ledger + title revisions only; no catalog sync, commit or deploy.'}) -ForegroundColor Green
   } elseif($DryRun) {
     Write-Host '[DRY RUN PASSED] No Git push and no VPS database changes.' -ForegroundColor Green
   } else {
