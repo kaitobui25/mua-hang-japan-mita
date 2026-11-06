@@ -51,7 +51,13 @@ mkdir -p "$staging/web/.next"
 cp -a .next/standalone/. "$staging/web/"
 cp -a .next/static "$staging/web/.next/static"
 if [[ -d public ]]; then
-  cp -a public "$staging/web/public"
+  mkdir -p "$staging/web/public"
+  cp -a public/. "$staging/web/public/"
+fi
+
+if [[ ! -f "$staging/web/public/brand/mita-mark.png" || -e "$staging/web/public/public" ]]; then
+  echo 'Invalid public assets: expected web/public/brand/mita-mark.png and no nested web/public/public.' >&2
+  exit 1
 fi
 
 mkdir -p "$artifact_dir"
