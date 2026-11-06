@@ -17,8 +17,10 @@ main { min-height: 65vh; }
 .announcement { background: var(--color-ink); color: var(--color-paper); font-size: 12px; text-align: center; padding: var(--space-xs) 0; letter-spacing: .01em; }
 .site-header { background: var(--color-paper); z-index: var(--z-sticky); position: relative; border-bottom: 1px solid var(--color-rule); }
 .header-main { min-height: 86px; display: flex; align-items: center; gap: 36px; }
-.wordmark { font-family: var(--font-display); font-weight: 700; font-size: 30px; line-height: 1; letter-spacing: -.065em; white-space: nowrap; }
-.wordmark span:first-child { margin-left: var(--space-2xs); font-weight: 500; }
+.wordmark { display: inline-flex; align-items: center; gap: var(--space-xs); flex-shrink: 0; min-height: 44px; font-family: var(--font-display); font-weight: 700; font-size: 30px; line-height: 1; letter-spacing: -.065em; white-space: nowrap; }
+.wordmark:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 4px; }
+.brand-mark { display: block; width: 40px; height: 40px; flex-shrink: 0; object-fit: contain; }
+.wordmark-japan { margin-left: var(--space-2xs); font-weight: 500; }
 .wordmark .wordmark-mark { color: var(--color-accent); margin-left: 0; }
 .desktop-nav { display: flex; gap: clamp(var(--space-md),2vw,36px); align-items: center; flex: 1; justify-content: center; }
 .desktop-nav a { font-size: 14px; font-weight: 500; white-space: nowrap; padding: 20px 0; position: relative; }
@@ -481,7 +483,8 @@ main { min-height: 65vh; }
 /* Footer */
 .site-footer { background: var(--color-ink); color: var(--color-paper); padding-top: 76px; }
 .footer-grid { display: grid; grid-template-columns: 1.45fr .8fr .8fr .8fr; gap: var(--space-2xl); padding-bottom: 88px; }
-.footer-wordmark { display: block; margin-bottom: 28px; }
+.footer-wordmark { margin-bottom: 28px; }
+.footer-wordmark .brand-mark { background: var(--color-paper); border-radius: var(--radius-card); }
 .footer-grid > div:first-child p { max-width: 33ch; color: var(--color-paper-3); font-size: 14px; }
 .footer-grid .footer-note { margin-top: var(--space-lg); font-size: 12px !important; }
 .footer-grid h3 { font: 600 15px var(--font-body); margin-bottom: var(--space-lg); }
@@ -535,6 +538,7 @@ main { min-height: 65vh; }
 @media (max-width: 700px) {
   .announcement { font-size: 10px; padding: var(--space-xs) 0; }
   .wordmark { font-size: 27px; }
+  .brand-mark { width: 32px; height: 32px; }
   .header-main { min-height: 60px; }
   .header-search { padding-bottom: var(--space-sm); }
   .bottom-nav { display: flex; position: fixed; bottom: 0; inset-inline: 0; z-index: var(--z-sticky-nav); background: var(--color-paper); border-top: 1px solid var(--color-rule-2); padding: var(--space-xs) var(--space-xs) calc(var(--space-xs) + env(safe-area-inset-bottom)); justify-content: space-around; }
@@ -626,6 +630,9 @@ main { min-height: 65vh; }
   .footer-bottom { flex-direction: column; gap: var(--space-2xs); }
 }
 @media (max-width: 380px) {
+  .header-main { gap: var(--space-xs); }
+  .wordmark { font-size: 24px; gap: 6px; }
+  .brand-mark { width: 28px; height: 28px; }
   .category-card { grid-template-columns: .75fr 1.25fr; }
   .category-illustration { min-height: 220px; }
   .category-copy h3 { font-size: 1.4rem; }

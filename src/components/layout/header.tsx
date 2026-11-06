@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useCart } from "@/context/cart";
@@ -25,7 +26,7 @@ export function Header() {
     <header className="site-header">
       <div className="container header-main">
         <button type="button" className="icon-button mobile-menu-toggle" aria-label={open ? "Đóng menu" : "Mở menu"} aria-expanded={open} aria-controls="mobile-menu" onClick={() => setOpen(value => !value)}><Icon name={open ? "x" : "menu"} size={24}/></button>
-        <Link href="/" className="wordmark" aria-label="Mita Japan, về trang chủ" onClick={() => setOpen(false)}>mita<span>japan</span><span className="wordmark-mark">.</span></Link>
+        <Link href="/" className="wordmark" aria-label="Mita Japan, về trang chủ" onClick={() => setOpen(false)}><Image className="brand-mark" src="/brand/mita-mark.png" alt="" width={40} height={40} priority /><span className="wordmark-text">mita<span className="wordmark-japan">japan</span><span className="wordmark-mark">.</span></span></Link>
         <nav className="desktop-nav" aria-label="Điều hướng chính">{NAV.map(item => <Link key={item.href} href={item.href} className={pathname === item.href ? "nav-current" : ""}>{item.label}</Link>)}</nav>
         <div className="header-actions"><button className="icon-button desktop-search-toggle" type="button" aria-label={searchOpen ? "Đóng tìm kiếm" : "Mở tìm kiếm"} aria-expanded={searchOpen} aria-controls="desktop-search" onClick={() => setSearchOpen(value => !value)}><Icon name={searchOpen ? "x" : "search"} size={20}/></button><Link className="header-cart" href="/gio-hang"><Icon name="bag" size={20}/><span className="header-cart-label">Giỏ hàng</span><span className="cart-count" suppressHydrationWarning>{hydrated ? count : 0}</span></Link></div>
       </div>

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 import { Icon } from "@/components/ui/icons";
 import { FacebookChatPopup } from "@/components/layout/facebook-chat-popup";
 import { contactHref, facebookMessengerHref, DEFAULT_FACEBOOK_PAGE, DEFAULT_ZALO_CONTACT } from "@/lib/contact-links";
@@ -8,7 +9,7 @@ export function Footer() {
   const facebook = facebookMessengerHref(process.env.NEXT_PUBLIC_FACEBOOK_PAGE_URL ?? DEFAULT_FACEBOOK_PAGE);
   return <footer className="site-footer">
     <div className="container footer-grid">
-      <div><Link href="/" className="wordmark footer-wordmark">mita<span>japan</span><span className="wordmark-mark">.</span></Link><p>Những sản phẩm Nhật Bản dành cho nhịp sống mỗi ngày của gia đình Việt.</p></div>
+      <div><Link href="/" className="wordmark footer-wordmark" aria-label="Mita Japan, về trang chủ"><Image className="brand-mark" src="/brand/mita-mark.png" alt="" width={40} height={40} /><span className="wordmark-text">mita<span className="wordmark-japan">japan</span><span className="wordmark-mark">.</span></span></Link><p>Những sản phẩm Nhật Bản dành cho nhịp sống mỗi ngày của gia đình Việt.</p></div>
       <div><h3>Khám phá</h3><Link href="/san-pham">Tất cả sản phẩm</Link><Link href="/danh-muc/thuc-pham-bo-sung">Thực phẩm bổ sung</Link><Link href="/danh-muc/thuc-pham-cho-be">Thực phẩm cho bé</Link></div>
       <div><h3>Hướng dẫn</h3><Link href="/cach-mua-hang">Cách mua hàng</Link><Link href="/mua-ho-amazon">Mua hộ Amazon Nhật</Link><Link href="/danh-gia">Đánh giá khách hàng</Link><Link href="/gio-hang">Giỏ hàng</Link>{process.env.NEXT_PUBLIC_READ_ONLY !== '1' && <Link href="/thanh-toan">Đặt hàng</Link>}
         {(zalo || facebook) && <h3>Liên hệ trực tiếp</h3>}
