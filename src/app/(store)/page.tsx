@@ -2,7 +2,7 @@ import Link from "next/link";
 import { FeaturedProducts } from "@/components/catalog/featured-products";
 import { Icon } from "@/components/ui/icons";
 import { SearchForm } from "@/components/layout/search-form";
-import { getServerCatalog } from "@/lib/server-catalog";
+import { getServerCatalog, SITE_URL } from "@/lib/server-catalog";
 import type { CatalogProduct } from "@/types/catalog";
 
 export default async function HomePage() {
@@ -14,6 +14,13 @@ export default async function HomePage() {
     // Keep the homepage available if the catalog API is temporarily unavailable.
   }
   return <>
+    <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      name: "Mita Japan",
+      alternateName: "mitajapan",
+      url: `${SITE_URL}/`,
+    }).replace(/</g, "\\u003c") }}/>
     <section className="amazon-home-search"><div className="container amazon-home-search-inner"><label htmlFor="search-prominent">Tìm hàng Nhật hoặc dán link Amazon.co.jp</label><SearchForm className="prominent"/><p>Nhập tên sản phẩm Mita, đường dẫn Amazon JP hoặc mã ASIN để tra giá và ngày giao thường.</p></div></section>
     <section className="hero"><div className="container hero-layout">
       <div className="hero-copy"><h1 className="hero-brand">Mita Japan — hàng Nhật cho gia đình Việt</h1><p className="hero-slogan">Chăm chút<br/>từng điều nhỏ.</p><p className="lead">Đồ Nhật cho sức khỏe và những năm đầu của bé.</p><div className="hero-actions"><Link href="/san-pham" className="button button-primary">Khám phá sản phẩm <Icon name="arrow" size={19}/></Link><Link href="#danh-muc" className="button button-outline">Chọn theo danh mục</Link></div></div>

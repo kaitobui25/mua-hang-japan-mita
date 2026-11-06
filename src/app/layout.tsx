@@ -5,8 +5,12 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
-  title: { default: "mita japan — Chăm chút từng điều nhỏ", template: "%s | mita japan" },
+  title: { default: "Mita Japan — Chăm chút từng điều nhỏ", template: "%s | Mita Japan" },
+  applicationName: "Mita Japan",
   description: "Sản phẩm Nhật Bản cho sức khỏe và bữa ăn của bé. Đặt hàng tại Mita Japan bằng VND.",
+  openGraph: {
+    siteName: "Mita Japan",
+  },
   robots: { index: true, follow: true },
 };
 
