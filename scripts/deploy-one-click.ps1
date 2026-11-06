@@ -19,6 +19,41 @@ function CallGit([string[]]$arguments) {
   if ($LASTEXITCODE -ne 0) { throw "git $($arguments -join ' ') failed" }
 }
 
+function PrepareDeployLedger([string]$migrationMode) {
+  if ($migrationMode -notin @('--dry-run', '--apply')) { throw 'Invalid deploy ledger migration mode' }
+  # Reviewed, additive CREATE TABLE IF NOT EXISTS only; no ledger rows are reset.
+  # Keep DDL explicit here, outside catalog sync and its shared writer lock.
+  Write-Host '[PREFLIGHT] One-Click deploy ledger (read-only).'
+  $preflightOutput = @(& node.exe scripts/migrate-vps-deploy-ledger.mjs --dry-run)
+  if ($LASTEXITCODE -ne 0) { throw 'VPS One-Click ledger preflight failed; sync/release not attempted' }
+  $json = $preflightOutput -join "`n"
+  # Accept exactly the CLI's two-field JSON object, without logs, duplicate keys,
+  # extra fields or coercion. regclass may return a schema-qualified table name.
+  $stateField = '"state"\s*:\s*"dry_run"'
+  $ledgerField = '"ledger"\s*:\s*(?:null|"(?:public\.)?catalog_deploy_ledger")'
+  $shape = '\A\s*\{\s*(?:' + $stateField + '\s*,\s*' + $ledgerField + '|' + $ledgerField + '\s*,\s*' + $stateField + ')\s*\}\s*\z'
+  if ($json -cnotmatch $shape) { throw 'Invalid VPS One-Click ledger preflight output; sync/release not attempted' }
+  $preflight = $json | ConvertFrom-Json -ErrorAction Stop
+  if ($preflight.state -cne 'dry_run' -or ($null -ne $preflight.ledger -and
+      $preflight.ledger -cnotin @('catalog_deploy_ledger', 'public.catalog_deploy_ledger'))) {
+    throw 'Invalid VPS One-Click ledger preflight output; sync/release not attempted'
+  }
+  Write-Output $json
+  if ($null -ne $preflight.ledger) {
+    Write-Host '[OK] One-Click deploy ledger exists; migration skipped.'
+    return
+  }
+  if ($migrationMode -eq '--dry-run') {
+    Write-Host '[DRY RUN] One-Click deploy ledger missing; migration would be needed (no writes).'
+    return
+  }
+  if ($migrationMode -eq '--apply') {
+    Write-Host '[MIGRATION] Ensure One-Click deploy ledger exists (idempotent, transactional, 5s lock timeout).'
+    & node.exe scripts/migrate-vps-deploy-ledger.mjs --apply
+    if ($LASTEXITCODE -ne 0) { throw 'VPS One-Click ledger migration failed; sync/release not attempted' }
+  }
+}
+
 function SyncVpsData([string]$mode) {
   $path = Join-Path $runtime 'mita-vps-database-url.dpapi'
   if (!(Test-Path -LiteralPath $path)) { throw 'Missing DPAPI VPS database credential file' }
@@ -60,18 +95,16 @@ function SyncVpsData([string]$mode) {
   Push-Location (Join-Path $root 'backend')
   try {
     Write-Host "[DATA] Database sync phase: $mode"
+    $migrationMode = if ($mode -eq '--dry-run' -or $mode -eq '--migrations-dry-run') { '--dry-run' } else { '--apply' }
+    PrepareDeployLedger $migrationMode
     if ($mode -eq '--migrations' -or $mode -eq '--migrations-dry-run') {
-      $migrationMode = if ($mode -eq '--migrations-dry-run') { '--dry-run' } else { '--apply' }
       & node.exe scripts/migrate-vps-translation.mjs $migrationMode
       if ($LASTEXITCODE -ne 0) { throw 'VPS translation migration failed; sync/release not attempted' }
       & node.exe scripts/migrate-vps-sync-ledger.mjs $migrationMode
       if ($LASTEXITCODE -ne 0) { throw 'VPS ledger migration failed; sync/release not attempted' }
-      & node.exe scripts/migrate-vps-deploy-ledger.mjs $migrationMode
-      if ($LASTEXITCODE -ne 0) { throw 'VPS One-Click ledger migration failed; sync/release not attempted' }
       & node.exe scripts/migrate-vps-title-revisions.mjs $migrationMode
       if ($LASTEXITCODE -ne 0) { throw 'VPS title revision migration failed; sync/release not attempted' }
     } else {
-      $migrationMode = if ($mode -eq '--dry-run') { '--dry-run' } else { '--apply' }
       & node.exe scripts/migrate-vps-title-revisions.mjs $migrationMode
       if ($LASTEXITCODE -ne 0) { throw 'VPS title revision migration failed; sync/release not attempted' }
       & node.exe scripts/sync-catalog-vps.mjs $mode
