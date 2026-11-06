@@ -236,10 +236,11 @@ other SQL and must not be run implicitly to start/fix the API.
 The remote PostgreSQL schema also needs the optional revision columns before
 revision-aware catalog sync can be enabled; the separately reviewed migration
 script is `node backend/scripts/migrate-vps-title-revisions.mjs --dry-run` then
-`--apply` with the approved SSH-forwarded VPS database URL. The current One-Click
-normal path also calls this title-revision migration: that is additional VPS
-DDL requiring separate approval under AGENTS.md, beyond its automatic
-`catalog_deploy_ledger` exception. See [CI deploy](../deploy/mita/ci-deploy.md).
+`--apply` with the approved SSH-forwarded VPS database URL. The reviewed
+normal One-Click path includes this title-revision migration, the full local
+migration bundle and conditional `catalog_deploy_ledger` preparation under
+AGENTS.md when deliberately launched by the owner. A standalone migration,
+new SQL or `-MigrationsOnly` needs separate approval. See [CI deploy](../deploy/mita/ci-deploy.md).
 One-Click creates no backup/dump and has no backup prerequisite, per the owner
 decision reaffirmed 2026-11-06. Rollback is available only before DB commit;
 code rollback does not restore committed data. Never run the
