@@ -77,8 +77,13 @@ the server session expires according to the existing backend's eight-hour policy
   Missing or malformed status is unavailable, not treated as zero progress or proof
   that a process is running. Owner can select OpenRouter or Codex CLI for the names
   worker, save each worker's JST schedule, and request 1–300 products manually.
+  Defaults are 04:00 / 05:00 / 05:15 JST; persisted Owner schedules take
+  precedence. Amazon, names and detail must remain in that order, at least
+  15 minutes apart, with detail before 23:45. Schedulers poll changes every
+  60 seconds; the Supervisor also updates its scheduling windows.
   Requests are rejected while a conflicting worker or sync is active; they are not
-  queued or automatically retried. If the authenticated Workers API is unavailable,
+  queued or automatically retried. An accepted request is not a completed run;
+  manual outcomes do not satisfy the scheduled daily sync barrier. If the authenticated Workers API is unavailable,
   Owner write controls remain disabled and process health is not inferred from
   snapshots. Sync requests remain behind the Cổng daily three-worker barrier
   and remote ledger.
@@ -179,7 +184,7 @@ HTTP errors are displayed with safe status guidance; offline/API format errors
 have a visible recovery message. There is no persistent local cache or second DB.
 
 This is the bounded desktop implementation of plan 13 / ADR 0017. Payment/refund
-and shipping-fee edits, imports, catalog/translation settings, OS push
+and shipping-fee edits, imports, general catalog settings, OS push
 notifications, staff account management and external Zalo/Facebook push are not implemented
 here. Durable order alerts and acknowledgement work only when the connected
 Admin API can read the correct local or configured VPS source. See
@@ -188,7 +193,10 @@ Order and product APIs expose no optimistic version/ETag: re-fetch + confirmatio
 reduces stale decisions but cannot eliminate a concurrent update between read and
 write. The backend's existing workflow checks and audit remain in force. Pricing
 has a real version conflict check. List paging is 50 records; search resets to page
-one. Workers tab never sends signals, stops processes or writes status files.
+one. Workers tab saves settings and requests manual runs through the authenticated
+API/Supervisor IPC; it never directly signals/stops processes or edits status files.
+The separate `run-mita-jobs.bat` CLI has Amazon images/price/presence/Full modes;
+these are not additional Desktop mode controls. See [manual jobs](mita-manual-jobs.md).
 
 ## Safe validation without launching a window
 
@@ -215,20 +223,34 @@ needed for the read-only parse check.
 
 ## Workers deployment prerequisites (not an implicit migration)
 
-This feature branch has **not** been installed on the running Supervisor or
-backend. Before any live rollout, inspect the live database identity, tables,
-columns, indexes and active locks with read-only queries, obtain a restorable
-backup, and get explicit authorization for migrations, service restarts and VPS
-changes. Local migrations include `codex-names.sql` and `workers-control.sql`.
+Source availability does not establish which revision is installed in the
+running Supervisor/backend. Before any live rollout, verify process ownership,
+revision, database identity, required tables/columns/indexes and active locks
+with read-only checks, then get explicit authorization for migrations, service
+restarts and VPS changes. `/api/health` is not a schema check. Owner/Staff auth
+requires `admin_accounts.username`, `role`, `enabled` and
+`admin_staff_login_limit`; missing schema is a server error, not a bad password.
+Do not repeatedly test real Owner credentials. Local migrations include
+`codex-names.sql` and `workers-control.sql`; the migration runner also applies
+other SQL and must not be run implicitly to start/fix the API.
 The remote PostgreSQL schema also needs the optional revision columns before
-revision-aware catalog sync can be enabled; the explicit, separately authorized
+revision-aware catalog sync can be enabled; the separately reviewed migration
 script is `node backend/scripts/migrate-vps-title-revisions.mjs --dry-run` then
-`--apply` with the approved SSH-forwarded VPS database URL. Never run the
+`--apply` with the approved SSH-forwarded VPS database URL. The current One-Click
+normal path also calls this title-revision migration: that is additional VPS
+DDL requiring separate approval under AGENTS.md, beyond its automatic
+`catalog_deploy_ledger` exception. See [CI deploy](../deploy/mita/ci-deploy.md).
+One-Click creates no backup/dump and has no backup prerequisite, per the owner
+decision reaffirmed 2026-11-06. Rollback is available only before DB commit;
+code rollback does not restore committed data. Never run the
 migration or nightly sync as part of a test. Compare remote title source,
 generation and revision through disposable-DB regression tests first.
 
-The 20-product Codex CLI translation trial was read-only: it generated 20
+The historical 20-product Codex CLI translation trial was read-only: it generated 20
 nonempty full titles with 18 short titles and 2 full-title fallbacks. Four
 full titles still contained Japanese characters; manual semantic review is
 necessary before claiming their translations are all accurate. This trial did
-not update the live database or VPS.
+not update the live database or VPS. It does not establish the current worker's
+progress, engine choice, deployed revision or translation quality. Codex operation
+also requires local automation verification and CLI login/quota checks; missing
+verification fails closed. Confirm these prerequisites without launching a job.
