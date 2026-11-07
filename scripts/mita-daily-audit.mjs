@@ -1,0 +1,488 @@
+// Only the entrypoint under the PowerShell named mutex may run a live audit.
+// No migrations, service control, order cleanup, payment or direct DB writes.
+import { createHash, randomInt } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { spawn } from 'node:child_process';
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { tableSpecs } from '../backend/scripts/sync-catalog-vps.mjs';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const origin = 'https://mitajapanshop.duckdns.org';
+const categories = ['thuc-pham-bo-sung', 'thuc-pham-cho-be'];
+const runtime = path.join(root, '.agents', 'runtime', 'daily-audit');
+const sha = value => createHash('sha256').update(value).digest('hex');
+class AuditError extends Error {}
+const need = (condition, message) => { if (!condition) throw new AuditError(message); };
+export const jstDay = (now = new Date()) => new Date(now.getTime() + 9 * 3600000).toISOString().slice(0, 10);
+export function checkoutKey(day) {
+  need(/^\d{4}-\d{2}-\d{2}$/.test(day), 'Ngay JST khong hop le.');
+  // Permanent domain/version: NEVER change this formula to retry a failed checkout.
+  const hex = sha(`mita-daily-audit:live-checkout:v1:${origin}:${day}`).slice(0, 32).split('');
+  hex[12] = '5'; hex[16] = ((parseInt(hex[16], 16) & 3) | 8).toString(16);
+  const s = hex.join('');
+  return `${s.slice(0,8)}-${s.slice(8,12)}-${s.slice(12,16)}-${s.slice(16,20)}-${s.slice(20)}`;
+}
+const fingerprint = payload => sha(JSON.stringify({ items: payload.items, quoteItems: [], customer: payload.customer }));
+const literal = value => `'${String(value).replaceAll("'", "''")}'`;
+const safeName = value => String(value).replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, ' ').slice(0, 180);
+
+// Shared replication contract comes from the guarded, import-safe sync module.
+// Local worker infrastructure and the VPS daily ledger are intentionally separate.
+export function contracts(target) {
+  const tables = Object.fromEntries(tableSpecs.map(([name, columns]) => [name, Object.fromEntries(columns)]));
+  const add = (table, columns) => { tables[table] = { ...tables[table], ...columns }; };
+  add('products', { rights_status:'text', sale_status:'text', admin_hidden_at:'timestamptz' });
+  add('product_images', { asin:'varchar(10)', position:'smallint', source_url:'text', source_observed_at:'timestamptz' });
+  add('amazon_product_metrics', { asin:'varchar(10)', snapshot:'jsonb', written_review_count:'bigint', qualification:'text', observed_at:'timestamptz' });
+  add('catalog_settings', { id:'integer', hide_local_test_only:'boolean' });
+  add('pricing_policy', { id:'integer', version:'integer', fx_jpy_to_vnd:'numeric(12,4)', service_fee_percent:'numeric(6,2)', check_price_expiry:'boolean', price_expiry_days:'integer' });
+  add('orders', { id:'uuid', customer_name:'text', customer_phone:'text', customer_email:'text', customer_address:'text', status:'text', payment_status:'text', payment_method:'text', payment_provider:'text', payment_reference:'text', paid_at:'timestamptz', fx_jpy_to_vnd:'numeric(12,4)', service_fee_percent:'numeric(6,2)', merchandise_vnd:'bigint', estimated_shipping_vnd:'bigint', shipping_final_vnd:'bigint', pricing_policy_version:'integer', created_at:'timestamptz', checkout_key:'uuid', checkout_fingerprint:'text', shipping_confirmation_hash:'text' });
+  add('order_items', { line_id:'bigint', order_id:'uuid', asin:'varchar(10)', name:'text', quantity:'integer', price_jpy:'integer', unit_price_vnd:'bigint', observed_at:'timestamptz', quote_snapshot:'jsonb' });
+  add('order_notification_outbox', { id:'bigint', order_id:'uuid', event_type:'text', recipient:'text', channel:'text', created_at:'timestamptz', acknowledged_at:'timestamptz' });
+  const indexes = {
+    products_pkey: ['products', true, '(asin)'],
+    products_category_idx: ['products', false, '(category_slug, updated_at DESC)'],
+    product_images_pkey: ['product_images', true, '(asin, position)'],
+    product_details_pkey: ['product_details', true, '(asin)'],
+    product_translations_pkey: ['product_translations', true, '(asin, locale)'],
+    local_detail_translations_pkey: ['local_detail_translations', true, '(asin)'],
+    local_detail_translation_items_pkey: ['local_detail_translation_items', true, '(asin, slot)'],
+    product_title_presentations_pkey: ['product_title_presentations', true, '(asin)'],
+    product_detail_queue_pkey: ['product_detail_queue', true, '(category_slug, asin)'],
+    orders_pkey: ['orders', true, '(id)'],
+    orders_checkout_key_idx: ['orders', true, '(checkout_key)', 'WHERE (checkout_key IS NOT NULL)'],
+    order_items_pkey: ['order_items', true, '(line_id)'],
+    order_items_catalog_unique_idx: ['order_items', true, '(order_id, asin)', 'WHERE (quote_snapshot IS NULL)'],
+    // PostgreSQL truncates autogenerated constraint names; compare this by shape.
+    '@outbox_event_unique': ['order_notification_outbox', true, '(order_id, event_type, recipient, channel)']
+  };
+  if (target === 'local') {
+    add('worker_control_settings', { id:'integer', engine:'text', schedules:'jsonb', version:'integer' });
+    add('sync_runs', { id:'bigint', started_at:'timestamptz', finished_at:'timestamptz', state:'text', discovered_count:'integer', saved_count:'integer', error_count:'integer', note:'text' });
+    add('codex_name_runs', { id:'uuid', trigger:'text', jst_day:'date', state:'text', selected:'integer', translated:'integer', failed:'integer', warnings:'integer', finished_at:'timestamptz' });
+    indexes.codex_name_one_scheduled_day = ['codex_name_runs', true, '(jst_day)', "WHERE (trigger = 'scheduled'::text)"];
+  } else {
+    add('catalog_sync_ledger', { sync_day:'date', run_id:'uuid', state:'text', jobs:'jsonb', watermark:'timestamptz', source_hash:'text', remote_hash:'text', committed_at:'timestamptz' });
+    indexes.catalog_sync_ledger_pkey = ['catalog_sync_ledger', true, '(sync_day)'];
+  }
+  return { tables, indexes };
+}
+const typeName = value => value.replace(/^varchar/, 'character varying').replace(/^timestamptz$/, 'timestamp with time zone').replaceAll(', ', ',');
+// PostgreSQL quotes reserved identifiers such as "position" in index DDL.
+const indexDefinition = value => value.replace(/"([a-z_][a-z0-9_]*)"/gi, '$1');
+export function schemaProblems(snapshot, target) {
+  const problems = [], contract = contracts(target);
+  for (const [table, columns] of Object.entries(contract.tables)) {
+    const actual = snapshot.columns.filter(c => c.table === table);
+    if (!actual.length) { problems.push(`Thieu bang/view public.${table}`); continue; }
+    for (const [column, type] of Object.entries(columns)) {
+      const found = actual.find(c => c.column === column);
+      if (!found) problems.push(`Thieu cot ${table}.${column}`);
+      else if (typeName(found.type) !== typeName(type)) problems.push(`Sai kieu ${table}.${column}: can ${type}, co ${found.type}`);
+    }
+  }
+  for (const [name, [table, unique, keys, predicate]] of Object.entries(contract.indexes)) {
+    const index = snapshot.indexes.find(i => i.table === table && (name.startsWith('@') ? i.unique === unique && indexDefinition(i.definition).includes(keys) : i.name === name));
+    if (!index) problems.push(`Thieu index ${table}.${name}`);
+    else if (!index.valid || !index.ready || index.unique !== unique || !indexDefinition(index.definition).includes(keys) ||
+      (predicate ? !indexDefinition(index.definition).includes(predicate) : / WHERE /.test(index.definition))) problems.push(`Index khong tuong thich ${table}.${name}`);
+  }
+  return problems;
+}
+const snapshotSql = `SELECT json_build_object(
+  'identity', (SELECT row_to_json(x) FROM (SELECT current_database() AS database, inet_server_addr()::text AS host, inet_server_port() AS port, current_setting('port') AS configured_port, current_user AS role, to_char(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Tokyo','YYYY-MM-DD') AS jst_day) x),
+  'columns', COALESCE((SELECT json_agg(x) FROM (SELECT c.relname AS table,a.attname AS column,format_type(a.atttypid,a.atttypmod) AS type
+    FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+    WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m') AND a.attnum>0 AND NOT a.attisdropped) x),'[]'),
+  'indexes', COALESCE((SELECT json_agg(x) FROM (SELECT tab.relname AS table,idx.relname AS name,i.indisunique AS unique,i.indisvalid AS valid,i.indisready AS ready,pg_get_indexdef(i.indexrelid) AS definition
+    FROM pg_index i JOIN pg_class tab ON tab.oid=i.indrelid JOIN pg_class idx ON idx.oid=i.indexrelid JOIN pg_namespace n ON n.oid=tab.relnamespace WHERE n.nspname='public') x),'[]')) AS snapshot`;
+
+function command(executable, args, input = '', timeout = 25000) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, args, { cwd:root, windowsHide:true, stdio:['pipe','pipe','pipe'] });
+    let stdout = '', size = 0, done = false;
+    const finish = (error) => { if (done) return; done = true; clearTimeout(timer); error ? reject(error) : resolve(stdout); };
+    const timer = setTimeout(() => { child.kill(); finish(new AuditError('SSH het thoi gian; kiem tra ket noi va ssh-agent.')); }, timeout);
+    child.stdout.on('data', data => { size += data.length; if (size > 2e6) { child.kill(); finish(new AuditError('Ket qua SSH vuot gioi han.')); } else stdout += data; });
+    // Never echo SSH/psql stderr: SQL or credentials must not leak into reports.
+    child.stderr.on('data', () => {});
+    child.on('error', () => finish(new AuditError('Khong chay duoc OpenSSH. Kiem tra ssh.exe trong PATH.')));
+    child.on('close', code => finish(code === 0 ? null : new AuditError('SSH/psql that bai. Kiem tra ssh-agent, known_hosts va sudo -n postgres (khong doi host key).')));
+    child.stdin.on('error', () => {});
+    child.stdin.end(input);
+  });
+}
+async function remoteQuery(sql) {
+  const output = await command('ssh.exe', ['-T','-F','NUL','-p','22','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','PreferredAuthentications=publickey','-o','IdentityFile=none','-o','IdentitiesOnly=no','-o','ClearAllForwardings=yes','-o','ConnectTimeout=8','-o','ConnectionAttempts=1','-o','ServerAliveInterval=5','-o','ServerAliveCountMax=2',
+    'ubuntu@217.142.225.255', "timeout 20s sudo -n -u postgres psql -X -w -qAt -v ON_ERROR_STOP=1 -d mita"],
+  `BEGIN READ ONLY;\nSET LOCAL statement_timeout='10s';\nSET LOCAL lock_timeout='2s';\nSET LOCAL search_path=public,pg_catalog;\nSELECT COALESCE(json_agg(audit_row),'[]'::json) FROM (${sql}) audit_row;\nCOMMIT;\n`);
+  try { return JSON.parse(output.trim()); } catch { throw new AuditError('Ket qua SSH/psql khong phai JSON hop le; khong du bang chung DB.'); }
+}
+async function remoteCheckout(payload) {
+  // Execute the public HTTPS request ON Hermes, passing the QA body over stdin.
+  // Do not bypass Caddy by calling loopback Fastify directly.
+  const output = await command('ssh.exe', ['-T','-F','NUL','-p','22','-o','BatchMode=yes',
+    '-o','StrictHostKeyChecking=yes','-o','PreferredAuthentications=publickey',
+    '-o','IdentityFile=none','-o','IdentitiesOnly=no','-o','ClearAllForwardings=yes',
+    '-o','ConnectTimeout=8','-o','ConnectionAttempts=1',
+    'ubuntu@217.142.225.255',
+    `timeout 20s curl --silent --show-error --max-time 16 --request POST --header 'Content-Type: application/json' --data-binary @- --write-out '\\nAUDIT_HTTP_STATUS:%{http_code}' ${origin}/api/checkout`],
+  JSON.stringify(payload));
+  const match = output.match(/\nAUDIT_HTTP_STATUS:(\d{3})\s*$/);
+  need(match, 'VPS HTTPS khong tra ma HTTP cho checkout; khong tu gui lai.');
+  const body = output.slice(0, match.index);
+  if (Number(match[1]) !== 200) {
+    let code = 'unknown';
+    try { code = JSON.parse(body)?.code || 'unknown'; } catch { /* No unsafe raw response in terminal. */ }
+    throw new AuditError(`Checkout qua Hermes -> DuckDNS bi HTTP ${match[1]} (${safeName(code)}); da giu checkoutKey, khong tu gui lai.`);
+  }
+  try { return JSON.parse(body); } catch { throw new AuditError('VPS HTTPS checkout tra JSON khong hop le; khong tu gui lai.'); }
+}
+async function localSnapshot() {
+  need(process.env.MITA_DAILY_AUDIT_LOCAL_OWNER === 'verified', 'Local 5433: DB dang tat hoac chua xac minh duoc PID/path voi pg_ctl backend/.local-db. Kiem tra quyen va dich vu; khong tu khoi dong.');
+  const url = new URL(process.env.MITA_LOCAL_DATABASE_URL || 'postgresql://mita_local@127.0.0.1:5433/postgres');
+  need(['postgres:', 'postgresql:'].includes(url.protocol) && url.hostname === '127.0.0.1' && url.port === '5433' && url.pathname === '/postgres' && !url.search && !url.hash,
+    'Local DB phai la 127.0.0.1:5433/postgres; khong dung tunnel 15432.');
+  const require = createRequire(path.join(root,'backend','package.json'));
+  const { Client } = require('pg');
+  const client = new Client({ connectionString:url.href, connectionTimeoutMillis:4000, query_timeout:12000,
+    options:'-c default_transaction_read_only=on -c statement_timeout=10000 -c lock_timeout=2000', application_name:'mita_daily_audit_readonly' });
+  client.on('error', () => {});
+  try {
+    await client.connect();
+    const snapshot = (await client.query(snapshotSql)).rows[0].snapshot;
+    need(snapshot.identity.database === 'postgres' && snapshot.identity.role === decodeURIComponent(url.username) && snapshot.identity.port === 5433 && ['127.0.0.1','::1'].includes(snapshot.identity.host), 'Sai identity PostgreSQL local.');
+    if (!schemaProblems(snapshot,'local').length) {
+      snapshot.workers = (await client.query(`SELECT json_build_object(
+        'settings',(SELECT row_to_json(s) FROM (SELECT engine,schedules FROM worker_control_settings WHERE id=1) s),
+        'amazon',COALESCE((SELECT json_agg(s) FROM (SELECT id::text,started_at,finished_at,state,saved_count,error_count FROM sync_runs WHERE (started_at AT TIME ZONE 'Asia/Tokyo')::date=(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Tokyo')::date ORDER BY id DESC LIMIT 10) s),'[]'),
+        'names',COALESCE((SELECT json_agg(s) FROM (SELECT id,state,finished_at,selected,translated,failed,warnings FROM codex_name_runs WHERE trigger='scheduled' AND jst_day=(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Tokyo')::date) s),'[]')) AS evidence`)).rows[0].evidence;
+    }
+    return snapshot;
+  } catch (error) {
+    if (error.message === 'Sai identity PostgreSQL local.') throw error;
+    throw new AuditError('Khong doc duoc PostgreSQL local 127.0.0.1:5433/postgres. Kiem tra dich vu/quyen; audit khong tu khoi dong DB.');
+  } finally { await client.end().catch(() => {}); }
+}
+async function http(url, options = {}) {
+  try {
+    const response = await fetch(url, { ...options, redirect:'error', signal:AbortSignal.timeout(15000), headers:{ 'Cache-Control':'no-cache', ...options.headers } });
+    need(response.ok, `HTTP ${response.status}; kiem tra public HTTPS/Caddy/API.`);
+    let text = '';
+    if (response.body) {
+      const reader = response.body.getReader(), chunks = [];
+      let bytes = 0;
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          bytes += value.length;
+          need(bytes <= 2e6, 'HTTP response qua lon.');
+          chunks.push(Buffer.from(value));
+        }
+        text = Buffer.concat(chunks).toString('utf8');
+      } finally { await reader.cancel().catch(() => {}); }
+    }
+    return { response, text };
+  } catch (error) {
+    if (/^HTTP /.test(error.message)) throw error;
+    throw new AuditError('HTTP timeout/ket noi/response khong chac chan. Khong doi checkoutKey va khong tu gui lai.');
+  }
+}
+async function jsonGet(route) {
+  const { text } = await http(origin + route);
+  try { return JSON.parse(text); } catch { throw new AuditError('Public API tra JSON khong hop le.'); }
+}
+export function validateProduct(p, category) {
+  need(p && /^[A-Z0-9]{10}$/.test(p.asin) && p.categorySlug === category && p.canCheckout === true, 'San pham khong du dieu kien checkout/danh muc.');
+  need(typeof p.name === 'string' && p.name.trim().length >= 3 && !/[\x00-\x1f]/.test(p.name), 'Ten san pham rong/khong hop le.');
+  need(Number.isSafeInteger(p.priceVnd) && p.priceVnd > 0, 'Gia VND phai la so nguyen duong.');
+  const d = p.detail;
+  need(d && ['features','ingredients','usage','cautions'].every(key => Array.isArray(d[key]) && d[key].every(s => typeof s === 'string')) &&
+    d.specs && typeof d.specs === 'object' && !Array.isArray(d.specs) &&
+    [...d.features,...d.ingredients,...d.usage,...d.cautions,...Object.values(d.specs)].some(s => typeof s === 'string' && s.trim()), 'Thieu noi dung chi tiet san pham.');
+  const images = [...new Set([p.imageUrl, ...(Array.isArray(p.imageUrls) ? p.imageUrls : [])].filter(Boolean))];
+  need(images.length > 0 && images.length <= 5 && images.every(image => /^https:\/\/(m\.media-amazon\.com|images-na\.ssl-images-amazon\.com|images-fe\.ssl-images-amazon\.com)\//.test(image)), 'Thieu anh/URL anh nguon khong hop le.');
+  return images;
+}
+export function makeRecord(day, products) {
+  const payload = { checkoutKey:checkoutKey(day), items:products.map(p => ({ asin:p.asin, quantity:1 })), customer:{
+    name:`QA MITA DAILY AUDIT ${day} - KHONG GIAO HANG`, phone:'0000000000', address:`QA TEST ONLY ${day} - KHONG GIAO HANG - KHONG THU TIEN` } };
+  return { version:1, day, phase:'prepared', products:products.map(p => ({ asin:p.asin, category:p.categorySlug, name:p.name, priceVnd:p.priceVnd })), payload, fingerprint:fingerprint(payload) };
+}
+export function validateRecord(record, day) {
+  need(record?.version === 1 && record.day === day && ['prepared','attempted','verified'].includes(record.phase), 'File replay hong/sai ngay; dung checkout, khong xoa file de thu lai.');
+  need(Array.isArray(record.products) && record.products.length === 2 && record.products.every((p,i) => p.category === categories[i] && /^[A-Z0-9]{10}$/.test(p.asin) && Number.isSafeInteger(p.priceVnd) && p.priceVnd > 0) && record.products[0].asin !== record.products[1].asin, 'File replay sai san pham.');
+  const expected = makeRecord(day, record.products.map(p => ({ ...p, categorySlug:p.category })));
+  need(JSON.stringify(record.payload) === JSON.stringify(expected.payload) && record.fingerprint === expected.fingerprint, 'Payload replay da thay doi; dung checkout de tranh trung don.');
+  return record;
+}
+async function saveRecord(filename, record) {
+  const temporary = `${filename}.${process.pid}.tmp`;
+  await writeFile(temporary, JSON.stringify(record, null, 2), { encoding:'utf8', flag:'wx', flush:true });
+  await rename(temporary, filename);
+}
+const orderSql = key => `SELECT o.id,o.status,o.payment_status,o.payment_method,o.payment_provider,o.payment_reference,o.paid_at,o.checkout_fingerprint,o.merchandise_vnd,
+  (SELECT COALESCE(json_agg(json_build_object('asin',i.asin,'quantity',i.quantity,'unit_price_vnd',i.unit_price_vnd,'name',i.name,'quote_snapshot',i.quote_snapshot) ORDER BY i.asin),'[]') FROM order_items i WHERE i.order_id=o.id) AS lines
+  FROM orders o WHERE o.checkout_key=${literal(key)}::uuid`;
+export function verifyOrder(rows, record, response) {
+  need(rows.length === 1, `DB co ${rows.length} don cho checkoutKey; can dung 1 don. Khong gui lai.`);
+  const order = rows[0];
+  need(order.status === 'pending_confirmation' && order.payment_status === 'unpaid' && order.payment_method === 'manual' && !order.payment_provider && !order.payment_reference && !order.paid_at, 'Trang thai don/thanh toan khong dung pending_confirmation/unpaid/manual.');
+  need(order.checkout_fingerprint === record.fingerprint, 'DB fingerprint khac payload QA; dung, khong gui lai.');
+  need(Array.isArray(order.lines) && order.lines.length === 2 && record.products.every(p => {
+    const matching = order.lines.filter(l => l.asin === p.asin && l.quantity === 1 && l.quote_snapshot === null && typeof l.name === 'string' && l.name.trim() && Number(l.unit_price_vnd) === p.priceVnd);
+    return matching.length === 1;
+  }), 'DB khong dung 2 ASIN/so luong/gia QA da chon. Khong tu sua don.');
+  need(Number(order.merchandise_vnd) === record.products.reduce((sum,p) => sum+p.priceVnd,0), 'Tong tien DB khac 2 dong QA.');
+  if (response) need(response.orderId === order.id && ['pending_confirmation','already_submitted'].includes(response.status) && response.currency === 'VND' && response.paymentStatus === 'unpaid' && response.payableNowVnd === 0, 'HTTP checkout khong khop DB; khong duoc bao thanh cong.');
+  return order;
+}
+
+export async function checkout({ day, readOnly, record, products, query, post, save, now = () => new Date() }) {
+  const existing = await query(orderSql(checkoutKey(day)));
+  if (existing.length) {
+    need(record, 'Da co don voi key hom nay nhung mat file payload replay. KHONG POST; can doi chieu thu cong.');
+    const order = verifyOrder(existing, validateRecord(record, day));
+    return { status:'already_submitted', order };
+  }
+  if (readOnly) return { status:'read_only' };
+  need(products?.length === 2 && products.every((p,i) => p.categorySlug === categories[i]), 'Chan POST: chua du 2 san pham da kiem tra.');
+  if (!record) { record = makeRecord(day, products); await save(record); }
+  validateRecord(record, day);
+  need(products.every((p,i) => p.asin === record.products[i].asin && p.priceVnd === record.products[i].priceVnd), 'Gia/ASIN replay da thay doi truoc POST; giu nguyen payload va dung de review.');
+  need(record.phase === 'prepared', 'Lan gui truoc bat dinh/DB chua co don. KHONG tu resend; giu nguyen key va payload de dieu tra.');
+  need(jstDay(now()) === day, 'Da qua ngay JST; dong audit va chay lai, khong gui payload cu.');
+  need(jstDay(new Date(now().getTime()+30000)) === day, 'Sap qua ngay JST; dung va chay audit sau 00:00 JST.');
+  record.phase = 'attempted';
+  await save(record); // Must persist before the single public HTTPS POST.
+  let response, postError;
+  try { response = await post(record.payload); } catch (error) { postError = error; }
+  // Always query independently, including after HTTP timeout/malformed response.
+  const rows = await query(orderSql(record.payload.checkoutKey));
+  const order = verifyOrder(rows, record, response);
+  if (postError) throw new AuditError('DB da co don QA nhung HTTP checkout bat dinh. KHONG resend; chay audit lai chi de doi chieu DB/key cu.');
+  need(response, 'Thieu HTTP checkout response.');
+  record.phase = 'verified'; await save(record);
+  return { status:response.status, order };
+}
+
+async function run(readOnly) {
+  const day = jstDay(), results = [];
+  let checkoutOutcome = 'CHUA XAC MINH';
+  const report = (status, text) => {
+    results.push(status);
+    const label = `[${status}]`;
+    const color = {OK:32,WARN:33,FAIL:31}[status];
+    console.log(`${process.stdout.isTTY ? `\x1b[${color}m${label}\x1b[0m` : label} ${text}`);
+  };
+  const section = title => console.log(`\n========== ${title} ==========`);
+  const attempt = async fn => { try { return await fn(); } catch (error) { report('FAIL', error instanceof AuditError ? error.message : 'Kiem tra that bai; khong du bang chung. Kiem tra ket noi/quyen/file replay, khong tu migrate hay gui lai don.'); return null; } };
+  // Only explicit messages generated in this file are exposed below. Raw network,
+  // filesystem, PostgreSQL and JSON exceptions are intentionally never printed.
+  const checked = attempt;
+  console.log(`MITA JAPAN - KIỂM TRA HẰNG NGÀY | ${day} JST`);
+  console.log(readOnly ? 'CHE DO CHI DOC: khong POST, khong tao don.' : 'CHE DO QA THAT: toi da 1 don/ngay JST, 2 san pham, KHONG giao/thu tien.');
+  console.log('Ma thoat: 0=OK, 1=FAIL, 2=WARN. Khong tu khoi dong DB/worker, migrate hay deploy.');
+  await mkdir(runtime, { recursive:true });
+  section('1. POSTGRESQL LOCAL 5433 / SCHEMA');
+  let localSchemaDrift = false, workerEvidence;
+  await checked(async () => {
+    const snapshot = await localSnapshot();
+    workerEvidence = snapshot.workers;
+    report('OK', `Local PostgreSQL ${snapshot.identity.host}:${snapshot.identity.port}/${snapshot.identity.database}`);
+    const errors = schemaProblems(snapshot,'local');
+    errors.forEach(e => report('FAIL', e));
+    localSchemaDrift = errors.length > 0;
+    if (!localSchemaDrift) report('OK', 'Contract local catalog/checkout/workers va index hop le.');
+  });
+  section('2. KẾT QUẢ WORKER HÔM NAY (JST)');
+  await checked(async () => {
+    let contents;
+    try { contents = await readFile(path.join(root,'.agents','runtime',`mita-daily-${day}.json`),'utf8'); }
+    catch (error) {
+      if (error.code === 'ENOENT') throw new AuditError(`Chua co ket qua 3 worker ngay ${day} JST. Supervisor khong ghi daily file; kiem tra PostgreSQL 5433 va mita-supervisor.jsonl.`);
+      throw error;
+    }
+    let status;
+    try { status = JSON.parse(contents); } catch { throw new AuditError(`Daily file ${day} hong JSON; khong co bang chung job thanh cong.`); }
+    need(status.day === day, 'Daily status khong phai hom nay JST.');
+    for (const worker of ['amazon','names','detail']) {
+      const job = status.jobs?.[worker];
+      const complete = job?.day === day && job.state === 'completed';
+      const clean = complete && !Number(job.failed) && !Number(job.warnings);
+      report(clean ? 'OK' : ['failed','unknown'].includes(job?.state) ? 'FAIL' : 'WARN', `${worker}: ${safeName(job?.state ?? 'chua co ket qua')} (Supervisor daily file; khong chung minh tat ca san pham da duoc xu ly).`);
+      if (worker === 'amazon' && workerEvidence) {
+        const run = workerEvidence.amazon.find(row => row.id === String(job?.runId));
+        report(run?.state === 'success' && run.finished_at && run.error_count === 0 ? 'OK' : 'WARN', `Amazon DB run ${safeName(job?.runId ?? 'missing')}: ${safeName(run?.state ?? 'khong tim thay hom nay')}; saved=${run?.saved_count ?? '?'}, errors=${run?.error_count ?? '?'}.`);
+      }
+      if (worker === 'names' && workerEvidence?.settings?.engine === 'codex') {
+        const runs = workerEvidence.names;
+        const run = runs.length === 1 ? runs[0] : null;
+        report(run?.state === 'completed' && run.finished_at && run.failed === 0 && run.warnings === 0 ? 'OK' : 'WARN', `Names Codex DB: ${safeName(run?.state ?? 'khong co duy nhat scheduled run')}; translated=${run?.translated ?? '?'}, failed=${run?.failed ?? '?'}, warnings=${run?.warnings ?? '?'}.`);
+      }
+    }
+    report(status.sync?.state === 'completed' ? 'OK' : 'WARN', `Sync local: ${safeName(status.sync?.state ?? 'unknown')}; doi chieu VPS ledger o phan sau.`);
+  });
+  section('3. POSTGRESQL VPS / SCHEMA / ĐỒNG BỘ');
+  let remoteGood = false;
+  await checked(async () => {
+    const snapshot = (await remoteQuery(snapshotSql))[0].snapshot;
+    need(snapshot.identity.database === 'mita' && snapshot.identity.role === 'postgres', 'VPS DB identity khong phai mita/postgres.');
+    need(snapshot.identity.jst_day === day, 'Ngay JST Windows khac VPS; chan checkout, kiem tra dong ho he thong.');
+    report('OK', `VPS ubuntu@217.142.225.255 DB mita; server ${snapshot.identity.host ?? 'Unix socket'}:${snapshot.identity.port ?? snapshot.identity.configured_port}; read-only sudo postgres.`);
+    const errors = schemaProblems(snapshot,'vps');
+    errors.forEach(e => report('FAIL', e));
+    remoteGood = errors.length === 0;
+    if (remoteGood) report('OK', 'Contract VPS catalog/checkout/daily ledger va index hop le.');
+  });
+  if (remoteGood) await checked(async () => {
+    const rows = await remoteQuery(`SELECT state,jobs,committed_at,source_hash,remote_hash FROM catalog_sync_ledger WHERE sync_day=${literal(day)}::date`);
+    need(rows.length === 1, 'VPS chua co daily sync ledger hom nay; khong chay bu tu audit.');
+    const row = rows[0];
+    const committed = row.committed_at && /^[a-f0-9]{64}$/.test(row.source_hash) && /^[a-f0-9]{64}$/.test(row.remote_hash);
+    report(row.state === 'completed' && committed ? 'OK' : row.state === 'failed' ? 'FAIL' : 'WARN', `VPS daily sync: ${safeName(row.state)}, committed=${Boolean(committed)}. Day la ledger commit, khong phai kiem tra lai toan bo catalog.`);
+    for (const name of ['amazon','names','detail']) {
+      const job = row.jobs?.[name];
+      report(job?.day === day && job.state === 'completed' ? 'OK' : 'WARN', `VPS barrier ${name}: ${safeName(job?.state ?? 'missing')}`);
+    }
+  });
+  section('4. LIVE HTTPS - TRANG 1 MỖI DANH MỤC');
+  const filename = path.join(runtime, `checkout-${day}.json`);
+  let record, replayGood = true;
+  await checked(async () => {
+    try { record = validateRecord(JSON.parse(await readFile(filename,'utf8')), day); }
+    catch (error) { if (error.code !== 'ENOENT') { replayGood = false; throw error; } }
+  });
+  const products = [];
+  for (const category of categories) await checked(async () => {
+    const listing = await jsonGet(`/api/catalog?category=${category}&page=1&limit=12&sort=reviews`);
+    need(Array.isArray(listing.items) && listing.page === 1 && listing.items.length <= 12, 'API catalog khong dung page 1/limit 12.');
+    const eligible = listing.items.filter(p => p.canCheckout === true && p.categorySlug === category && /^[A-Z0-9]{10}$/.test(p.asin));
+    need(eligible.length, `Khong co san pham checkout-eligible o page 1 ${category}.`);
+    // Replays retain the original ASIN even if rankings changed since submission.
+    const chosen = record?.products.find(p => p.category === category);
+    const asin = chosen?.asin ?? eligible[randomInt(eligible.length)].asin;
+    if (chosen && !eligible.some(p => p.asin === asin)) report('WARN', `${asin}: mau replay khong con o page 1; khong chon thay the.`);
+    const product = await jsonGet(`/api/catalog/products/${asin}`);
+    need(product.asin === asin, 'Detail API tra ASIN khac.');
+    const images = validateProduct(product, category);
+    for (const image of images) {
+      const { response } = await http(image, { method:'HEAD' });
+      need(/^image\//i.test(response.headers.get('content-type') ?? ''), 'URL anh khong tra image content-type.');
+    }
+    products.push(product);
+    report('OK', `${category}: ${safeName(product.name)} | ${asin} | ${product.priceVnd.toLocaleString('vi-VN')} VND | chi tiet + ${images.length} anh HTTP OK`);
+  });
+  section('5. QA CHECKOUT / ĐỐI CHIẾU VPS DB ĐỘC LẬP');
+  await checked(async () => {
+    need(remoteGood && replayGood, 'Chan checkout: schema VPS/replay chua duoc xac minh.');
+    // Known schema drift fails closed. A powered-off local DB is reported FAIL,
+    // but is not a dependency of the independently verified public VPS checkout.
+    // Existing QA orders can still be verified without another write.
+    if (!readOnly && localSchemaDrift) {
+      const rows = await remoteQuery(orderSql(checkoutKey(day)));
+      need(rows.length && record, 'Chan POST: da phat hien local schema drift. Cac kiem tra doc lap van da chay.');
+      verifyOrder(rows, record);
+      checkoutOutcome = `DA CO DON QA, KHONG TAO LAI | ${rows[0].id}`;
+      report('OK', 'already_submitted: DB da xac minh dung 1 don/2 dong, pending_confirmation/unpaid. Khong POST.');
+      return;
+    }
+    const result = await checkout({ day, readOnly, record, products, query:remoteQuery,
+      save:value => saveRecord(filename,value), post:async payload => {
+        const clock = await remoteQuery("SELECT to_char(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Tokyo','YYYY-MM-DD') AS day");
+        need(clock[0]?.day === day, 'Ngay JST VPS da thay doi; KHONG POST payload cua ngay cu.');
+        return remoteCheckout(payload);
+      } });
+    checkoutOutcome = result.status === 'read_only' ? 'CHI DOC - CHUA TAO DON' :
+      `${result.status === 'already_submitted' ? 'DA CO DON QA, KHONG TAO LAI' : 'DAT HANG QA THANH CONG'} | ${result.order.id}`;
+    report(result.status === 'read_only' ? 'WARN' : 'OK', result.status === 'read_only' ? 'Chi doc: khong POST; chua test dat hang that.' :
+      `${result.status === 'already_submitted' ? 'Don QA da co - khong tao lai' : 'DAT HANG QA THANH CONG'} | Ma don ${result.order.id} | 2 san pham | pending_confirmation / unpaid / manual.`);
+  });
+  section('TỔNG KẾT');
+  const count = status => results.filter(s => s === status).length;
+  console.log(`OK: ${count('OK')} | WARN: ${count('WARN')} | FAIL: ${count('FAIL')}`);
+  console.log(`DAT HANG: ${checkoutOutcome}`);
+  console.log(count('FAIL') ? 'AUDIT HE THONG: CO LOI CAN XU LY (xem cac dong [FAIL] ben tren).' :
+    count('WARN') ? 'AUDIT HE THONG: CO CANH BAO (xem [WARN] ben tren).' : 'AUDIT HE THONG: TAT CA MUC DEU DAT.');
+  console.log('Loi schema: can review migration rieng. Worker/sync: xem daily state + ledger, khong replay job.');
+  console.log('Checkout bat dinh: giu file replay va checkoutKey; khong xoa/doi key, khong sua/xoa don.');
+  console.log('Payload QA luu rieng .agents/runtime/daily-audit; khong in customer/phone/address hoac secrets.');
+  return count('FAIL') ? 1 : count('WARN') ? 2 : 0;
+}
+
+async function selfTest() {
+  const { default:assert } = await import('node:assert/strict');
+  const day = '2026-11-08';
+  const product = (asin,categorySlug) => ({ asin, categorySlug, name:'San pham QA', priceVnd:120000, canCheckout:true,
+    imageUrl:'https://m.media-amazon.com/images/I/test.jpg', detail:{ features:['Chi tiet'], ingredients:[], usage:[], cautions:[], specs:{} } });
+  const products = [product('B000000001',categories[0]),product('B000000002',categories[1])];
+  assert.equal(jstDay(new Date('2026-11-07T15:00:00Z')),day);
+  assert.equal(jstDay(new Date('2026-11-07T14:59:59Z')),'2026-11-07');
+  assert.equal(checkoutKey(day),checkoutKey(day));
+  // Pin the namespace: deleting runtime files must never change today's key.
+  assert.equal(checkoutKey(day), '7e53a4b1-23f6-57e9-9576-16945bf80055');
+  assert.notEqual(checkoutKey(day),checkoutKey('2026-11-09'));
+  const record = makeRecord(day,products);
+  validateRecord(record,day); products.forEach((p,i) => validateProduct(p,categories[i]));
+  assert.throws(() => validateProduct({...products[0],priceVnd:0},categories[0]));
+  assert.throws(() => validateProduct({...products[0],detail:null},categories[0]));
+  assert.throws(() => validateRecord({...record,payload:{...record.payload,checkoutKey:checkoutKey('2026-11-09')}},day));
+  for (const target of ['local','vps']) {
+    const contract = contracts(target);
+    const snapshot = { columns:Object.entries(contract.tables).flatMap(([table,columns]) => Object.entries(columns).map(([column,type]) => ({table,column,type:typeName(type)}))),
+      indexes:Object.entries(contract.indexes).map(([name,[table,unique,keys,predicate]]) => ({name,table,unique,valid:true,ready:true,definition:`CREATE INDEX ${keys}${predicate ? ' '+predicate : ''}`})) };
+    assert.deepEqual(schemaProblems(snapshot,target),[]);
+    snapshot.indexes.find(i => i.name === 'product_images_pkey').definition = 'CREATE UNIQUE INDEX product_images_pkey ON public.product_images USING btree (asin, "position")';
+    assert.deepEqual(schemaProblems(snapshot,target),[]); // PostgreSQL quotes the reserved identifier.
+    snapshot.columns = snapshot.columns.filter(c => !(c.table==='orders' && c.column==='checkout_key'));
+    snapshot.indexes.find(i => i.name==='orders_checkout_key_idx').valid = false;
+    assert(schemaProblems(snapshot,target).some(p => p.includes('orders.checkout_key')));
+    assert(schemaProblems(snapshot,target).some(p => p.includes('orders_checkout_key_idx')));
+  }
+  const order = { id:'test-order', status:'pending_confirmation', payment_status:'unpaid', payment_method:'manual', checkout_fingerprint:record.fingerprint, merchandise_vnd:240000,
+    lines:products.map(p => ({asin:p.asin,quantity:1,unit_price_vnd:p.priceVnd,name:p.name,quote_snapshot:null})) };
+  verifyOrder([order],record);
+  assert.throws(() => verifyOrder([],record));
+  assert.throws(() => verifyOrder([order,order],record));
+  assert.throws(() => verifyOrder([{...order,lines:[order.lines[0],order.lines[0]]}],record));
+  assert.throws(() => verifyOrder([{...order,payment_status:'paid'}],record));
+  const response = { orderId:order.id,status:'pending_confirmation',currency:'VND',paymentStatus:'unpaid',payableNowVnd:0 };
+  let posts=0, stored, queries=0;
+  const dependencies = { day,products,readOnly:false,record:null,now:()=>new Date('2026-11-08T01:00:00Z'),
+    save:async r => { stored=structuredClone(r); }, query:async () => ++queries===1?[]:[order], post:async () => { assert.equal(stored.phase,'attempted'); posts++; return response; } };
+  assert.equal((await checkout(dependencies)).status,'pending_confirmation'); assert.equal(posts,1); assert.equal(stored.phase,'verified');
+  assert.equal((await checkout({...dependencies,record:stored,query:async()=>[order],post:async()=>assert.fail('Replay POST')})).status,'already_submitted');
+  await assert.rejects(checkout({...dependencies,record:{...record,phase:'attempted'},query:async()=>[],post:async()=>assert.fail('Uncertain resend')}));
+  await assert.rejects(checkout({...dependencies,query:async()=>[order],post:async()=>assert.fail('Missing file resend')}));
+  assert.equal((await checkout({...dependencies,readOnly:true,query:async()=>[],post:async()=>assert.fail('Read-only POST')})).status,'read_only');
+  queries=0;
+  await assert.rejects(checkout({...dependencies,post:async()=>{posts++;throw Error('timeout');}}),/bat dinh/);
+  assert.equal(queries,2); // Independent DB verification still ran after timeout.
+  queries=0;
+  await assert.rejects(checkout({...dependencies,save:async()=>{throw Error('disk');},post:async()=>assert.fail('Unsaved POST')}),/disk/);
+  await assert.rejects(checkout({...dependencies,query:async()=>[],now:()=>new Date('2026-11-08T15:00:00Z'),post:async()=>assert.fail('JST rollover POST')}),/qua ngay/);
+  await assert.rejects(checkout({...dependencies,record,query:async()=>[],products:[{...products[0],priceVnd:1},products[1]],post:async()=>assert.fail('Changed price POST')}),/thay doi/);
+  queries=0;
+  await assert.rejects(checkout({...dependencies,post:async()=>({...response,orderId:'wrong-id'})}),/khop DB/);
+  assert.equal((await checkout({...dependencies,record,products:[],query:async()=>[order],post:async()=>assert.fail('Catalog change replay POST')})).status,'already_submitted');
+  console.log('[OK] Self-test fixtures: JST/key, schema/index, product, replay, single POST, timeout/DB verification, disk failure. No HTTP/SSH/DB calls.');
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const args = process.argv.slice(2);
+  try {
+    need(args.length <= 1 && args.every(a => ['--self-test','--read-only'].includes(a)), 'Chi ho tro --self-test hoac --read-only.');
+    need(Number(process.versions.node.split('.')[0]) >= 22, 'Can Node 22 tro len.');
+    if (args[0] === '--self-test') await selfTest();
+    else {
+      need(process.env.MITA_DAILY_AUDIT_MUTEX === 'held', 'Hay chay qua mita-audit.bat hoac PowerShell wrapper de giu mutex.');
+      process.exitCode = await run(args[0] === '--read-only');
+    }
+  } catch (error) {
+    if (args[0] === '--self-test') console.error(error);
+    else console.error('[FAIL] Audit khong the hoan tat. Kiem tra Node 22, dependency backend, quyen runtime; khong gui lai checkout bang key moi.');
+    process.exitCode = 1;
+  }
+}
