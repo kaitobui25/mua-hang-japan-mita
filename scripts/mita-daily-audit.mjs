@@ -17,7 +17,7 @@ class AuditError extends Error {}
 const need = (condition, message) => { if (!condition) throw new AuditError(message); };
 export const jstDay = (now = new Date()) => new Date(now.getTime() + 9 * 3600000).toISOString().slice(0, 10);
 export function checkoutKey(day) {
-  need(/^\d{4}-\d{2}-\d{2}$/.test(day), 'Ngay JST khong hop le.');
+  need(/^\d{4}-\d{2}-\d{2}$/.test(day), 'Ngày JST không hợp lệ.');
   // Permanent domain/version: NEVER change this formula to retry a failed checkout.
   const hex = sha(`mita-daily-audit:live-checkout:v1:${origin}:${day}`).slice(0, 32).split('');
   hex[12] = '5'; hex[16] = ((parseInt(hex[16], 16) & 3) | 8).toString(16);
@@ -76,18 +76,18 @@ export function schemaProblems(snapshot, target) {
   const problems = [], contract = contracts(target);
   for (const [table, columns] of Object.entries(contract.tables)) {
     const actual = snapshot.columns.filter(c => c.table === table);
-    if (!actual.length) { problems.push(`Thieu bang/view public.${table}`); continue; }
+    if (!actual.length) { problems.push(`Thiếu bảng/view public.${table}`); continue; }
     for (const [column, type] of Object.entries(columns)) {
       const found = actual.find(c => c.column === column);
-      if (!found) problems.push(`Thieu cot ${table}.${column}`);
-      else if (typeName(found.type) !== typeName(type)) problems.push(`Sai kieu ${table}.${column}: can ${type}, co ${found.type}`);
+      if (!found) problems.push(`Thiếu cột ${table}.${column}`);
+      else if (typeName(found.type) !== typeName(type)) problems.push(`Sai kiểu ${table}.${column}: cần ${type}, hiện có ${found.type}`);
     }
   }
   for (const [name, [table, unique, keys, predicate]] of Object.entries(contract.indexes)) {
     const index = snapshot.indexes.find(i => i.table === table && (name.startsWith('@') ? i.unique === unique && indexDefinition(i.definition).includes(keys) : i.name === name));
-    if (!index) problems.push(`Thieu index ${table}.${name}`);
+    if (!index) problems.push(`Thiếu index ${table}.${name}`);
     else if (!index.valid || !index.ready || index.unique !== unique || !indexDefinition(index.definition).includes(keys) ||
-      (predicate ? !indexDefinition(index.definition).includes(predicate) : / WHERE /.test(index.definition))) problems.push(`Index khong tuong thich ${table}.${name}`);
+      (predicate ? !indexDefinition(index.definition).includes(predicate) : / WHERE /.test(index.definition))) problems.push(`Index không tương thích ${table}.${name}`);
   }
   return problems;
 }
@@ -104,12 +104,12 @@ function command(executable, args, input = '', timeout = 25000) {
     const child = spawn(executable, args, { cwd:root, windowsHide:true, stdio:['pipe','pipe','pipe'] });
     let stdout = '', size = 0, done = false;
     const finish = (error) => { if (done) return; done = true; clearTimeout(timer); error ? reject(error) : resolve(stdout); };
-    const timer = setTimeout(() => { child.kill(); finish(new AuditError('SSH het thoi gian; kiem tra ket noi va ssh-agent.')); }, timeout);
-    child.stdout.on('data', data => { size += data.length; if (size > 2e6) { child.kill(); finish(new AuditError('Ket qua SSH vuot gioi han.')); } else stdout += data; });
+    const timer = setTimeout(() => { child.kill(); finish(new AuditError('SSH hết thời gian; kiểm tra kết nối và ssh-agent.')); }, timeout);
+    child.stdout.on('data', data => { size += data.length; if (size > 2e6) { child.kill(); finish(new AuditError('Kết quả SSH vượt giới hạn.')); } else stdout += data; });
     // Never echo SSH/psql stderr: SQL or credentials must not leak into reports.
     child.stderr.on('data', () => {});
-    child.on('error', () => finish(new AuditError('Khong chay duoc OpenSSH. Kiem tra ssh.exe trong PATH.')));
-    child.on('close', code => finish(code === 0 ? null : new AuditError('SSH/psql that bai. Kiem tra ssh-agent, known_hosts va sudo -n postgres (khong doi host key).')));
+    child.on('error', () => finish(new AuditError('Không chạy được OpenSSH. Kiểm tra ssh.exe trong PATH.')));
+    child.on('close', code => finish(code === 0 ? null : new AuditError('SSH/psql thất bại. Kiểm tra ssh-agent, known_hosts và sudo -n postgres; không đổi host key.')));
     child.stdin.on('error', () => {});
     child.stdin.end(input);
   });
@@ -118,7 +118,7 @@ async function remoteQuery(sql) {
   const output = await command('ssh.exe', ['-T','-F','NUL','-p','22','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','PreferredAuthentications=publickey','-o','IdentityFile=none','-o','IdentitiesOnly=no','-o','ClearAllForwardings=yes','-o','ConnectTimeout=8','-o','ConnectionAttempts=1','-o','ServerAliveInterval=5','-o','ServerAliveCountMax=2',
     'ubuntu@217.142.225.255', "timeout 20s sudo -n -u postgres psql -X -w -qAt -v ON_ERROR_STOP=1 -d mita"],
   `BEGIN READ ONLY;\nSET LOCAL statement_timeout='10s';\nSET LOCAL lock_timeout='2s';\nSET LOCAL search_path=public,pg_catalog;\nSELECT COALESCE(json_agg(audit_row),'[]'::json) FROM (${sql}) audit_row;\nCOMMIT;\n`);
-  try { return JSON.parse(output.trim()); } catch { throw new AuditError('Ket qua SSH/psql khong phai JSON hop le; khong du bang chung DB.'); }
+  try { return JSON.parse(output.trim()); } catch { throw new AuditError('Kết quả SSH/psql không phải JSON hợp lệ; chưa đủ bằng chứng DB.'); }
 }
 async function remoteCheckout(payload) {
   // Execute the public HTTPS request ON Hermes, passing the QA body over stdin.
@@ -131,20 +131,20 @@ async function remoteCheckout(payload) {
     `timeout 20s curl --silent --show-error --max-time 16 --request POST --header 'Content-Type: application/json' --data-binary @- --write-out '\\nAUDIT_HTTP_STATUS:%{http_code}' ${origin}/api/checkout`],
   JSON.stringify(payload));
   const match = output.match(/\nAUDIT_HTTP_STATUS:(\d{3})\s*$/);
-  need(match, 'VPS HTTPS khong tra ma HTTP cho checkout; khong tu gui lai.');
+  need(match, 'VPS HTTPS không trả mã HTTP cho checkout; không tự gửi lại.');
   const body = output.slice(0, match.index);
   if (Number(match[1]) !== 200) {
     let code = 'unknown';
     try { code = JSON.parse(body)?.code || 'unknown'; } catch { /* No unsafe raw response in terminal. */ }
-    throw new AuditError(`Checkout qua Hermes -> DuckDNS bi HTTP ${match[1]} (${safeName(code)}); da giu checkoutKey, khong tu gui lai.`);
+    throw new AuditError(`Checkout qua Hermes đến DuckDNS gặp HTTP ${match[1]} (${safeName(code)}); giữ checkoutKey, không tự gửi lại.`);
   }
-  try { return JSON.parse(body); } catch { throw new AuditError('VPS HTTPS checkout tra JSON khong hop le; khong tu gui lai.'); }
+  try { return JSON.parse(body); } catch { throw new AuditError('VPS HTTPS checkout trả JSON không hợp lệ; không tự gửi lại.'); }
 }
 async function localSnapshot() {
-  need(process.env.MITA_DAILY_AUDIT_LOCAL_OWNER === 'verified', 'Local 5433: DB dang tat hoac chua xac minh duoc PID/path voi pg_ctl backend/.local-db. Kiem tra quyen va dich vu; khong tu khoi dong.');
+  need(process.env.MITA_DAILY_AUDIT_LOCAL_OWNER === 'verified', 'PostgreSQL Mita (5433) đang tắt hoặc chưa xác minh được PID, đường dẫn postgres.exe và backend/.local-db.');
   const url = new URL(process.env.MITA_LOCAL_DATABASE_URL || 'postgresql://mita_local@127.0.0.1:5433/postgres');
   need(['postgres:', 'postgresql:'].includes(url.protocol) && url.hostname === '127.0.0.1' && url.port === '5433' && url.pathname === '/postgres' && !url.search && !url.hash,
-    'Local DB phai la 127.0.0.1:5433/postgres; khong dung tunnel 15432.');
+    'Database local phải là 127.0.0.1:5433/postgres; không dùng tunnel 15432.');
   const require = createRequire(path.join(root,'backend','package.json'));
   const { Client } = require('pg');
   const client = new Client({ connectionString:url.href, connectionTimeoutMillis:4000, query_timeout:12000,
@@ -153,7 +153,7 @@ async function localSnapshot() {
   try {
     await client.connect();
     const snapshot = (await client.query(snapshotSql)).rows[0].snapshot;
-    need(snapshot.identity.database === 'postgres' && snapshot.identity.role === decodeURIComponent(url.username) && snapshot.identity.port === 5433 && ['127.0.0.1','::1'].includes(snapshot.identity.host), 'Sai identity PostgreSQL local.');
+    need(snapshot.identity.database === 'postgres' && snapshot.identity.role === decodeURIComponent(url.username) && snapshot.identity.port === 5433 && ['127.0.0.1','::1'].includes(snapshot.identity.host), 'Sai danh tính PostgreSQL local (tên database, user, địa chỉ hoặc cổng).');
     if (!schemaProblems(snapshot,'local').length) {
       snapshot.workers = (await client.query(`SELECT json_build_object(
         'settings',(SELECT row_to_json(s) FROM (SELECT engine,schedules FROM worker_control_settings WHERE id=1) s),
@@ -162,14 +162,14 @@ async function localSnapshot() {
     }
     return snapshot;
   } catch (error) {
-    if (error.message === 'Sai identity PostgreSQL local.') throw error;
-    throw new AuditError('Khong doc duoc PostgreSQL local 127.0.0.1:5433/postgres. Kiem tra dich vu/quyen; audit khong tu khoi dong DB.');
+    if (error instanceof AuditError) throw error;
+    throw new AuditError('Không đọc được PostgreSQL local 127.0.0.1:5433/postgres; kiểm tra kết nối, quyền và dịch vụ.');
   } finally { await client.end().catch(() => {}); }
 }
 async function http(url, options = {}) {
   try {
     const response = await fetch(url, { ...options, redirect:'error', signal:AbortSignal.timeout(15000), headers:{ 'Cache-Control':'no-cache', ...options.headers } });
-    need(response.ok, `HTTP ${response.status}; kiem tra public HTTPS/Caddy/API.`);
+    need(response.ok, `HTTP ${response.status}; kiểm tra public HTTPS/Caddy/API.`);
     let text = '';
     if (response.body) {
       const reader = response.body.getReader(), chunks = [];
@@ -179,7 +179,7 @@ async function http(url, options = {}) {
           const { value, done } = await reader.read();
           if (done) break;
           bytes += value.length;
-          need(bytes <= 2e6, 'HTTP response qua lon.');
+          need(bytes <= 2e6, 'Phản hồi HTTP quá lớn.');
           chunks.push(Buffer.from(value));
         }
         text = Buffer.concat(chunks).toString('utf8');
@@ -188,23 +188,23 @@ async function http(url, options = {}) {
     return { response, text };
   } catch (error) {
     if (/^HTTP /.test(error.message)) throw error;
-    throw new AuditError('HTTP timeout/ket noi/response khong chac chan. Khong doi checkoutKey va khong tu gui lai.');
+    throw new AuditError('HTTP hết thời gian, mất kết nối hoặc phản hồi không chắc chắn. Không đổi checkoutKey và không tự gửi lại.');
   }
 }
 async function jsonGet(route) {
   const { text } = await http(origin + route);
-  try { return JSON.parse(text); } catch { throw new AuditError('Public API tra JSON khong hop le.'); }
+  try { return JSON.parse(text); } catch { throw new AuditError('Public API trả JSON không hợp lệ.'); }
 }
 export function validateProduct(p, category) {
-  need(p && /^[A-Z0-9]{10}$/.test(p.asin) && p.categorySlug === category && p.canCheckout === true, 'San pham khong du dieu kien checkout/danh muc.');
-  need(typeof p.name === 'string' && p.name.trim().length >= 3 && !/[\x00-\x1f]/.test(p.name), 'Ten san pham rong/khong hop le.');
-  need(Number.isSafeInteger(p.priceVnd) && p.priceVnd > 0, 'Gia VND phai la so nguyen duong.');
+  need(p && /^[A-Z0-9]{10}$/.test(p.asin) && p.categorySlug === category && p.canCheckout === true, 'Sản phẩm không đúng danh mục hoặc không đủ điều kiện checkout.');
+  need(typeof p.name === 'string' && p.name.trim().length >= 3 && !/[\x00-\x1f]/.test(p.name), 'Tên sản phẩm trống hoặc không hợp lệ.');
+  need(Number.isSafeInteger(p.priceVnd) && p.priceVnd > 0, 'Giá VND phải là số nguyên dương.');
   const d = p.detail;
   need(d && ['features','ingredients','usage','cautions'].every(key => Array.isArray(d[key]) && d[key].every(s => typeof s === 'string')) &&
     d.specs && typeof d.specs === 'object' && !Array.isArray(d.specs) &&
-    [...d.features,...d.ingredients,...d.usage,...d.cautions,...Object.values(d.specs)].some(s => typeof s === 'string' && s.trim()), 'Thieu noi dung chi tiet san pham.');
+    [...d.features,...d.ingredients,...d.usage,...d.cautions,...Object.values(d.specs)].some(s => typeof s === 'string' && s.trim()), 'Thiếu nội dung chi tiết sản phẩm.');
   const images = [...new Set([p.imageUrl, ...(Array.isArray(p.imageUrls) ? p.imageUrls : [])].filter(Boolean))];
-  need(images.length > 0 && images.length <= 5 && images.every(image => /^https:\/\/(m\.media-amazon\.com|images-na\.ssl-images-amazon\.com|images-fe\.ssl-images-amazon\.com)\//.test(image)), 'Thieu anh/URL anh nguon khong hop le.');
+  need(images.length > 0 && images.length <= 5 && images.every(image => /^https:\/\/(m\.media-amazon\.com|images-na\.ssl-images-amazon\.com|images-fe\.ssl-images-amazon\.com)\//.test(image)), 'Thiếu ảnh hoặc địa chỉ nguồn ảnh không hợp lệ.');
   return images;
 }
 export function makeRecord(day, products) {
@@ -213,10 +213,10 @@ export function makeRecord(day, products) {
   return { version:1, day, phase:'prepared', products:products.map(p => ({ asin:p.asin, category:p.categorySlug, name:p.name, priceVnd:p.priceVnd })), payload, fingerprint:fingerprint(payload) };
 }
 export function validateRecord(record, day) {
-  need(record?.version === 1 && record.day === day && ['prepared','attempted','verified'].includes(record.phase), 'File replay hong/sai ngay; dung checkout, khong xoa file de thu lai.');
-  need(Array.isArray(record.products) && record.products.length === 2 && record.products.every((p,i) => p.category === categories[i] && /^[A-Z0-9]{10}$/.test(p.asin) && Number.isSafeInteger(p.priceVnd) && p.priceVnd > 0) && record.products[0].asin !== record.products[1].asin, 'File replay sai san pham.');
+  need(record?.version === 1 && record.day === day && ['prepared','attempted','verified'].includes(record.phase), 'File replay hỏng hoặc sai ngày; dừng checkout, không xóa file để thử lại.');
+  need(Array.isArray(record.products) && record.products.length === 2 && record.products.every((p,i) => p.category === categories[i] && /^[A-Z0-9]{10}$/.test(p.asin) && Number.isSafeInteger(p.priceVnd) && p.priceVnd > 0) && record.products[0].asin !== record.products[1].asin, 'File replay sai sản phẩm.');
   const expected = makeRecord(day, record.products.map(p => ({ ...p, categorySlug:p.category })));
-  need(JSON.stringify(record.payload) === JSON.stringify(expected.payload) && record.fingerprint === expected.fingerprint, 'Payload replay da thay doi; dung checkout de tranh trung don.');
+  need(JSON.stringify(record.payload) === JSON.stringify(expected.payload) && record.fingerprint === expected.fingerprint, 'Payload replay đã thay đổi; dừng checkout để tránh trùng đơn.');
   return record;
 }
 async function saveRecord(filename, record) {
@@ -228,34 +228,34 @@ const orderSql = key => `SELECT o.id,o.status,o.payment_status,o.payment_method,
   (SELECT COALESCE(json_agg(json_build_object('asin',i.asin,'quantity',i.quantity,'unit_price_vnd',i.unit_price_vnd,'name',i.name,'quote_snapshot',i.quote_snapshot) ORDER BY i.asin),'[]') FROM order_items i WHERE i.order_id=o.id) AS lines
   FROM orders o WHERE o.checkout_key=${literal(key)}::uuid`;
 export function verifyOrder(rows, record, response) {
-  need(rows.length === 1, `DB co ${rows.length} don cho checkoutKey; can dung 1 don. Khong gui lai.`);
+  need(rows.length === 1, `DB có ${rows.length} đơn cho checkoutKey; cần đúng 1 đơn. Không gửi lại.`);
   const order = rows[0];
-  need(order.status === 'pending_confirmation' && order.payment_status === 'unpaid' && order.payment_method === 'manual' && !order.payment_provider && !order.payment_reference && !order.paid_at, 'Trang thai don/thanh toan khong dung pending_confirmation/unpaid/manual.');
-  need(order.checkout_fingerprint === record.fingerprint, 'DB fingerprint khac payload QA; dung, khong gui lai.');
+  need(order.status === 'pending_confirmation' && order.payment_status === 'unpaid' && order.payment_method === 'manual' && !order.payment_provider && !order.payment_reference && !order.paid_at, 'Trạng thái đơn hoặc thanh toán không đúng pending_confirmation/unpaid/manual.');
+  need(order.checkout_fingerprint === record.fingerprint, 'DB fingerprint khác payload QA; dừng, không gửi lại.');
   need(Array.isArray(order.lines) && order.lines.length === 2 && record.products.every(p => {
     const matching = order.lines.filter(l => l.asin === p.asin && l.quantity === 1 && l.quote_snapshot === null && typeof l.name === 'string' && l.name.trim() && Number(l.unit_price_vnd) === p.priceVnd);
     return matching.length === 1;
-  }), 'DB khong dung 2 ASIN/so luong/gia QA da chon. Khong tu sua don.');
-  need(Number(order.merchandise_vnd) === record.products.reduce((sum,p) => sum+p.priceVnd,0), 'Tong tien DB khac 2 dong QA.');
-  if (response) need(response.orderId === order.id && ['pending_confirmation','already_submitted'].includes(response.status) && response.currency === 'VND' && response.paymentStatus === 'unpaid' && response.payableNowVnd === 0, 'HTTP checkout khong khop DB; khong duoc bao thanh cong.');
+  }), 'DB không đúng 2 ASIN, số lượng hoặc giá QA đã chọn. Không tự sửa đơn.');
+  need(Number(order.merchandise_vnd) === record.products.reduce((sum,p) => sum+p.priceVnd,0), 'Tổng tiền DB khác 2 dòng QA.');
+  if (response) need(response.orderId === order.id && ['pending_confirmation','already_submitted'].includes(response.status) && response.currency === 'VND' && response.paymentStatus === 'unpaid' && response.payableNowVnd === 0, 'HTTP checkout không khớp DB; không được báo thành công.');
   return order;
 }
 
 export async function checkout({ day, readOnly, record, products, query, post, save, now = () => new Date() }) {
   const existing = await query(orderSql(checkoutKey(day)));
   if (existing.length) {
-    need(record, 'Da co don voi key hom nay nhung mat file payload replay. KHONG POST; can doi chieu thu cong.');
+    need(record, 'Đã có đơn với key hôm nay nhưng mất file payload replay. KHÔNG POST; cần đối chiếu thủ công.');
     const order = verifyOrder(existing, validateRecord(record, day));
     return { status:'already_submitted', order };
   }
   if (readOnly) return { status:'read_only' };
-  need(products?.length === 2 && products.every((p,i) => p.categorySlug === categories[i]), 'Chan POST: chua du 2 san pham da kiem tra.');
+  need(products?.length === 2 && products.every((p,i) => p.categorySlug === categories[i]), 'Chặn POST: chưa đủ 2 sản phẩm đã kiểm tra.');
   if (!record) { record = makeRecord(day, products); await save(record); }
   validateRecord(record, day);
-  need(products.every((p,i) => p.asin === record.products[i].asin && p.priceVnd === record.products[i].priceVnd), 'Gia/ASIN replay da thay doi truoc POST; giu nguyen payload va dung de review.');
-  need(record.phase === 'prepared', 'Lan gui truoc bat dinh/DB chua co don. KHONG tu resend; giu nguyen key va payload de dieu tra.');
-  need(jstDay(now()) === day, 'Da qua ngay JST; dong audit va chay lai, khong gui payload cu.');
-  need(jstDay(new Date(now().getTime()+30000)) === day, 'Sap qua ngay JST; dung va chay audit sau 00:00 JST.');
+  need(products.every((p,i) => p.asin === record.products[i].asin && p.priceVnd === record.products[i].priceVnd), 'Giá hoặc ASIN replay đã thay đổi trước POST; giữ payload để rà soát.');
+  need(record.phase === 'prepared', 'Lần gửi trước bất định hoặc DB chưa có đơn. KHÔNG gửi lại; giữ key và payload để điều tra.');
+  need(jstDay(now()) === day, 'Đã qua ngày JST; đóng audit và chạy lại, không gửi payload cũ.');
+  need(jstDay(new Date(now().getTime()+30000)) === day, 'Sắp qua ngày JST; dừng và chạy audit sau 00:00 JST.');
   record.phase = 'attempted';
   await save(record); // Must persist before the single public HTTPS POST.
   let response, postError;
@@ -263,154 +263,264 @@ export async function checkout({ day, readOnly, record, products, query, post, s
   // Always query independently, including after HTTP timeout/malformed response.
   const rows = await query(orderSql(record.payload.checkoutKey));
   const order = verifyOrder(rows, record, response);
-  if (postError) throw new AuditError('DB da co don QA nhung HTTP checkout bat dinh. KHONG resend; chay audit lai chi de doi chieu DB/key cu.');
-  need(response, 'Thieu HTTP checkout response.');
+  if (postError) throw new AuditError('DB đã có đơn QA nhưng HTTP checkout bất định. KHÔNG gửi lại; chạy audit lần sau chỉ để đối chiếu DB và key cũ.');
+  need(response, 'Thiếu phản hồi HTTP checkout.');
   record.phase = 'verified'; await save(record);
   return { status:response.status, order };
 }
 
-async function run(readOnly) {
-  const day = jstDay(), results = [];
-  let checkoutOutcome = 'CHUA XAC MINH';
-  const report = (status, text) => {
+// Tất cả dòng trạng thái được gói ở chiều rộng dễ đọc trên cửa sổ CMD.
+function createReporter() {
+  const results = [];
+  const print = (value, indent = '       ', width = 96) => {
+    for (const line of String(value).split('\n')) {
+      let current = '';
+      for (const word of line.split(/\s+/u)) {
+        if (!word) continue;
+        const parts = word.match(/[\s\S]{1,80}/gu) ?? [];
+        for (const part of parts) {
+          if (current && (indent.length + current.length + part.length + 1 > width)) {
+            console.log(indent + current);
+            current = '';
+          }
+          current += (current ? ' ' : '') + part;
+        }
+      }
+      if (current) console.log(indent + current);
+    }
+  };
+  const report = (status, title, { reason, fix, details = [] } = {}) => {
     results.push(status);
     const label = `[${status}]`;
-    const color = {OK:32,WARN:33,FAIL:31}[status];
-    console.log(`${process.stdout.isTTY ? `\x1b[${color}m${label}\x1b[0m` : label} ${text}`);
+    const color = { OK:32, WARN:33, FAIL:31 }[status];
+    console.log(`${process.stdout.isTTY ? `\x1b[${color}m${label}\x1b[0m` : label} ${title}`);
+    if (reason) print(`Nguyên nhân: ${reason}`);
+    if (fix) print(`Cách xử lý: ${fix}`);
+    for (const detail of details) print(detail);
   };
   const section = title => console.log(`\n========== ${title} ==========`);
-  const attempt = async fn => { try { return await fn(); } catch (error) { report('FAIL', error instanceof AuditError ? error.message : 'Kiem tra that bai; khong du bang chung. Kiem tra ket noi/quyen/file replay, khong tu migrate hay gui lai don.'); return null; } };
-  // Only explicit messages generated in this file are exposed below. Raw network,
-  // filesystem, PostgreSQL and JSON exceptions are intentionally never printed.
-  const checked = attempt;
-  console.log(`MITA JAPAN - KIỂM TRA HẰNG NGÀY | ${day} JST`);
-  console.log(readOnly ? 'CHE DO CHI DOC: khong POST, khong tao don.' : 'CHE DO QA THAT: toi da 1 don/ngay JST, 2 san pham, KHONG giao/thu tien.');
-  console.log('Ma thoat: 0=OK, 1=FAIL, 2=WARN. Khong tu khoi dong DB/worker, migrate hay deploy.');
-  await mkdir(runtime, { recursive:true });
-  section('1. POSTGRESQL LOCAL 5433 / SCHEMA');
+  const checked = async (fn, title, fix) => {
+    try { return await fn(); }
+    catch (error) {
+      // Không in lỗi thô: exceptions hệ thống có thể chứa credential hoặc payload.
+      report('FAIL', title, {
+        reason: error instanceof AuditError ? error.message : 'Thiếu bằng chứng để xác nhận; kiểm tra kết nối, quyền và dữ liệu đầu vào.',
+        fix: fix ?? 'Kiểm tra log liên quan, không tự chạy migration, job hoặc gửi lại đơn QA.'
+      });
+      return null;
+    }
+  };
+  const count = status => results.filter(s => s === status).length;
+  const exitCode = () => count('FAIL') ? 1 : count('WARN') ? 2 : 0;
+  return { report, section, checked, count, exitCode };
+}
+
+async function checkLocal(day, view, readLocal = localSnapshot) {
+  const { report, section, checked } = view;
+  section('1. POSTGRESQL MITA LOCAL (5433) / SCHEMA');
   let localSchemaDrift = false, workerEvidence;
   await checked(async () => {
-    const snapshot = await localSnapshot();
+    const snapshot = await readLocal();
     workerEvidence = snapshot.workers;
-    report('OK', `Local PostgreSQL ${snapshot.identity.host}:${snapshot.identity.port}/${snapshot.identity.database}`);
-    const errors = schemaProblems(snapshot,'local');
-    errors.forEach(e => report('FAIL', e));
+    report('OK', 'Kết nối PostgreSQL Mita (5433) thành công.', {
+      details: [`Database: ${snapshot.identity.host}:${snapshot.identity.port}/${snapshot.identity.database}`]
+    });
+    const errors = schemaProblems(snapshot, 'local');
     localSchemaDrift = errors.length > 0;
-    if (!localSchemaDrift) report('OK', 'Contract local catalog/checkout/workers va index hop le.');
-  });
-  section('2. KẾT QUẢ WORKER HÔM NAY (JST)');
+    for (const problem of errors) report('FAIL', 'Schema local không khớp code.', {
+      reason: problem, fix:'Đối chiếu bảng/cột/index trong code và DB; chỉ migration sau khi được duyệt riêng.'
+    });
+    if (!localSchemaDrift) report('OK', 'Schema local và các index theo hợp đồng đã đạt.');
+  }, 'PostgreSQL Mita (5433) chưa hoạt động hoặc chưa thể kiểm tra.', 'Kiểm tra PID, backend/.local-db và cổng 5433. Nếu cụm thực sự dừng, có tùy chọn khởi động sau audit.');
+  return { localSchemaDrift, workerEvidence };
+}
+
+async function checkWorkers(day, view, workerEvidence, readDaily = readFile) {
+  const { report, section, checked } = view;
+  section('2. KẾT QUẢ JOB HÔM NAY (JST)');
+  let status;
   await checked(async () => {
     let contents;
-    try { contents = await readFile(path.join(root,'.agents','runtime',`mita-daily-${day}.json`),'utf8'); }
+    try { contents = await readDaily(path.join(root, '.agents', 'runtime', `mita-daily-${day}.json`), 'utf8'); }
     catch (error) {
-      if (error.code === 'ENOENT') throw new AuditError(`Chua co ket qua 3 worker ngay ${day} JST. Supervisor khong ghi daily file; kiem tra PostgreSQL 5433 va mita-supervisor.jsonl.`);
+      if (error.code === 'ENOENT') throw new AuditError(`Chưa có file kết quả 3 worker ngày ${day} JST từ Supervisor.`);
       throw error;
     }
-    let status;
-    try { status = JSON.parse(contents); } catch { throw new AuditError(`Daily file ${day} hong JSON; khong co bang chung job thanh cong.`); }
-    need(status.day === day, 'Daily status khong phai hom nay JST.');
-    for (const worker of ['amazon','names','detail']) {
+    try { status = JSON.parse(contents); }
+    catch { throw new AuditError(`File kết quả ${day} không phải JSON hợp lệ.`); }
+    need(status?.day === day, 'File kết quả không thuộc ngày JST hiện tại.');
+    for (const worker of ['amazon', 'names', 'detail']) {
       const job = status.jobs?.[worker];
       const complete = job?.day === day && job.state === 'completed';
       const clean = complete && !Number(job.failed) && !Number(job.warnings);
-      report(clean ? 'OK' : ['failed','unknown'].includes(job?.state) ? 'FAIL' : 'WARN', `${worker}: ${safeName(job?.state ?? 'chua co ket qua')} (Supervisor daily file; khong chung minh tat ca san pham da duoc xu ly).`);
-      if (worker === 'amazon' && workerEvidence) {
-        const run = workerEvidence.amazon.find(row => row.id === String(job?.runId));
-        report(run?.state === 'success' && run.finished_at && run.error_count === 0 ? 'OK' : 'WARN', `Amazon DB run ${safeName(job?.runId ?? 'missing')}: ${safeName(run?.state ?? 'khong tim thay hom nay')}; saved=${run?.saved_count ?? '?'}, errors=${run?.error_count ?? '?'}.`);
-      }
-      if (worker === 'names' && workerEvidence?.settings?.engine === 'codex') {
-        const runs = workerEvidence.names;
-        const run = runs.length === 1 ? runs[0] : null;
-        report(run?.state === 'completed' && run.finished_at && run.failed === 0 && run.warnings === 0 ? 'OK' : 'WARN', `Names Codex DB: ${safeName(run?.state ?? 'khong co duy nhat scheduled run')}; translated=${run?.translated ?? '?'}, failed=${run?.failed ?? '?'}, warnings=${run?.warnings ?? '?'}.`);
-      }
+      const label = { amazon:'Amazon 04:00', names:'Names 05:00', detail:'Detail 05:15' }[worker];
+      report(clean ? 'OK' : ['failed','unknown'].includes(job?.state) ? 'FAIL' : 'WARN',
+        `${label}: ${clean ? 'đã hoàn thành' : 'chưa xác nhận hoàn thành'}.`, {
+          details:[`Trạng thái Supervisor: ${safeName(job?.state ?? 'chưa có kết quả')}`],
+          ...(!clean && ['failed','unknown'].includes(job?.state) ? {
+            reason:'Supervisor ghi nhận trạng thái lỗi hoặc không xác định.',
+            fix:'Xem log Supervisor và bản ghi job; không tự chạy bù.'
+          } : {})
+        });
     }
-    report(status.sync?.state === 'completed' ? 'OK' : 'WARN', `Sync local: ${safeName(status.sync?.state ?? 'unknown')}; doi chieu VPS ledger o phan sau.`);
-  });
+    report(status.sync?.state === 'completed' ? 'OK' : 'WARN', 'Đồng bộ VPS theo Supervisor.', {
+      details:[`Trạng thái local: ${safeName(status.sync?.state ?? 'chưa có kết quả')}. Đối chiếu ledger VPS tại phần riêng.`]
+    });
+  }, 'Chưa xác minh được kết quả job trong ngày.', 'Kiểm tra file daily của Supervisor và nhật ký mita-supervisor.jsonl; không tự chạy bù job.');
+  if (workerEvidence) {
+    const amazonRun = workerEvidence.amazon?.find(row => row.id === String(status?.jobs?.amazon?.runId));
+    report(amazonRun?.state === 'success' && amazonRun.finished_at && amazonRun.error_count === 0 ? 'OK' : 'WARN',
+      'Bản ghi Amazon hôm nay trong PostgreSQL local.', {
+        details:[`Run: ${safeName(amazonRun?.id ?? 'chưa liên kết được với daily file')}; trạng thái: ${safeName(amazonRun?.state ?? 'chưa xác minh')}; lưu: ${amazonRun?.saved_count ?? '?'}; lỗi: ${amazonRun?.error_count ?? '?'}.`]
+      });
+    if (workerEvidence.settings?.engine === 'codex') {
+      const runs = workerEvidence.names ?? [];
+      const nameRun = runs.length === 1 ? runs[0] : null;
+      report(nameRun?.state === 'completed' && nameRun.finished_at && nameRun.failed === 0 && nameRun.warnings === 0 ? 'OK' : 'WARN',
+        'Bản ghi Names Codex theo lịch trong PostgreSQL local.', {
+          details:[`Trạng thái: ${safeName(nameRun?.state ?? 'chưa có đúng một lượt scheduled')}; dịch: ${nameRun?.translated ?? '?'}; lỗi: ${nameRun?.failed ?? '?'}; cảnh báo: ${nameRun?.warnings ?? '?'}.`]
+        });
+    }
+  } else {
+    report('WARN', 'Chưa đọc được bản ghi worker từ PostgreSQL local.', {
+      details:['Không suy diễn rằng job đã chạy chỉ từ trạng thái dịch vụ.']
+    });
+  }
+}
+
+async function localRecheck({ readLocal = localSnapshot, readDaily = readFile } = {}) {
+  const day = jstDay(), view = createReporter();
+  console.log(`MITA JAPAN — KIỂM TRA LẠI RIÊNG DATABASE 5433 | ${day} JST`);
+  const local = await checkLocal(day, view, readLocal);
+  await checkWorkers(day, view, local.workerEvidence, readDaily);
+  view.section('KẾT QUẢ KIỂM TRA LẠI 5433');
+  console.log(`Đạt: ${view.count('OK')} | Cảnh báo: ${view.count('WARN')} | Lỗi: ${view.count('FAIL')}`);
+  console.log('Chỉ đọc DB local và file job. Không kết nối VPS, không gọi HTTP, không gửi checkout hoặc chạy worker.');
+  return view.exitCode();
+}
+
+async function run(readOnly) {
+  const day = jstDay(), view = createReporter();
+  const { report, section, checked } = view;
+  let checkoutOutcome = 'CHƯA XÁC MINH';
+  console.log(`MITA JAPAN — KIỂM TRA HẰNG NGÀY | ${day} JST`);
+  console.log(readOnly ? 'CHẾ ĐỘ CHỈ ĐỌC: không POST, không tạo đơn.' : 'CHẾ ĐỘ QA THẬT: tối đa 1 đơn/ngày JST, 2 sản phẩm; KHÔNG giao hàng/thu tiền.');
+  console.log('Mã thoát: 0=Đạt, 1=Lỗi, 2=Cảnh báo. Không tự khởi động DB, worker hoặc chạy migration.');
+  await mkdir(runtime, { recursive:true });
+  const { localSchemaDrift, workerEvidence } = await checkLocal(day, view);
+  await checkWorkers(day, view, workerEvidence);
   section('3. POSTGRESQL VPS / SCHEMA / ĐỒNG BỘ');
   let remoteGood = false;
   await checked(async () => {
     const snapshot = (await remoteQuery(snapshotSql))[0].snapshot;
-    need(snapshot.identity.database === 'mita' && snapshot.identity.role === 'postgres', 'VPS DB identity khong phai mita/postgres.');
-    need(snapshot.identity.jst_day === day, 'Ngay JST Windows khac VPS; chan checkout, kiem tra dong ho he thong.');
-    report('OK', `VPS ubuntu@217.142.225.255 DB mita; server ${snapshot.identity.host ?? 'Unix socket'}:${snapshot.identity.port ?? snapshot.identity.configured_port}; read-only sudo postgres.`);
+    need(snapshot.identity.database === 'mita' && snapshot.identity.role === 'postgres', 'Danh tính database VPS không đúng mita/postgres.');
+    need(snapshot.identity.jst_day === day, 'Ngày JST trên Windows khác VPS; chặn checkout và kiểm tra đồng hồ hệ thống.');
+    report('OK', 'Kết nối PostgreSQL VPS mita thành công.', {
+      details:[`Máy chủ: ubuntu@217.142.225.255; DB: ${snapshot.identity.host ?? 'Unix socket'}:${snapshot.identity.port ?? snapshot.identity.configured_port}; chỉ đọc.`]
+    });
     const errors = schemaProblems(snapshot,'vps');
-    errors.forEach(e => report('FAIL', e));
+    errors.forEach(e => report('FAIL', 'Schema VPS không khớp code.', {
+      reason:e, fix:'Đối chiếu contract riêng cho VPS; không tự chạy migration.'
+    }));
     remoteGood = errors.length === 0;
-    if (remoteGood) report('OK', 'Contract VPS catalog/checkout/daily ledger va index hop le.');
-  });
+    if (remoteGood) report('OK', 'Schema VPS catalog, checkout, ledger và index đạt yêu cầu.');
+  }, 'Không kiểm tra được PostgreSQL VPS.', 'Kiểm tra SSH, quyền đọc DB và kết nối Hermes; không thay đổi dịch vụ.');
   if (remoteGood) await checked(async () => {
     const rows = await remoteQuery(`SELECT state,jobs,committed_at,source_hash,remote_hash FROM catalog_sync_ledger WHERE sync_day=${literal(day)}::date`);
-    need(rows.length === 1, 'VPS chua co daily sync ledger hom nay; khong chay bu tu audit.');
+    need(rows.length === 1, 'VPS chưa có bản ghi đồng bộ (daily sync ledger) hôm nay.');
     const row = rows[0];
     const committed = row.committed_at && /^[a-f0-9]{64}$/.test(row.source_hash) && /^[a-f0-9]{64}$/.test(row.remote_hash);
-    report(row.state === 'completed' && committed ? 'OK' : row.state === 'failed' ? 'FAIL' : 'WARN', `VPS daily sync: ${safeName(row.state)}, committed=${Boolean(committed)}. Day la ledger commit, khong phai kiem tra lai toan bo catalog.`);
+    report(row.state === 'completed' && committed ? 'OK' : row.state === 'failed' ? 'FAIL' : 'WARN',
+      'Đồng bộ danh mục VPS hôm nay.', {
+        details:[`Trạng thái ledger: ${safeName(row.state)}; đã commit: ${Boolean(committed)}. Ledger không chứng minh toàn bộ catalog đúng.`],
+        ...(row.state === 'failed' ? { reason:'Ledger VPS ghi nhận đồng bộ lỗi.', fix:'Xem log đồng bộ; không chạy bù từ audit.' } : {})
+      });
     for (const name of ['amazon','names','detail']) {
       const job = row.jobs?.[name];
-      report(job?.day === day && job.state === 'completed' ? 'OK' : 'WARN', `VPS barrier ${name}: ${safeName(job?.state ?? 'missing')}`);
+      report(job?.day === day && job.state === 'completed' ? 'OK' : 'WARN',
+        `Đối chiếu job ${name} trong ledger VPS.`, {
+          details:[`Trạng thái: ${safeName(job?.state ?? 'chưa có')}`]
+        });
     }
-  });
-  section('4. LIVE HTTPS - TRANG 1 MỖI DANH MỤC');
+  }, 'Chưa xác nhận được đồng bộ VPS hôm nay.', 'Kiểm tra daily sync ledger và Supervisor; không tự đồng bộ hoặc chạy bù.');
+  section('4. WEBSITE HTTPS — TRANG 1 MỖI DANH MỤC');
   const filename = path.join(runtime, `checkout-${day}.json`);
   let record, replayGood = true;
   await checked(async () => {
     try { record = validateRecord(JSON.parse(await readFile(filename,'utf8')), day); }
-    catch (error) { if (error.code !== 'ENOENT') { replayGood = false; throw error; } }
-  });
+    catch (error) {
+      if (error.code !== 'ENOENT') {
+        replayGood = false;
+        if (error instanceof SyntaxError) throw new AuditError('File replay QA không phải JSON hợp lệ; phải dừng checkout.');
+        throw error;
+      }
+    }
+  }, 'Không xác minh được file replay QA.', 'Giữ nguyên file checkout hiện có để điều tra, không xóa hoặc thay key.');
   const products = [];
   for (const category of categories) await checked(async () => {
     const listing = await jsonGet(`/api/catalog?category=${category}&page=1&limit=12&sort=reviews`);
-    need(Array.isArray(listing.items) && listing.page === 1 && listing.items.length <= 12, 'API catalog khong dung page 1/limit 12.');
+    need(Array.isArray(listing.items) && listing.page === 1 && listing.items.length <= 12, 'API catalog không trả đúng trang 1 (giới hạn 12 sản phẩm).');
     const eligible = listing.items.filter(p => p.canCheckout === true && p.categorySlug === category && /^[A-Z0-9]{10}$/.test(p.asin));
-    need(eligible.length, `Khong co san pham checkout-eligible o page 1 ${category}.`);
+    need(eligible.length, `Trang 1 danh mục ${category} không có sản phẩm đủ điều kiện checkout.`);
     // Replays retain the original ASIN even if rankings changed since submission.
     const chosen = record?.products.find(p => p.category === category);
     const asin = chosen?.asin ?? eligible[randomInt(eligible.length)].asin;
-    if (chosen && !eligible.some(p => p.asin === asin)) report('WARN', `${asin}: mau replay khong con o page 1; khong chon thay the.`);
+    if (chosen && !eligible.some(p => p.asin === asin)) report('WARN', 'Mẫu QA cũ không còn ở trang 1; không tự đổi sản phẩm.', {
+      details:[`ASIN đã ghi trong replay: ${asin}`]
+    });
     const product = await jsonGet(`/api/catalog/products/${asin}`);
-    need(product.asin === asin, 'Detail API tra ASIN khac.');
+    need(product.asin === asin, 'API chi tiết trả ASIN khác với danh sách.');
     const images = validateProduct(product, category);
     for (const image of images) {
       const { response } = await http(image, { method:'HEAD' });
-      need(/^image\//i.test(response.headers.get('content-type') ?? ''), 'URL anh khong tra image content-type.');
+      need(/^image\//i.test(response.headers.get('content-type') ?? ''), 'URL ảnh không trả về content-type hình ảnh.');
     }
     products.push(product);
-    report('OK', `${category}: ${safeName(product.name)} | ${asin} | ${product.priceVnd.toLocaleString('vi-VN')} VND | chi tiet + ${images.length} anh HTTP OK`);
-  });
+    report('OK', `Sản phẩm danh mục ${category} hợp lệ.`, {
+      details:[`Tên: ${safeName(product.name)}`, `ASIN: ${asin}`, `Giá: ${product.priceVnd.toLocaleString('vi-VN')} VND`, `Chi tiết: có dữ liệu; ảnh: ${images.length} ảnh đã kiểm tra HTTP.`]
+    });
+  }, `Không xác minh được sản phẩm danh mục ${category}.`, 'Kiểm tra catalog trang 1, API chi tiết, giá VND và đường dẫn ảnh HTTPS.');
   section('5. QA CHECKOUT / ĐỐI CHIẾU VPS DB ĐỘC LẬP');
   await checked(async () => {
-    need(remoteGood && replayGood, 'Chan checkout: schema VPS/replay chua duoc xac minh.');
+    need(remoteGood && replayGood, 'Chặn checkout vì schema VPS hoặc file replay chưa được xác minh.');
     // Known schema drift fails closed. A powered-off local DB is reported FAIL,
     // but is not a dependency of the independently verified public VPS checkout.
     // Existing QA orders can still be verified without another write.
     if (!readOnly && localSchemaDrift) {
       const rows = await remoteQuery(orderSql(checkoutKey(day)));
-      need(rows.length && record, 'Chan POST: da phat hien local schema drift. Cac kiem tra doc lap van da chay.');
+      need(rows.length && record, 'Chặn POST vì schema local lệch; không có bằng chứng đơn QA đã được tạo.');
       verifyOrder(rows, record);
-      checkoutOutcome = `DA CO DON QA, KHONG TAO LAI | ${rows[0].id}`;
-      report('OK', 'already_submitted: DB da xac minh dung 1 don/2 dong, pending_confirmation/unpaid. Khong POST.');
+      checkoutOutcome = `ĐÃ CÓ ĐƠN QA, KHÔNG TẠO LẠI | ${rows[0].id}`;
+      report('OK', 'Đơn QA hôm nay đã tồn tại, không POST thêm.', {
+        details:['DB xác minh 1 đơn / 2 dòng; pending_confirmation / unpaid.']
+      });
       return;
     }
     const result = await checkout({ day, readOnly, record, products, query:remoteQuery,
       save:value => saveRecord(filename,value), post:async payload => {
         const clock = await remoteQuery("SELECT to_char(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Tokyo','YYYY-MM-DD') AS day");
-        need(clock[0]?.day === day, 'Ngay JST VPS da thay doi; KHONG POST payload cua ngay cu.');
+        need(clock[0]?.day === day, 'Ngày JST VPS đã thay đổi; KHÔNG POST payload ngày cũ.');
         return remoteCheckout(payload);
       } });
-    checkoutOutcome = result.status === 'read_only' ? 'CHI DOC - CHUA TAO DON' :
-      `${result.status === 'already_submitted' ? 'DA CO DON QA, KHONG TAO LAI' : 'DAT HANG QA THANH CONG'} | ${result.order.id}`;
-    report(result.status === 'read_only' ? 'WARN' : 'OK', result.status === 'read_only' ? 'Chi doc: khong POST; chua test dat hang that.' :
-      `${result.status === 'already_submitted' ? 'Don QA da co - khong tao lai' : 'DAT HANG QA THANH CONG'} | Ma don ${result.order.id} | 2 san pham | pending_confirmation / unpaid / manual.`);
-  });
+    checkoutOutcome = result.status === 'read_only' ? 'CHỈ ĐỌC — CHƯA TẠO ĐƠN' :
+      `${result.status === 'already_submitted' ? 'ĐÃ CÓ ĐƠN QA, KHÔNG TẠO LẠI' : 'ĐẶT HÀNG QA THÀNH CÔNG'} | ${result.order.id}`;
+    report(result.status === 'read_only' ? 'WARN' : 'OK',
+      result.status === 'read_only' ? 'Chế độ chỉ đọc: chưa thử tạo đơn QA.' :
+        result.status === 'already_submitted' ? 'Đơn QA đã có, không tạo lại.' : 'Đặt hàng QA thành công và đã xác minh DB.', {
+        details: result.status === 'read_only' ? ['Không gọi POST checkout.'] :
+          [`Mã đơn: ${result.order.id}`, 'Hai sản phẩm; pending_confirmation / unpaid / manual.']
+      });
+  }, 'Không xác minh được checkout QA.', 'Giữ nguyên checkoutKey và replay; kiểm tra DB VPS, tuyệt đối không gửi lại bằng key khác.');
   section('TỔNG KẾT');
-  const count = status => results.filter(s => s === status).length;
-  console.log(`OK: ${count('OK')} | WARN: ${count('WARN')} | FAIL: ${count('FAIL')}`);
-  console.log(`DAT HANG: ${checkoutOutcome}`);
-  console.log(count('FAIL') ? 'AUDIT HE THONG: CO LOI CAN XU LY (xem cac dong [FAIL] ben tren).' :
-    count('WARN') ? 'AUDIT HE THONG: CO CANH BAO (xem [WARN] ben tren).' : 'AUDIT HE THONG: TAT CA MUC DEU DAT.');
-  console.log('Loi schema: can review migration rieng. Worker/sync: xem daily state + ledger, khong replay job.');
-  console.log('Checkout bat dinh: giu file replay va checkoutKey; khong xoa/doi key, khong sua/xoa don.');
-  console.log('Payload QA luu rieng .agents/runtime/daily-audit; khong in customer/phone/address hoac secrets.');
-  return count('FAIL') ? 1 : count('WARN') ? 2 : 0;
+  console.log(`Đạt: ${view.count('OK')} | Cảnh báo: ${view.count('WARN')} | Lỗi: ${view.count('FAIL')}`);
+  console.log('Đơn hàng QA:');
+  console.log(`  ${checkoutOutcome}`);
+  console.log(view.count('FAIL') ? 'HỆ THỐNG: CÓ LỖI CẦN XỬ LÝ (xem mục [FAIL]).' :
+    view.count('WARN') ? 'HỆ THỐNG: CÓ CẢNH BÁO (xem mục [WARN]).' : 'HỆ THỐNG: TẤT CẢ MỤC ĐỀU ĐẠT.');
+  console.log('Lệch schema: cần phê duyệt migration riêng. Job/sync: không chạy bù từ audit.');
+  console.log('Checkout chưa chắc chắn: giữ replay và checkoutKey, không xóa hoặc đổi key.');
+  console.log('Payload QA nằm trong .agents/runtime/daily-audit; không hiển thị dữ liệu khách hàng.');
+  return view.exitCode();
 }
 
 async function selfTest() {
@@ -459,30 +569,69 @@ async function selfTest() {
   await assert.rejects(checkout({...dependencies,query:async()=>[order],post:async()=>assert.fail('Missing file resend')}));
   assert.equal((await checkout({...dependencies,readOnly:true,query:async()=>[],post:async()=>assert.fail('Read-only POST')})).status,'read_only');
   queries=0;
-  await assert.rejects(checkout({...dependencies,post:async()=>{posts++;throw Error('timeout');}}),/bat dinh/);
+  await assert.rejects(checkout({...dependencies,post:async()=>{posts++;throw Error('timeout');}}),/bất định/);
   assert.equal(queries,2); // Independent DB verification still ran after timeout.
   queries=0;
   await assert.rejects(checkout({...dependencies,save:async()=>{throw Error('disk');},post:async()=>assert.fail('Unsaved POST')}),/disk/);
-  await assert.rejects(checkout({...dependencies,query:async()=>[],now:()=>new Date('2026-11-08T15:00:00Z'),post:async()=>assert.fail('JST rollover POST')}),/qua ngay/);
-  await assert.rejects(checkout({...dependencies,record,query:async()=>[],products:[{...products[0],priceVnd:1},products[1]],post:async()=>assert.fail('Changed price POST')}),/thay doi/);
+  await assert.rejects(checkout({...dependencies,query:async()=>[],now:()=>new Date('2026-11-08T15:00:00Z'),post:async()=>assert.fail('JST rollover POST')}),/qua ngày/);
+  await assert.rejects(checkout({...dependencies,record,query:async()=>[],products:[{...products[0],priceVnd:1},products[1]],post:async()=>assert.fail('Changed price POST')}),/thay đổi/);
   queries=0;
-  await assert.rejects(checkout({...dependencies,post:async()=>({...response,orderId:'wrong-id'})}),/khop DB/);
+  await assert.rejects(checkout({...dependencies,post:async()=>({...response,orderId:'wrong-id'})}),/khớp DB/);
   assert.equal((await checkout({...dependencies,record,products:[],query:async()=>[order],post:async()=>assert.fail('Catalog change replay POST')})).status,'already_submitted');
-  console.log('[OK] Self-test fixtures: JST/key, schema/index, product, replay, single POST, timeout/DB verification, disk failure. No HTTP/SSH/DB calls.');
+  // Kiểm tra lại 5433 chỉ nhận dữ liệu local giả lập, không có dependency SSH/HTTP/checkout.
+  const localContract = contracts('local');
+  const localFixture = {
+    identity:{ host:'127.0.0.1', port:5433, database:'postgres' },
+    columns:Object.entries(localContract.tables).flatMap(([table, columns]) =>
+      Object.entries(columns).map(([column, type]) => ({ table, column, type:typeName(type) }))),
+    indexes:Object.entries(localContract.indexes).map(([name, [table, unique, keys, predicate]]) =>
+      ({ name, table, unique, valid:true, ready:true, definition:`CREATE INDEX ${keys}${predicate ? ' '+predicate : ''}` })),
+    workers:{ settings:{ engine:'codex' }, amazon:[], names:[] }
+  };
+  const today = jstDay();
+  const statusFixture = JSON.stringify({ day:today, jobs:Object.fromEntries(
+    ['amazon', 'names', 'detail'].map(name => [name, {day:today, state:'pending'}])),
+    sync:{ state:'pending' } });
+  const output = [], originalLog = console.log;
+  try {
+    console.log = (...parts) => output.push(parts.join(' '));
+    assert.equal(await localRecheck({
+      readLocal:async () => structuredClone(localFixture),
+      readDaily:async () => statusFixture
+    }), 2); // Thiếu bằng chứng job => WARN, dù DB schema hợp lệ.
+    const noFile = new Error('Không có file'); noFile.code = 'ENOENT';
+    assert.equal(await localRecheck({
+      readLocal:async () => structuredClone(localFixture),
+      readDaily:async () => { throw noFile; }
+    }), 1); // Job chưa chạy => FAIL, không biến thành OK sau khi DB khởi động.
+    assert(output.some(line => line.includes('KIỂM TRA LẠI RIÊNG DATABASE 5433')));
+    assert(output.some(line => line.includes('Nguyên nhân: Chưa có file kết quả 3 worker')));
+    assert(output.filter(line => line.startsWith('       ')).every(line => Array.from(line).length <= 100));
+  } finally { console.log = originalLog; }
+  console.log('[OK] Tự kiểm thử fixture: JST/key, schema/index, sản phẩm, replay, một POST giả lập, timeout/đối chiếu DB, lỗi lưu đĩa.');
+  console.log('       Đã thử chế độ kiểm tra lại 5433 với fixture và job thiếu; không gọi HTTP, SSH, DB thật hoặc khởi động dịch vụ.');
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   try {
-    need(args.length <= 1 && args.every(a => ['--self-test','--read-only'].includes(a)), 'Chi ho tro --self-test hoac --read-only.');
-    need(Number(process.versions.node.split('.')[0]) >= 22, 'Can Node 22 tro len.');
+    need(args.length <= 1 && args.every(a => ['--self-test','--read-only','--local-recheck'].includes(a)), 'Chỉ hỗ trợ --self-test, --read-only hoặc --local-recheck.');
+    need(Number(process.versions.node.split('.')[0]) >= 22, 'Cần Node.js 22 trở lên.');
     if (args[0] === '--self-test') await selfTest();
     else {
-      need(process.env.MITA_DAILY_AUDIT_MUTEX === 'held', 'Hay chay qua mita-audit.bat hoac PowerShell wrapper de giu mutex.');
-      process.exitCode = await run(args[0] === '--read-only');
+      need(process.env.MITA_DAILY_AUDIT_MUTEX === 'held', 'Hãy chạy qua mita-audit.bat hoặc PowerShell wrapper để giữ mutex.');
+      if (args[0] === '--local-recheck') {
+        need(process.env.MITA_DAILY_AUDIT_LOCAL_OWNER === 'verified', 'Chưa xác minh PostgreSQL Mita (5433) đúng PID/đường dẫn.');
+        process.exitCode = await localRecheck();
+      } else process.exitCode = await run(args[0] === '--read-only');
     }
   } catch (error) {
     if (args[0] === '--self-test') console.error(error);
-    else console.error('[FAIL] Audit khong the hoan tat. Kiem tra Node 22, dependency backend, quyen runtime; khong gui lai checkout bang key moi.');
+    else {
+      console.error('[FAIL] Chương trình audit không thể hoàn tất.');
+      console.error('       Nguyên nhân: tham số, mutex, Node.js 22 hoặc quyền xác minh database chưa đạt.');
+      console.error('       Cách xử lý: dùng mita-audit.bat; kiểm tra Node.js và quyền chạy.');
+      console.error('       Không tạo checkoutKey khác hoặc tự gửi lại đơn QA.');
+    }
     process.exitCode = 1;
   }
 }
