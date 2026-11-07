@@ -20,6 +20,7 @@ Assert-OneClick ($source.Contains('${clickSha}:refs/heads/main')) 'Push must ref
 Assert-OneClick ($source.Contains('--force-with-lease=refs/heads/main:$remoteAtStart')) 'Push must reject a concurrent remote main update'
 Assert-OneClick ($source.Contains('git.exe diff --quiet $clickSha -- @dataCode')) 'Data-sync executable files must match pinned commit'
 Assert-OneClick ($source.Contains('backend/scripts/migrate-vps-deploy-ledger.mjs')) 'One-Click ledger migration must be pinned to committed source'
+Assert-OneClick ($source.Contains('backend/scripts/migrate-vps-amazon-quotes.mjs')) 'VPS checkout migration must be pinned to committed source'
 Assert-OneClick ($source.Contains('Local HEAD changed after click') -and
   $source.Contains('Remote main changed after click')) 'Changed HEAD or remote must stop release'
 
@@ -28,6 +29,9 @@ $sync = $source.IndexOf('scripts/sync-catalog-vps.mjs $mode')
 Assert-OneClick ($migrations.Count -eq 2 -and $migrations[1].Index -lt $sync) 'VPS title migration must precede sync in both normal and migrations-only paths'
 Assert-OneClick ($source.Contains("if (`$mode -eq '--dry-run' -or `$mode -eq '--migrations-dry-run') { '--dry-run' } else { '--apply' }")) 'Dry-run must not apply VPS migration'
 Assert-OneClick ($source.Contains('VPS title revision migration failed; sync/release not attempted')) 'VPS migration errors must stop sync/deploy'
+$checkoutMigrations = [regex]::Matches($source, '& node\.exe scripts/migrate-vps-amazon-quotes\.mjs \$migrationMode')
+Assert-OneClick ($checkoutMigrations.Count -eq 2 -and $checkoutMigrations[1].Index -lt $sync) 'Checkout schema migration must precede sync in both normal and migrations-only paths'
+Assert-OneClick ($source.Contains('VPS checkout schema migration failed; sync/release not attempted')) 'VPS checkout migration failure must block deployment'
 $prepare = $source.IndexOf('    PrepareDeployLedger $migrationMode')
 $modeBranch = $source.IndexOf("    if (`$mode -eq '--migrations' -or `$mode -eq '--migrations-dry-run')")
 Assert-OneClick ($prepare -ge 0 -and $prepare -lt $modeBranch -and $modeBranch -lt $sync) 'Ledger preflight/migration must run before both normal sync and migrations-only branches'
