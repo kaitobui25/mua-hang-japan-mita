@@ -61,21 +61,33 @@ function Start-ExistingMitaPostgres {
     }
     Write-Host ''
     Write-Host 'Đang khởi động PostgreSQL Mita (5433) từ dữ liệu hiện có...' -ForegroundColor Cyan
+    Write-Host 'Nếu lần tắt trước không đúng quy trình, PostgreSQL cần phục hồi WAL và đồng bộ dữ liệu.'
+    Write-Host 'Chỉ chờ tối đa 75 giây; không tạo database mới, migration hoặc chạy bù job.'
+    $pgProcess = $null
     try {
-        $previousPreference = $ErrorActionPreference
-        try {
-            $ErrorActionPreference = 'Continue'
-            & $pgCtl -D $data -l $pgLog -o '-p 5433 -h 127.0.0.1' -w -t 30 start 2>$null | Out-Null
-            $code = $LASTEXITCODE
-        } finally {
-            $ErrorActionPreference = $previousPreference
+        # Không dùng "& pg_ctl ... | Out-Null": tiến trình postgres/cmd được pg_ctl tạo
+        # có thể giữ handle pipeline, khiến PowerShell chờ dù server đã sẵn sàng.
+        $arguments = '-D "{0}" -l "{1}" -o "-p 5433 -h 127.0.0.1" -w -t 60 start' -f $data, $pgLog
+        $pgProcess = Start-Process -FilePath $pgCtl -ArgumentList $arguments -WindowStyle Hidden -PassThru
+        for ($seconds = 5; $seconds -le 75; $seconds += 5) {
+            if ($pgProcess.WaitForExit(5000)) { break }
+            Write-Host "[INFO] Đã chờ $seconds giây; PostgreSQL có thể đang phục hồi dữ liệu."
         }
-        if ($code -eq 0 -and (Get-MitaLocalState) -eq 'verified') {
-            Write-Host '[OK] PostgreSQL Mita (5433) đã hoạt động.' -ForegroundColor Green
+        $code = if ($pgProcess.HasExited) { $pgProcess.ExitCode } else { -1 }
+        # Trạng thái đã xác minh là bằng chứng cuối cùng, kể cả nếu pg_ctl hết giờ.
+        if ((Get-MitaLocalState) -eq 'verified') {
+            Write-Host '[OK] PostgreSQL Mita (5433) đang hoạt động; PID và cổng đã xác minh.' -ForegroundColor Green
+            if ($code -ne 0) {
+                Write-Host "[WARN] pg_ctl trả mã $code, nhưng database hiện đang nhận kết nối."
+            }
             return $true
         }
         Write-Host '[FAIL] PostgreSQL Mita (5433) chưa khởi động thành công.' -ForegroundColor Red
-        Write-Host "       Nguyên nhân: pg_ctl trả mã $code hoặc PID/cổng/đường dẫn chưa được xác minh."
+        if ($code -eq -1) {
+            Write-Host '       Nguyên nhân: pg_ctl chưa kết thúc sau 75 giây.'
+        } else {
+            Write-Host "       Nguyên nhân: pg_ctl trả mã $code hoặc PID/cổng/đường dẫn chưa được xác minh."
+        }
         Write-Host '       Cách xử lý: Xem backend\.local-postgres.log; không chạy migration.'
         return $false
     } catch {
@@ -83,6 +95,8 @@ function Start-ExistingMitaPostgres {
         Write-Host '       Nguyên nhân: pg_ctl không hoàn tất do quyền, file hoặc dịch vụ.'
         Write-Host '       Cách xử lý: Xem backend\.local-postgres.log và quyền truy cập thư mục dữ liệu.'
         return $false
+    } finally {
+        if ($null -ne $pgProcess) { $pgProcess.Dispose() }
     }
 }
 

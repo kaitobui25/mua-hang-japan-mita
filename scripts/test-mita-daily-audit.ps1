@@ -28,6 +28,12 @@ if (-not $source.Contains('[Console]::IsInputRedirected') -or
     -not $source.Contains("if ((Get-MitaLocalState) -ne 'stopped')")) {
     throw 'Thiếu chốt xác minh 5433, xác nhận Enter hoặc kiểm tra lại local.'
 }
+if ($source.Contains('start 2>$null | Out-Null') -or
+    -not $source.Contains('Start-Process -FilePath $pgCtl') -or
+    -not $source.Contains('$pgProcess.WaitForExit(5000)') -or
+    -not $source.Contains('-w -t 60 start')) {
+    throw 'Khởi động 5433 phải chạy riêng, có tiến độ và giới hạn thời gian.'
+}
 if (-not $nodeSource.Contains("args[0] === '--local-recheck'") -or
     -not $nodeSource.Contains("MITA_DAILY_AUDIT_LOCAL_OWNER === 'verified'")) {
     throw 'Node chưa bảo vệ chế độ kiểm tra lại 5433.'
@@ -75,22 +81,76 @@ try {
     Remove-Item Function:\Get-NetTCPConnection
 }
 
+# Thử nhánh phục hồi bằng tiến trình giả, KHÔNG gọi pg_ctl start thật.
+$startBegin = $source.IndexOf('function Start-ExistingMitaPostgres')
+$startEnd = $source.IndexOf([Environment]::NewLine + 'try {' + [Environment]::NewLine + '    $mutex', $startBegin)
+if ($startEnd -lt 0) {
+    $startEnd = $source.IndexOf('try {' + [char]10 + '    $mutex', $startBegin)
+}
+if ($startBegin -lt 0 -or $startEnd -le $startBegin) { throw 'Không tìm thấy hàm khởi động riêng.' }
+Invoke-Expression $source.Substring($startBegin, $startEnd - $startBegin)
+$script:mockStateCalls = 0
+$script:mockLaunchCount = 0
+$fakeProcess = [pscustomobject]@{ HasExited = $true; ExitCode = 0 }
+$fakeProcess | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param($milliseconds) return $true }
+$fakeProcess | Add-Member -MemberType ScriptMethod -Name Dispose -Value {}
+function Get-MitaLocalState {
+    $script:mockStateCalls++
+    if ($script:mockStateCalls -eq 1) { return 'stopped' }
+    return 'verified'
+}
+function Start-Process {
+    param([string]$FilePath, [string]$ArgumentList, [string]$WindowStyle, [switch]$PassThru)
+    $script:mockLaunchCount++
+    if ($ArgumentList -notmatch '-p 5433 -h 127[.]0[.]0[.]1' -or -not $PassThru -or $WindowStyle -ne 'Hidden') {
+        throw 'Sai tham số khởi động Mita.'
+    }
+    return $fakeProcess
+}
+try {
+    if (-not (Start-ExistingMitaPostgres)) { throw 'Nhánh khởi động giả lập phải đạt.' }
+    if ($script:mockLaunchCount -ne 1) { throw 'Chỉ được gọi pg_ctl một lần.' }
+    $script:mockStateCalls = 1
+    if (Start-ExistingMitaPostgres) { throw 'Khi state không phải stopped, phải chặn khởi động.' }
+    if ($script:mockLaunchCount -ne 1) { throw 'State không đúng không được gọi pg_ctl.' }
+} finally {
+    Remove-Item Function:\Start-Process
+    Remove-Item Function:\Get-MitaLocalState
+}
+
 Push-Location $root
 try {
-    & cmd.exe /d /c 'echo.|powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\mita-daily-audit.ps1 -SelfTest'
-    if ($LASTEXITCODE -ne 0) { throw 'Fixture thông qua PowerShell 5.1 không đạt.' }
-    $batOutput = & cmd.exe /d /c 'echo.|mita-audit.bat -SelfTest' 2>&1
-    if ($LASTEXITCODE -ne 0 -or ($batOutput -join [Environment]::NewLine) -match 'not recognized|không được nhận diện') {
-        throw 'CMD không đọc đúng BAT hoặc BAT không giữ mã thoát 0.'
+    $guard = New-Object System.Threading.Mutex($false, 'Global\MitaJapanDailyAuditV1')
+    $auditRunning = $true
+    try {
+        $canCheck = $false
+        try { $canCheck = $guard.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $canCheck = $true }
+        if ($canCheck) {
+            $auditRunning = $false
+            $guard.ReleaseMutex()
+        }
+    } finally { $guard.Dispose() }
+    if (-not $auditRunning) {
+        & cmd.exe /d /c 'echo.|powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\mita-daily-audit.ps1 -SelfTest'
+        if ($LASTEXITCODE -ne 0) { throw 'Fixture thông qua PowerShell 5.1 không đạt.' }
+        $batOutput = & cmd.exe /d /c 'echo.|mita-audit.bat -SelfTest' 2>&1
+        if ($LASTEXITCODE -ne 0 -or ($batOutput -join [Environment]::NewLine) -match 'not recognized|không được nhận diện') {
+            throw 'CMD không đọc đúng BAT hoặc BAT không giữ mã thoát 0.'
+        }
+        $batOutput | Out-Host
+    } else {
+        Write-Host '[INFO] Audit tương tác đang chạy; không mở BAT/PowerShell kiểm thử chồng lên.'
     }
-    $batOutput | Out-Host
     $mutex = New-Object System.Threading.Mutex($false, 'Global\MitaJapanDailyAuditV1')
     $owned = $false
     try {
         try { $owned = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $owned = $true }
-        if (-not $owned) { throw 'Có audit thật đang chạy; không can thiệp.' }
-        & cmd.exe /d /c 'echo.|mita-audit.bat -SelfTest'
-        if ($LASTEXITCODE -ne 1) { throw 'BAT không giữ mã thoát 1 khi mutex bận.' }
+        if (-not $owned) {
+            Write-Host '[INFO] Đang có audit thật; bỏ qua kiểm thử tranh chấp mutex để không can thiệp.'
+        } else {
+            & cmd.exe /d /c 'echo.|mita-audit.bat -SelfTest'
+            if ($LASTEXITCODE -ne 1) { throw 'BAT không giữ mã thoát 1 khi mutex bận.' }
+        }
     } finally {
         if ($owned) { $mutex.ReleaseMutex() }
         $mutex.Dispose()
@@ -118,6 +178,6 @@ try {
         $env:MITA_DAILY_AUDIT_MUTEX = $oldMutex
         $env:MITA_DAILY_AUDIT_LOCAL_OWNER = $oldOwner
     }
-    Write-Host ('[OK] PowerShell 5.1/BOM, fixture Node, BAT Enter/mutex, cổng 5433 và chặn local-recheck. Trạng thái: ' + $actualState) -ForegroundColor Green
+    Write-Host ('[OK] PowerShell 5.1/BOM, fixture Node, BAT Enter, khởi động giả lập, cổng 5433 và chặn local-recheck. Trạng thái: ' + $actualState) -ForegroundColor Green
     Write-Host '     Không khởi động PostgreSQL, không tạo đơn QA và không chạy bù job.'
 } finally { Pop-Location }
