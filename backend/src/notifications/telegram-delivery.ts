@@ -1,4 +1,5 @@
 import { db } from '../db/pool.js';
+import { setDefaultAutoSelectFamily } from 'node:net';
 
 export const TELEGRAM_CHAT_ID = '7480163903';
 export const MAX_TELEGRAM_ATTEMPTS = 5;
@@ -21,6 +22,10 @@ export type TelegramSender = (text: string) => Promise<number>;
 /** All external response/error text is discarded, including URLs containing the token. */
 export function createTelegramSender(settings: NonNullable<ReturnType<typeof telegramConfig>>,
   request: typeof fetch = fetch): TelegramSender {
+  // Hermes VPS can reach Telegram over IPv4 but Node 22's dual-family fetch
+  // autodetection times out (ETIMEDOUT/ENETUNREACH). Use the working single-
+  // family path for live requests; leave injected mock transport unaffected.
+  if (request === fetch) setDefaultAutoSelectFamily(false);
   return async text => {
     try {
       const response = await request(`https://api.telegram.org/bot${settings.token}/sendMessage`, {
