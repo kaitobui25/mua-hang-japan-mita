@@ -19,6 +19,7 @@ try {
     await isolated.query(await readFile(new URL('../src/db/admin.sql', import.meta.url), 'utf8'));
     await isolated.query(await readFile(new URL('../src/db/order-notifications.sql', import.meta.url), 'utf8'));
     await isolated.query(await readFile(new URL('../src/db/email-delivery.sql', import.meta.url), 'utf8'));
+    await isolated.query(await readFile(new URL('../src/db/telegram-delivery.sql', import.meta.url), 'utf8'));
     await isolated.query(await readFile(new URL('../src/db/title-presentations.sql', import.meta.url), 'utf8'));
     await isolated.query(await readFile(new URL('../src/db/remove-needs-human.sql', import.meta.url), 'utf8'));
     await isolated.query(await readFile(new URL('../src/db/codex-names.sql', import.meta.url), 'utf8'));

@@ -63,6 +63,13 @@ The VPS has a dedicated public-key entry restricted to `/usr/local/sbin/mita-ci-
 
 ## Troubleshooting
 
+Telegram order alerts require a separately reviewed schema/activation operation;
+see [Telegram alert operations](../../docs/order-telegram-alerts.md). The new
+`telegram-delivery.sql` is included in build assets and the local full migration
+bundle, but is outside the previously approved One-Click SQL scope. Review that
+changed bundle before a later launch. CI does not apply it to production. Keep
+Telegram flags off until the exact target schema and release have been verified.
+
 * No `[deploy]` in last push commit → Actions skips release job, expected.
 * Unconfigured secret or key → release fails closed before connecting to Hermes.
 * New build unhealthy → Mita reverts to previous code; database is not rolled back.
