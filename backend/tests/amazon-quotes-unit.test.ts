@@ -255,7 +255,7 @@ test('direct one-time add-to-cart form binds price and quantity without promotin
     ['wrong seller', html.replace('<a>Amazon.co.jp</a> <a>Amazon.co.jp</a>', '<a>Amazon.co.jp</a> <a>Other seller</a>')],
     ['wrong offer', html.replace('id="offerListingID"', 'id="another-offer"')],
     ['missing stock', html.replace('在庫あり。', '在庫なし')],
-    ['missing quantity', html.replace('name="quantity"', 'name="another-quantity"')],
+    ['missing quantity', html.replace('name="quantity"', 'name="another-quantity"').replace('name="items[0.base][quantity]"', 'name="another-fixed-quantity"')],
     ['conflicting fixed quantity', html.replace('name="items[0.base][quantity]" value="1"', 'name="items[0.base][quantity]" value="2"')],
     ['duplicate fixed quantity', html.replace('<input type="hidden" name="items[0.base][quantity]" value="1">', '<input type="hidden" name="items[0.base][quantity]" value="1"><input type="hidden" name="items[0.base][quantity]" value="1">')],
     ['different quantity', html.replace('value="1" selected', 'value="2" selected')],
@@ -270,6 +270,27 @@ test('direct one-time add-to-cart form binds price and quantity without promotin
     ['subscription offer', html.replace('value="カートに入れる"', 'value="Subscribe monthly"')],
   ] as const) assert.throws(() => parsePublicOffer(candidate, asin, 1, now), QuoteError, name);
   assert.throws(() => parsePublicOffer(html, asin, 2, now), QuoteError);
+});
+
+test('direct one-time form with only a fixed hidden quantity can quote exactly that quantity', () => {
+  const html = directBuyboxHtml().replace(/<select name="quantity">.*?<\/select>/, '');
+  const offer = parsePublicOffer(html, asin, 1, now);
+  assert.equal(offer.priceJpy, 3100);
+  assert.equal(offer.quantity, 1);
+  assert.throws(() => parsePublicOffer(html, asin, 2, now), QuoteError);
+  for (const [label, candidate] of [
+    ['missing fixed input', html.replace('name="items[0.base][quantity]"', 'name="other-quantity"')],
+    ['wrong fixed value', html.replace('name="items[0.base][quantity]" value="1"', 'name="items[0.base][quantity]" value="2"')],
+    ['non-hidden fixed input', html.replace('type="hidden" name="items[0.base][quantity]"', 'type="text" name="items[0.base][quantity]"')],
+    ['disabled fixed input', html.replace('name="items[0.base][quantity]" value="1"', 'name="items[0.base][quantity]" value="1" disabled')],
+    ['disabled fixed fieldset', html.replace('<input type="hidden" name="items[0.base][quantity]" value="1">', '<fieldset disabled><input type="hidden" name="items[0.base][quantity]" value="1"></fieldset>')],
+    ['duplicate fixed input', html.replace('<input type="hidden" name="items[0.base][quantity]" value="1">', '<input type="hidden" name="items[0.base][quantity]" value="1"><input type="hidden" name="items[0.base][quantity]" value="1">')],
+    ['competing quantity input', html.replace('</form>', '<input name="quantity" value="1"></form>')],
+    ['competing quantity select', html.replace('</form>', '<select name="items[0.base][quantity]"><option value="1">1</option></select></form>')],
+    ['missing stock', html.replace('在庫あり。', '在庫なし')],
+    ['missing add-to-cart', html.replace('name="submit.add-to-cart"', 'name="something-else"')],
+    ['disabled add-to-cart', html.replace('name="submit.add-to-cart"', 'name="submit.add-to-cart" disabled')],
+  ] as const) assert.throws(() => parsePublicOffer(candidate, asin, 1, now), QuoteError, label);
 });
 
 test('backordered direct-form item keeps observed price as preview, not a verified in-stock offer', () => {

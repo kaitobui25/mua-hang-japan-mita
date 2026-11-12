@@ -379,6 +379,15 @@ export function parsePublicOffer(html: string, asin: string, quantity: number, o
     !hidden(oneTime.find('input[name="submit.add-to-cart"]')) &&
     !oneTime.find('input[name="submit.add-to-cart"]').is('[disabled], [aria-disabled="true"]') &&
     !oneTime.find('input[name="quantity"], input[name="items[0.base][quantity]"]').length;
+  // A direct one-time form can submit a single fixed quantity using a hidden
+  // input instead of a dropdown. It is proof only for that exact quantity;
+  // conflicting or additional quantity controls must not be inferred away.
+  const verifiedFixedDirectQuantity = selectedDirect && quantitySelect.length === 0 &&
+    fixedDirectQuantity.length === 1 && fixedDirectQuantity.is('input[type="hidden"]') &&
+    !fixedDirectQuantity.is('[disabled], [aria-disabled="true"]') &&
+    fixedDirectQuantity.parents('fieldset[disabled]').length === 0 &&
+    fixedDirectQuantity.attr('value') === String(quantity) &&
+    scope.find('input[name="quantity"], select[name="items[0.base][quantity]"]').length === 0;
   const variant = $('#twister .selection').map((_, el) => $(el).text().trim()).get().filter(Boolean).join(' / ');
   if (box.length !== 1 || oneTime.length !== 1 || hiddenOneTime || selectedAsin !== asin || !title || title.length > 1000 || !offerId || offerId.length > 2048 || !seller || seller.length > 1000 || variant.length > 2000 || shippingEvidence.length > 4000 || conflictingTotal ||
       $('[id="desktop_buybox"]').length !== 1 || !verifiedAsinInputs($, asin) ||
@@ -397,7 +406,7 @@ export function parsePublicOffer(html: string, asin: string, quantity: number, o
         fixedDirectQuantity.length > 1 || (fixedDirectQuantity.length === 1 &&
           (!fixedDirectQuantity.is('input[type="hidden"]') || fixedDirectQuantity.attr('value') !== String(quantity))))) ||
       !/在庫あり|in stock|残り\s*\d+\s*点/i.test(availability) || /not\s+(?:currently\s+)?in\s+stock|out of stock|在庫なし/i.test(availability) ||
-      !(soleRemainingUnit || (quantitySelect.length === 1 && !disabledQuantity && quantity <= maxQuantity && selectedQuantity === quantity)) ||
+      !(soleRemainingUnit || verifiedFixedDirectQuantity || (quantitySelect.length === 1 && !disabledQuantity && quantity <= maxQuantity && selectedQuantity === quantity)) ||
       (remainingStock !== null && quantity > Number(remainingStock[1] ?? remainingStock[2])) ||
       ($('#twister').length > 0 && !variant) ||
       /subscribe\s*(?:&\s*save|monthly|weekly)|定期おトク便|Prime\s*(?:exclusive|members?\s+only)|プライム会員限定/i.test(`${offer.text()} ${directAddButton.attr('value') ?? ''}`) ||
