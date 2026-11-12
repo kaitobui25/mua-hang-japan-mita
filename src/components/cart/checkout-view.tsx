@@ -35,7 +35,8 @@ function QuoteTermsReview({ change }: { change: PendingQuoteChange }) {
   ];
   return <div className="amazon-refresh-review"><h3>Đối chiếu báo giá trước và sau</h3>
     <p>Chỉ đặt hàng sau khi bạn kiểm tra lại đầy đủ người bán, phân loại, giá và ngày giao. Miễn phí giao thường tại Nhật; phí vận chuyển về Việt Nam vẫn tính và xác nhận riêng.</p>
-    <div className="admin-table-scroll"><table><thead><tr><th>Điều khoản</th><th>Báo giá cũ</th><th>Báo giá mới</th></tr></thead><tbody>
+    <p className="amazon-refresh-scroll-hint">Vuốt ngang để xem đầy đủ các cột báo giá.</p>
+    <div className="admin-table-scroll" role="region" tabIndex={0} aria-label="Bảng đối chiếu báo giá"><table><thead><tr><th>Điều khoản</th><th>Báo giá cũ</th><th>Báo giá mới</th></tr></thead><tbody>
       {details.map(detail => <tr key={detail.label}><th scope="row">{detail.label}</th><td>{detail.oldValue}</td><td><strong>{detail.newValue}</strong>{detail.oldValue !== detail.newValue ? ' (đã thay đổi)' : ''}</td></tr>)}
     </tbody></table></div>
   </div>;

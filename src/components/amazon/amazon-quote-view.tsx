@@ -24,6 +24,8 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
   const [now, setNow] = useState(() => Date.now());
   const requestSequence = useRef(0);
   const lastAutomaticInput = useRef("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const resultRef = useRef<HTMLDivElement>(null);
 
   const loadQuote = useCallback(async (value: string, count: number) => {
     if (!value.trim()) return;
@@ -80,9 +82,23 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
     return () => clearInterval(timer);
   }, [quote]);
 
+  useEffect(() => {
+    if (loading || (!quote && !preview && !recognizedAsin) || !window.matchMedia("(max-width: 760px)").matches) return;
+    // Results follow the form and otherwise fall below the mobile viewport.
+    resultRef.current?.focus({ preventScroll: true });
+    resultRef.current?.scrollIntoView({
+      block: "start",
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    });
+  }, [loading, quote, preview, recognizedAsin]);
+
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!loading) { setQuantity(1); void loadQuote(input, 1); }
+    if (!loading) {
+      if (window.matchMedia("(max-width: 760px)").matches) inputRef.current?.blur();
+      setQuantity(1);
+      void loadQuote(input, 1);
+    }
   }
 
   function updateInput(value: string) {
@@ -113,15 +129,16 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
     <form className={preview ? "amazon-quote-form amazon-quote-form--result" : "amazon-quote-form"} onSubmit={submit} role="search">
       <label htmlFor="amazon-link">Link sản phẩm Amazon.co.jp hoặc ASIN</label>
       <div className="amazon-quote-controls">
-        <input id="amazon-link" type="search" autoComplete="off" value={input} onChange={event => updateInput(event.target.value)} maxLength={2048} placeholder="https://www.amazon.co.jp/dp/B0…" enterKeyHint="search" aria-invalid={Boolean(error && !recognizedAsin)} aria-describedby={error && !recognizedAsin ? "amazon-input-error" : undefined} required/>
+        <input ref={inputRef} id="amazon-link" type="search" autoComplete="off" value={input} onChange={event => updateInput(event.target.value)} maxLength={2048} placeholder="https://www.amazon.co.jp/dp/B0…" enterKeyHint="search" aria-invalid={Boolean(error && !recognizedAsin)} aria-describedby={error && !recognizedAsin ? "amazon-input-error" : undefined} required/>
         <button className="button button-primary" type="submit" disabled={loading}>{loading ? "Đang tra thông tin…" : "Xem thông tin sản phẩm"}</button>
       </div>
       {error && !recognizedAsin && <p id="amazon-input-error" className="inline-alert amazon-quote-alert" role="alert">{error}</p>}
       {!preview && <p className="amazon-note">Thông tin hiển thị theo trang Amazon tại thời điểm tra cứu. Giá đặt mua qua Mita và phí vận chuyển về Việt Nam được báo riêng.</p>}
     </form>
+    <div ref={resultRef} className="amazon-quote-feedback" tabIndex={-1}>
     {preview && <AmazonSourceProductDetail preview={preview}/>}
     {recognizedAsin && !quote && !preview && !loading && <section className="amazon-source-preview" role="status" aria-label="Đã nhận diện ASIN, chưa xác minh sản phẩm">
-      <p className="amazon-source">ĐÃ NHẬN DIỆN ASIN</p>
+      <p className="amazon-source">Đã nhận diện ASIN</p>
       <h2>ASIN: {recognizedAsin}</h2>
       {error && <p role="alert">{error}</p>}
       <p>Chưa xác minh được thông tin sản phẩm và điều kiện mua từ Amazon. Chưa thể thêm vào giỏ.</p>
@@ -140,6 +157,7 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
         addQuote(quote);
         setAdded(true);
       }}/>}
+    </div>
     <section className="amazon-service-info" aria-labelledby="amazon-service-title">
       <h2 id="amazon-service-title">Cách mua hộ từ Amazon.co.jp</h2>
       <ol>

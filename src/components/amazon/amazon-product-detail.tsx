@@ -179,7 +179,7 @@ export function AmazonProductDetail({
 
       <div className="detail-content amazon-detail-content">
         {display?.brand && <p className="product-brand">{display.brand}</p>}
-        <p className="amazon-source">SẢN PHẨM MUA HỘ · AMAZON JAPAN</p>
+        <p className="amazon-source">Sản phẩm mua hộ Amazon Japan</p>
         <h1>{quote.name}</h1>
         <SourceRating rating={display?.rating} count={display?.reviewCount}/>
         <div className="amazon-detail-identifiers">
