@@ -10,7 +10,7 @@ export function normalizeAmazonInput(input: unknown) {
   let url: URL;
   try { url = new URL(value); } catch { throw new Error('URL Amazon không hợp lệ.'); }
   if (url.protocol !== 'https:' || !['amazon.co.jp', 'www.amazon.co.jp'].includes(url.hostname) || url.port || url.username || url.password) throw new Error('Chỉ nhận URL HTTPS Amazon.co.jp.');
-  const asin = url.pathname.match(/\/(?:dp|gp\/product)\/([a-z0-9]{10})(?:\/|$)/i)?.[1];
+  const asin = url.pathname.match(/\/(?:dp|gp\/(?:product|aw\/d))\/([a-z0-9]{10})(?:\/|$)/i)?.[1];
   if (!asin) throw new Error('Không tìm thấy ASIN trong đường dẫn sản phẩm.');
   return asin.toUpperCase();
 }

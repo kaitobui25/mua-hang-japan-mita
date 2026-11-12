@@ -389,8 +389,12 @@ test('reader previews only the same bridge HTML with no extra source request', a
   await assert.rejects(readPublicOffer(asin, 1), (e: unknown) => e instanceof QuoteError && e.code === 'amazon_blocked' && e.details === undefined);
 });
 test('Amazon inputs canonicalize exact HTTPS JP product URLs and ASINs', () => {
-  for (const input of [asin.toLowerCase(), `https://www.amazon.co.jp/name/dp/${asin}?tag=ignored`, `https://amazon.co.jp/gp/product/${asin}`]) assert.equal(amazonAsin(input), asin);
-  for (const input of ['hello', `http://amazon.co.jp/dp/${asin}`, `https://amazon.co.jp.evil.test/dp/${asin}`,
+  for (const input of [asin.toLowerCase(), `https://www.amazon.co.jp/name/dp/${asin}?tag=ignored`, `https://amazon.co.jp/gp/product/${asin}`,
+    `https://www.amazon.co.jp/gp/aw/d/${asin}?ref_=mobile`,
+    `https://amazon.co.jp/gp/aw/d/${asin}/ref=mobile`]) assert.equal(amazonAsin(input), asin);
+  for (const input of ['hello', `http://amazon.co.jp/dp/${asin}`, `http://www.amazon.co.jp/gp/aw/d/${asin}`,
+    `https://amazon.co.jp.evil.test/gp/aw/d/${asin}`, `https://www.amazon.co.jp/gp/aw/d/${asin}EXTRA`,
+    `https://amazon.co.jp.evil.test/dp/${asin}`,
     `https://amazon.co.jp@evil.test/dp/${asin}`, `https://www.amazon.co.jp:444/dp/${asin}`, 'https://amzn.asia/x', `https://amazon.co.jp/dp/${asin}EXTRA`]) assert.throws(() => amazonAsin(input), QuoteError);
 });
 test('quote binds one-time price, seller, selected variant and exact quantity', () => {
