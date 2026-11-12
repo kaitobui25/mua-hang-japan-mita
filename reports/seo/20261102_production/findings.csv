@@ -1,0 +1,13 @@
+id,priority,scope,evidence_url,issue,recommendation,status
+SEO-P1-01,P1,Product variant,https://mitajapanshop.duckdns.org/san-pham/B084MCDYF6,"HTTP 307 từ vị cacao sang URL cuối có H1 không hương vị","Rà logic chuyển variant; giữ đúng identity và trạng thái; kiểm tra canonical/sitemap",observed
+SEO-P1-02,P1,Product content,https://mitajapanshop.duckdns.org/san-pham/B0DN65R7G2,"Meta description thành phần bị dịch sai khó hiểu","Đối chiếu nguồn hợp lệ và biên tập lại mô tả sản phẩm trẻ em",observed
+SEO-P2-01,P2,Structured data,https://mitajapanshop.duckdns.org/san-pham/B06Y69FKT2,"Không có JSON-LD/Microdata trên 51 URL mẫu","Đánh giá Product/Offer/Breadcrumb/Organization có căn cứ và đúng quyền dữ liệu",observed
+SEO-P2-02,P2,Social meta,https://mitajapanshop.duckdns.org/,"Không thấy OG/Twitter tags trên 51 URL mẫu","Bổ sung title/image/description social theo page và quyền ảnh",observed
+SEO-P2-03,P2,Meta description,https://mitajapanshop.duckdns.org/danh-muc/thuc-pham-bo-sung,"10 trên 11 URL chung dùng cùng description","Viết description riêng phù hợp ý định tìm kiếm",observed
+SEO-P2-04,P2,Vietnamese SEO content,https://mitajapanshop.duckdns.org/san-pham/B06Y69FKT2,"Tên sản phẩm còn tiếng Anh hoặc quá dài; mô tả thiếu hữu ích","Biên tập title/H1/description có kiểm chứng về thương hiệu và quy cách",observed
+SEO-P2-05,P2,Pagination,https://mitajapanshop.duckdns.org/san-pham?sort=reviews&page=2,"HTML pagination dùng button; không thấy href tới trang tiếp","Xem xét liên kết crawlable cho phân trang và canonical phù hợp",observed
+SEO-P2-06,P2,Canonical,https://mitajapanshop.duckdns.org/cach-mua-hang,"5 URL trang chung không có canonical; giỏ/checkout đang index","Chốt chính sách index trước khi thêm canonical/noindex; không tự đổi owner policy",observed
+SEO-P2-07,P2,Sitemap redirect,https://mitajapanshop.duckdns.org/sitemap.xml,"Sitemap chứa ít nhất một URL sản phẩm chuyển hướng 307","Đối chiếu sitemap với URL đích hợp lệ và canonical",observed
+SEO-P3-01,P3,Mobile heading,https://mitajapanshop.duckdns.org/san-pham/B08F63WK3Z,"H1 cao 462px trên viewport 390px","Rút gọn tên hiển thị tránh đẩy thông tin mua xuống quá xa",observed
+SEO-P3-02,P3,Touch targets,https://mitajapanshop.duckdns.org/san-pham/B0C6X64277,"Bốn liên kết breadcrumb/nguồn có chiều cao text nhỏ","Kiểm tra kích thước vùng bấm thực trước khi thay đổi",needs_confirmation
+SEO-P3-03,P3,Ratings freshness,https://mitajapanshop.duckdns.org/san-pham/B06Y69FKT2,"40/40 Top20 có cờ rating stale","Xem tuổi dữ liệu và chính sách cập nhật; không suy ra lỗi Google",observed
