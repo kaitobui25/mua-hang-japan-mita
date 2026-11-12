@@ -4,6 +4,8 @@ const apiPort = Number(process.env.API_PORT ?? 4000);
 if (!Number.isInteger(apiPort) || apiPort < 1 || apiPort > 65535) throw new Error('Invalid local API_PORT');
 const nextConfig: NextConfig = {
   output: "standalone",
+  // Dev-only: Cloudflare Quick Tunnel uses a different random hostname each run.
+  allowedDevOrigins: ['*.trycloudflare.com'],
   ...(process.env.NEXT_BUILD_DIR ? { distDir: process.env.NEXT_BUILD_DIR } : {}),
   async rewrites() {
     return [
