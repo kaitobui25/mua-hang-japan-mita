@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Mita Japan - chữ lồng mj">
+  <rect width="512" height="512" fill="#f7f1df"/>
+  <circle cx="256" cy="250" r="215" fill="none" stroke="#c3dba6" stroke-width="3"/>
+  <text x="79" y="334" font-family="Georgia,serif" font-weight="bold" font-size="260" letter-spacing="-20" fill="#072311">mj</text>
+  <path d="M333 143c8-49 34-70 71-76-4 45-29 71-71 76Z" fill="#1f6a19"/>
+  <path d="M330 141c-8-26-24-42-48-49 3 29 19 46 48 49Z" fill="#70a354"/>
+  <path d="M138 379H374" stroke="#1f6a19" stroke-width="3" stroke-linecap="round"/>
+  <text x="256" y="428" font-family="Arial,sans-serif" font-size="27" font-weight="600" letter-spacing="9" text-anchor="middle" fill="#1f6a19">JAPAN</text>
+</svg>

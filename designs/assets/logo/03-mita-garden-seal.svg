@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Mita Japan - con dấu vườn xanh">
+  <rect width="512" height="512" fill="#f7f1df"/>
+  <g fill="#123e29">
+    <circle cx="256" cy="256" r="178"/>
+    <circle cx="256" cy="85" r="56"/><circle cx="341" cy="108" r="56"/><circle cx="404" cy="171" r="56"/>
+    <circle cx="427" cy="256" r="56"/><circle cx="404" cy="341" r="56"/><circle cx="341" cy="404" r="56"/>
+    <circle cx="256" cy="427" r="56"/><circle cx="171" cy="404" r="56"/><circle cx="108" cy="341" r="56"/>
+    <circle cx="85" cy="256" r="56"/><circle cx="108" cy="171" r="56"/><circle cx="171" cy="108" r="56"/>
+  </g>
+  <path d="M257 205c-5-34 2-68 19-89" fill="none" stroke="#f7f1df" stroke-width="9" stroke-linecap="round"/>
+  <path d="M257 175C208 176 188 150 187 112c41-2 65 18 70 63Z" fill="#f7f1df"/>
+  <path d="M267 169c2-55 30-84 72-91-1 50-27 83-72 91Z" fill="#c3dba6"/>
+  <text x="248" y="327" text-anchor="middle" font-family="Georgia,serif" font-weight="bold" font-size="119" letter-spacing="-5" fill="#f7f1df">mita</text>
+  <circle cx="427" cy="303" r="13" fill="#c3dba6"/>
+</svg>

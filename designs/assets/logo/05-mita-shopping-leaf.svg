@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Mita Japan - túi mua hàng và nhành lá">
+  <rect width="512" height="512" fill="#f7f1df"/>
+  <path d="M178 169v-34c0-46 32-78 78-78s78 32 78 78v34" fill="none" stroke="#072311" stroke-width="16" stroke-linecap="round"/>
+  <path d="M142 171H370L391 338Q394 356 374 356H138Q119 356 122 338Z" fill="none" stroke="#072311" stroke-width="17" stroke-linejoin="round"/>
+  <path d="M194 319c28-68 66-100 118-123" fill="none" stroke="#1f6a19" stroke-width="10" stroke-linecap="round"/>
+  <path d="M230 268c-45 4-64-15-70-46 40-5 64 11 70 46Z" fill="#70a354"/>
+  <path d="M259 242c-3-43 17-68 56-80 6 41-13 66-56 80Z" fill="#1f6a19"/>
+  <path d="M213 294c41-6 66 6 80 37-43 10-68-1-80-37Z" fill="#1f6a19"/>
+  <text x="246" y="440" text-anchor="middle" font-family="Georgia,serif" font-weight="bold" font-size="69" letter-spacing="-3" fill="#072311">mitajapan</text>
+  <circle cx="441" cy="424" r="9" fill="#1f6a19"/>
+</svg>

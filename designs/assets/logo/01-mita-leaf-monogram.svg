@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Mita Japan - chữ m và mầm lá">
+  <rect width="512" height="512" fill="#f7f1df"/>
+  <text x="81" y="359" font-family="Georgia,serif" font-weight="bold" font-size="329" fill="#072311">m</text>
+  <path d="M327 197c-9-43-23-64-44-83" fill="none" stroke="#1f6a19" stroke-width="12" stroke-linecap="round"/>
+  <path d="M313 142C270 137 248 119 244 84c41-2 65 14 69 58Z" fill="#5f9545"/>
+  <path d="M319 143c2-53 27-79 72-86 0 48-24 77-72 86Z" fill="#1f6a19"/>
+  <circle cx="418" cy="338" r="21" fill="#1f6a19"/>
+</svg>
