@@ -7,7 +7,6 @@ import { adminRoutes } from './admin/routes.js';
 import { orderAlertRelayRoutes } from './order-alert-relay.js';
 import { amazonQuoteRoutes } from './amazon-quote-routes.js';
 import { QuoteError } from './amazon-quote-source.js';
-import { quoteRateLimit } from './amazon-quotes.js';
 import { startEmailAlertScheduler } from './notifications/email-scheduler.js';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFileSync, realpathSync } from 'node:fs';
@@ -81,8 +80,9 @@ export function buildServer(logger = false) {
     reply.header('Cache-Control', 'no-store');
     if (config.publicReadOnly) return reply.code(404).send({ error: 'Chức năng tạo đơn đang tạm đóng.' });
     try {
-      const quoteItems = (request.body as { quoteItems?: unknown } | null)?.quoteItems;
-      if (Array.isArray(quoteItems) && quoteItems.length) await quoteRateLimit(request.ip);
+      // An unguessable, unexpired Amazon quote was already issued under the
+      // source lookup quota. Checkout makes no Amazon request; charging the
+      // same quota again would strand the last eligible quote at submission.
       return await createOrder(request.body);
     } catch (error) {
       if (error instanceof QuoteError) return reply.code(error.status).send({ code: error.code, ...(error.details ? { details: error.details } : {}) });

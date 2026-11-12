@@ -226,6 +226,78 @@ test('realistic independent seller and Japanese limited stock require matching s
     '<a>Bodywing</a> <a>Other seller</a>'), asin, 1, now), QuoteError);
 });
 
+function directBuyboxHtml() {
+  return `<input id="ASIN" value="${asin}"><h1><span id="productTitle">Formula 800g</span></h1>
+    <div id="desktop_buybox"><form id="addToCart">
+      <input id="offerListingID" name="offerListingID" value="exact-direct-offer">
+      <div class="apex-pricetopay-value"><span class="a-offscreen">&#165;3,100</span></div>
+      <div id="corePrice_feature_div"><span class="a-offscreen">&#165;3,100</span></div>
+      <div id="merchantInfoFeature_feature_div">出荷元 / 販売元 <a>Amazon.co.jp</a> <a>Amazon.co.jp</a></div>
+      <div id="availability">在庫あり。</div>
+      <select name="quantity"><option value="1" selected>1</option><option value="2">2</option></select>
+      <input type="hidden" name="items[0.base][quantity]" value="1">
+      <div id="mir-layout-DELIVERY_BLOCK">無料配送 11月14日（初回注文特典）</div>
+      <input type="submit" name="submit.add-to-cart" value="カートに入れる">
+    </form></div>`;
+}
+test('direct one-time add-to-cart form binds price and quantity without promoting first-order shipping', () => {
+  const html = directBuyboxHtml();
+  const offer = parsePublicOffer(html, asin, 1, now);
+  assert.equal(offer.priceJpy, 3100);
+  assert.equal(offer.seller, 'Amazon.co.jp');
+  assert.equal(offer.offerId, 'exact-direct-offer');
+  assert.equal(offer.shippingType, 'unverified');
+  assert.equal(offer.freeJapanShipping, false);
+  assert.equal(offer.amazonDelivery, null);
+  for (const [name, candidate] of [
+    ['no add-to-cart', html.replace('name="submit.add-to-cart"', 'name="another-action"')],
+    ['conflicting ASIN', html.replace(`value="${asin}"`, 'value="B000000001"')],
+    ['wrong seller', html.replace('<a>Amazon.co.jp</a> <a>Amazon.co.jp</a>', '<a>Amazon.co.jp</a> <a>Other seller</a>')],
+    ['wrong offer', html.replace('id="offerListingID"', 'id="another-offer"')],
+    ['missing stock', html.replace('在庫あり。', '在庫なし')],
+    ['missing quantity', html.replace('name="quantity"', 'name="another-quantity"')],
+    ['conflicting fixed quantity', html.replace('name="items[0.base][quantity]" value="1"', 'name="items[0.base][quantity]" value="2"')],
+    ['duplicate fixed quantity', html.replace('<input type="hidden" name="items[0.base][quantity]" value="1">', '<input type="hidden" name="items[0.base][quantity]" value="1"><input type="hidden" name="items[0.base][quantity]" value="1">')],
+    ['different quantity', html.replace('value="1" selected', 'value="2" selected')],
+    ['multiple forms', html.replace('</form></div>', '</form><form id="addToCart"></form></div>')],
+    ['subscription accordion', html.replace('</form></div>', '</form><div id="subscribeAccordionRow">定期おトク便</div></div>')],
+    ['active accordion', html.replace('<form id="addToCart">', '<div id="newAccordionRow_0" class="a-accordion-active"></div><form id="addToCart">')],
+    ['hidden price', html.replace('class="apex-pricetopay-value"', 'class="apex-pricetopay-value" hidden')],
+    ['hidden add-to-cart', html.replace('name="submit.add-to-cart"', 'name="submit.add-to-cart" hidden')],
+    ['disabled add-to-cart', html.replace('name="submit.add-to-cart"', 'name="submit.add-to-cart" disabled')],
+    ['conflicting total', html.replace('</form>', '<span id="newBuyBoxPrice">￥2,900</span></form>')],
+    ['Prime-only offer', html.replace('Formula 800g', 'Formula 800g Prime members only').replace('value="カートに入れる"', 'value="Prime members only"')],
+    ['subscription offer', html.replace('value="カートに入れる"', 'value="Subscribe monthly"')],
+  ] as const) assert.throws(() => parsePublicOffer(candidate, asin, 1, now), QuoteError, name);
+  assert.throws(() => parsePublicOffer(html, asin, 2, now), QuoteError);
+});
+
+test('backordered direct-form item keeps observed price as preview, not a verified in-stock offer', () => {
+  const html = directBuyboxHtml().replace('在庫あり。', '通常1～2か月以内に発送します。');
+  const preview = rejectedPreview(html);
+  assert.equal(preview?.priceJpy, 3100);
+  assert.throws(() => parsePublicOffer(html, asin, 1, now),
+    (error: unknown) => error instanceof QuoteError && error.code === 'offer_not_verified');
+});
+
+test('selected one-time offer with explicitly one unit remaining can quote exactly one without quantity dropdown', () => {
+  const html = modernVerifiedHtml().replace(/<select name="quantity">.*?<\/select>/, '')
+    .replace('Only 2 left in stock', 'Only 1 left in stock');
+  const quote = parsePublicOffer(html, asin, 1, now);
+  assert.equal(quote.quantity, 1);
+  assert.equal(quote.priceJpy, 1000);
+  for (const [label, candidate] of [
+    ['more units remaining', html.replace('Only 1 left in stock', 'Only 2 left in stock')],
+    ['unknown remaining stock', html.replace('Only 1 left in stock', 'In stock')],
+    ['no add-to-cart', html.replace('name="submit.add-to-cart"', 'name="other-action"')],
+    ['disabled add-to-cart', html.replace('name="submit.add-to-cart"', 'name="submit.add-to-cart" disabled')],
+    ['different ASIN', html.replace(`value="${asin}"`, 'value="B000000001"')],
+    ['unselected one-time offer', html.replace('a-box a-accordion-active', 'a-box')],
+    ['hidden stock', html.replace('id="availability"', 'id="availability" hidden')],
+  ] as const) assert.throws(() => parsePublicOffer(candidate, asin, 1, now), QuoteError, label);
+  assert.throws(() => parsePublicOffer(html, asin, 2, now), QuoteError);
+});
+
 test('preview never invents price from invalid, hidden, conflicting or unrelated price elements', () => {
   const html = modernHtml();
   const extraPrice = '<span class="priceToPay"><span class="a-offscreen">￥900</span></span>';

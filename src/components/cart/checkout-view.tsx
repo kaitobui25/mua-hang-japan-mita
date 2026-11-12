@@ -28,13 +28,14 @@ function QuoteTermsReview({ change }: { change: PendingQuoteChange }) {
     { label: 'Số lượng', oldValue: String(old.quantity), newValue: String(quote.quantity) },
     { label: 'Giá Amazon', oldValue: yen(old.priceJpy), newValue: yen(quote.priceJpy) },
     { label: 'Tiền hàng Mita', oldValue: formatVnd(old.priceVnd * old.quantity), newValue: formatVnd(quote.priceVnd * quote.quantity) },
+    { label: 'Phí vận chuyển nội địa Nhật', oldValue: old.freeShipping ? 'Miễn phí đã xác minh' : 'Chưa xác minh, tính riêng', newValue: quote.freeShipping ? 'Miễn phí đã xác minh' : 'Chưa xác minh, tính riêng' },
     { label: 'Giao tại Nhật', oldValue: old.shippingEvidence || 'Chưa xác minh', newValue: quote.shippingEvidence || 'Chưa xác minh' },
     { label: 'Ngày giao Amazon hiển thị', oldValue: displayDateRange(old.amazonDeliveryDate, old.amazonDeliveryEnd), newValue: displayDateRange(quote.amazonDeliveryDate, quote.amazonDeliveryEnd) },
     { label: 'Dự kiến giao tại Việt Nam', oldValue: displayDateRange(old.vietnamDeliveryDate, old.vietnamDeliveryEnd), newValue: displayDateRange(quote.vietnamDeliveryDate, quote.vietnamDeliveryEnd) },
     { label: 'Cộng thêm ngày lịch', oldValue: String(old.deliveryBufferDays), newValue: String(quote.deliveryBufferDays) },
   ];
   return <div className="amazon-refresh-review"><h3>Đối chiếu báo giá trước và sau</h3>
-    <p>Chỉ đặt hàng sau khi bạn kiểm tra lại đầy đủ người bán, phân loại, giá và ngày giao. Miễn phí giao thường tại Nhật; phí vận chuyển về Việt Nam vẫn tính và xác nhận riêng.</p>
+    <p>Chỉ đặt hàng sau khi bạn kiểm tra lại đầy đủ người bán, phân loại, giá và ngày giao. {quote.freeShipping ? 'Giao thường tại Nhật đã xác minh miễn phí.' : 'Phí vận chuyển nội địa Nhật chưa xác minh và phải được xác nhận riêng.'} Phí vận chuyển về Việt Nam cũng tính và xác nhận riêng.</p>
     <p className="amazon-refresh-scroll-hint">Vuốt ngang để xem đầy đủ các cột báo giá.</p>
     <div className="admin-table-scroll" role="region" tabIndex={0} aria-label="Bảng đối chiếu báo giá"><table><thead><tr><th>Điều khoản</th><th>Báo giá cũ</th><th>Báo giá mới</th></tr></thead><tbody>
       {details.map(detail => <tr key={detail.label}><th scope="row">{detail.label}</th><td>{detail.oldValue}</td><td><strong>{detail.newValue}</strong>{detail.oldValue !== detail.newValue ? ' (đã thay đổi)' : ''}</td></tr>)}

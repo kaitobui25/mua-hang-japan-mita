@@ -87,6 +87,15 @@ sources use 503; invalid input uses 400; conflicts use 409; unverified offers us
 For the newer selected one-time Amazon accordion, identical repeated hidden ASIN
 inputs are accepted only if all carry the requested identity. A unique visible
 one-time total is used instead of its different per-unit/subscription prices.
+Some Amazon products instead use a single active `form#addToCart` with no
+accordion; these are eligible only with a matching product ASIN, selected
+offer ID, unambiguous seller, one-time total, visible enabled add-to-cart,
+stock, and an explicit matching quantity selection. A selected accordion
+without a quantity dropdown can support exactly **one** unit when it shows
+exactly **one** remaining unit and a visible enabled add-to-cart action.
+Neither pattern is permission to treat a subscription quantity field as the
+one-time quantity. Explicit backorders (such as a `1–2 months to dispatch`
+notice) do not prove in-stock checkout and remain source-backed contact requests.
 If the source additionally proves an exact selected offer ID, selected quantity,
 stock (including an explicit Japanese `残りN点` count), and a matching selected-row
 merchant name (including `Amazon.co.jp`), the merchandise
@@ -97,6 +106,10 @@ and separate later shipping confirmation. This does not label a generic
 name must be unambiguous across its repeated merchant links and seller labels;
 otherwise the quote is rejected. Legacy/ambiguous
 offers still fail closed and must never inherit an unrelated seller or price.
+Checkout of an already issued, single-use locked-price quote does not repeat
+the source lookup rate limit; it revalidates the persisted capability and
+its expiry. Manual Owner payment marking for an Amazon quote additionally
+requires the customer's confirmed final shipping fee.
 
 When a genuine exact-ASIN preview has one valid observed product price but the
 buybox cannot verify seller, stock, offer ID, quantity or either a verified

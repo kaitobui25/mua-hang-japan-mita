@@ -150,6 +150,19 @@ test('Amazon quote checkout and migration regressions in disposable DB only', { 
       const detail = await orderDetail(order.orderId);
       assert.equal('shipping_confirmation_hash' in detail, false);
     });
+    await t.test('valid priced checkout remains usable after source lookup quota is exhausted', async () => {
+      const extra = await insertQuote();
+      await db.query('DELETE FROM amazon_quote_rate_limits');
+      for (let n = 0; n < 6; n++) await quoteRateLimit('127.0.0.1');
+      await assert.rejects(quoteRateLimit('127.0.0.1'), /quote_rate_limited/);
+      const response = await server.inject({ method: 'POST', url: '/api/checkout', payload: {
+        customer, checkoutKey: randomUUID(), quoteItems: [{ quoteId: extra.id, confirmed: true, acknowledgeMissingEta: true }]
+      } });
+      assert.equal(response.statusCode, 200, response.body);
+      assert.equal(response.json().status, 'pending_confirmation');
+      assert.equal(response.json().payableNowVnd, 0);
+      await db.query('DELETE FROM amazon_quote_rate_limits'); // Disposable database only.
+    });
     await t.test('retry cannot duplicate order and altered request cannot reuse key or consumed quote', async () => {
       const retry = await createOrder(payload);
       assert.equal(retry.orderId, order.orderId); assert.equal('duplicate' in retry && retry.duplicate, true);
@@ -165,6 +178,9 @@ test('Amazon quote checkout and migration regressions in disposable DB only', { 
     await t.test('fee is only proposed by Owner; customer confirms exact proposed amount', async () => {
       // Synthetic Owner fixture only, never real login or credentials.
       await db.query("INSERT INTO admin_accounts(id,username,role,enabled,password_hash) VALUES(1,'owner','owner',false,'synthetic-disabled') ON CONFLICT DO NOTHING");
+      await updateOrder(order.orderId, { status: 'confirmed' }, 1);
+      await assert.rejects(updateOrder(order.orderId, { paymentStatus: 'paid' }, 1),
+        /Phí vận chuyển của đơn Amazon/);
       await updateOrder(order.orderId, { shippingFinalVnd: 40000 }, 1);
       assert.equal((await db.query('SELECT shipping_final_vnd FROM orders WHERE id=$1', [order.orderId])).rows[0].shipping_final_vnd, null);
       if (!('shippingConfirmationToken' in order)) throw new Error('missing token');
@@ -173,6 +189,8 @@ test('Amazon quote checkout and migration regressions in disposable DB only', { 
       assert.equal((await confirm(order.shippingConfirmationToken!, 1)).statusCode, 409);
       assert.equal((await confirm(order.shippingConfirmationToken!, 40000)).statusCode, 200);
       assert.equal(Number((await db.query('SELECT shipping_final_vnd FROM orders WHERE id=$1', [order.orderId])).rows[0].shipping_final_vnd), 40000);
+      await updateOrder(order.orderId, { paymentStatus: 'paid' }, 1);
+      assert.equal((await db.query('SELECT payment_status FROM orders WHERE id=$1', [order.orderId])).rows[0].payment_status, 'paid');
       const status = await server.inject({ method: 'POST', url: `/api/amazon/orders/${order.orderId}/shipping`, payload: { token: order.shippingConfirmationToken } });
       assert.equal(status.json().shippingProposedVnd, 40000);
       assert.equal(JSON.stringify(status.json()).includes(customer.address), false);

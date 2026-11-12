@@ -178,6 +178,10 @@ export async function updateOrder(id: string, change: { status?: string; payment
       if (change.paymentStatus === 'paid' && (old.payment_status !== 'unpaid' || old.status === 'pending_confirmation' || old.status === 'cancelled')) {
         throw new AdminError(409, 'Chỉ ghi nhận thanh toán sau khi xác nhận đơn.');
       }
+      if (change.paymentStatus === 'paid' && old.shipping_final_vnd === null) {
+        const quoteOrder = await client.query('SELECT 1 FROM order_items WHERE order_id=$1 AND quote_snapshot IS NOT NULL LIMIT 1', [id]);
+        if (quoteOrder.rowCount) throw new AdminError(409, 'Phí vận chuyển của đơn Amazon phải được khách xác nhận trước khi ghi nhận thanh toán.');
+      }
       if (change.paymentStatus === 'refunded' && old.payment_status !== 'paid') {
         throw new AdminError(409, 'Chỉ đánh dấu hoàn tiền sau khi đã ghi nhận thanh toán.');
       }

@@ -290,7 +290,16 @@ export function parsePublicOffer(html: string, asin: string, quantity: number, o
   const $ = load(html);
   const box = $('#desktop_buybox');
   const modern = box.find('[id="newAccordionRow_0"]');
-  const oneTime = modern.length ? modern : box.find('[id="newAccordionRow"]');
+  // Some Amazon pages render the selected one-time purchase directly inside
+  // the add-to-cart form without either accordion. Never choose a generic
+  // form when an accordion or subscription row also exists.
+  const direct = !box.find('[id="newAccordionRow_0"], [id="newAccordionRow"], [id="subscribeAccordionRow"], .a-accordion-active').length
+    ? box.find('form[id="addToCart"]') : box.find('never-match');
+  const selectedDirect = direct.length === 1 && box.find('form[id="addToCart"]').length === 1 &&
+    direct.find('input[name="submit.add-to-cart"]').length === 1 &&
+    direct.find('input[id="offerListingID"]').length === 1 &&
+    !direct.find('input[type="radio"]:checked').length;
+  const oneTime = modern.length ? modern : selectedDirect ? direct : box.find('[id="newAccordionRow"]');
   const offer = oneTime;
   const hidden = (element: ReturnType<CheerioAPI>) => element.add(element.parents()).toArray().some(el =>
     $(el).is('script, style, noscript, template, [hidden], [aria-hidden="true"], .aok-hidden, .a-hidden') ||
@@ -311,13 +320,13 @@ export function parsePublicOffer(html: string, asin: string, quantity: number, o
   const titleElements = $('[id="productTitle"]').filter((_, el) =>
     !$(el).is('input, select, textarea') && !hidden($(el)) && !!$(el).text().trim());
   const title = titleElements.length === 1 ? titleElements.text().trim() : '';
-  const offerIds = offer.find(modern.length ? 'input[name="offeringID.1"], input[id="offerListingID"]' : 'input[name="offeringID.1"]');
+  const offerIds = offer.find(modern.length || selectedDirect ? 'input[name="offeringID.1"], input[id="offerListingID"]' : 'input[name="offeringID.1"]');
   const offerId = offerIds.attr('value');
   const sellers = offer.find('[id="sellerProfileTriggerId"]');
   const merchantFeature = offer.find('[id="merchantInfoFeature_feature_div"]');
   const merchantLinks = merchantFeature.find('a').map((_, el) => $(el).text().trim()).get();
   const merchantName = merchantLinks[0] ?? '';
-  const merchantVerified = modern.length === 1 && merchantFeature.length === 1 &&
+  const merchantVerified = (modern.length === 1 || selectedDirect) && merchantFeature.length === 1 &&
     merchantName.length > 0 && merchantName.length <= 120 && merchantLinks.length >= 2 &&
     merchantLinks.every(name => name === merchantName) &&
     merchantFeature.text().replace(/\s+/g, ' ').includes(`販売元 ${merchantName}`) &&
@@ -325,18 +334,22 @@ export function parsePublicOffer(html: string, asin: string, quantity: number, o
   const sellerElement = sellers.length ? sellers : offer.find('[id="merchant-info"]');
   const sellerSource = merchantVerified ? merchantFeature : sellerElement;
   const seller = merchantVerified ? merchantName : sellerElement.text().trim();
-  const apexPrice = modern.length === 1 ? offer.find('.apex-pricetopay-value .a-offscreen') : offer.find('never-match');
+  const apexPrice = modern.length === 1 || selectedDirect ? offer.find('.apex-pricetopay-value .a-offscreen') : offer.find('never-match');
   const priceElements = apexPrice.length === 1 ? apexPrice : offer.find('#price_inside_buybox, #newBuyBoxPrice, .priceToPay .a-offscreen' +
     (modern.length ? ', #corePrice_feature_div .a-offscreen' : ''));
   const priceText = priceElements.map((_, el) => $(el).text().trim()).get();
   const prices = [...new Set(priceText)];
   const price = prices.length === 1 && prices[0].match(/^[￥¥]\s*(\d{1,3}(?:,\d{3})*|\d+)(?:\.00)?$/);
   const priceJpy = price ? Number(price[1].replaceAll(',', '')) : 0;
+  // Never suppress a contradictory *total* purchase price merely because
+  // Amazon also renders an apex price. Per-unit prices use separate markup.
+  const alternateTotals = apexPrice.length === 1 ? offer.find('#price_inside_buybox, #newBuyBoxPrice, .priceToPay .a-offscreen') : offer.find('never-match');
+  const conflictingTotal = alternateTotals.toArray().some(element => $(element).text().trim() !== prices[0]);
   // Conditions may be siblings of the nested delivery block; retain the entire slot.
-  const scope = modern.length ? offer : box;
+  const scope = modern.length || selectedDirect ? offer : box;
   const shippingSlot = scope.find('[id="mir-layout-DELIVERY_BLOCK-slot"]');
   const shipping = shippingSlot.length === 1 ? shippingSlot :
-    modern.length === 1 && merchantVerified && apexPrice.length === 1 && !shippingSlot.length
+    (modern.length === 1 || selectedDirect) && merchantVerified && apexPrice.length === 1 && !shippingSlot.length
       ? scope.find('[id="mir-layout-DELIVERY_BLOCK"]').first() : shippingSlot;
   const shippingEvidence = shipping.text().replace(/\s+/g, ' ').trim();
   const hasShippingConditions = /Prime|プライム|以上|初回|初めて|条件|coupon|クーポン|over |first order|fastest|最短|eligible|qualifying|minimum|when|with |spend|会員|対象|購入|注文|お急ぎ|速達|定期|subscribe|同時|合計|合わせ|まとめ/i.test(shippingEvidence);
@@ -345,11 +358,13 @@ export function parsePublicOffer(html: string, asin: string, quantity: number, o
   // explicit selected-row merchant, but no verifiable domestic delivery terms.
   // In this narrow case issue merchandise-only pricing: shipping is UNKNOWN,
   // never advertised as free, and must be confirmed separately before payment.
-  const quoteWithoutShippingPromise = selectedModern && merchantVerified && apexPrice.length === 1 &&
+  const quoteWithoutShippingPromise = (selectedModern || selectedDirect) && merchantVerified && apexPrice.length === 1 &&
     !hidden(apexPrice) && shipping.length === 1 && Boolean(shippingEvidence);
   const availabilityElement = scope.find('[id="availability"]');
   const availability = availabilityElement.text().trim();
   const quantitySelect = scope.find('select[name="quantity"]');
+  const fixedDirectQuantity = selectedDirect ? scope.find('input[name="items[0.base][quantity]"]') : scope.find('never-match');
+  const directAddButton = selectedDirect ? scope.find('input[name="submit.add-to-cart"]') : scope.find('never-match');
   const options = quantitySelect.find('option');
   const selectedOption = options.filter('[selected]').length ? options.filter('[selected]').first() : options.first();
   const disabledQuantity = quantitySelect.is('[disabled], [aria-disabled="true"]') ||
@@ -358,12 +373,18 @@ export function parsePublicOffer(html: string, asin: string, quantity: number, o
     !$(el).parents('optgroup[disabled]').length).map((_, el) => Number($(el).attr('value'))).get(), 0);
   const selectedQuantity = Number(selectedOption.attr('value'));
   const remainingStock = availability.match(/\bonly\s+(\d+)\s+left\b|残り\s*(\d+)\s*点/i);
+  const soleRemainingUnit = modern.length === 1 && selectedModern && quantity === 1 &&
+    quantitySelect.length === 0 && remainingStock !== null && Number(remainingStock[1] ?? remainingStock[2]) === 1 &&
+    oneTime.find('input[name="submit.add-to-cart"]').length === 1 &&
+    !hidden(oneTime.find('input[name="submit.add-to-cart"]')) &&
+    !oneTime.find('input[name="submit.add-to-cart"]').is('[disabled], [aria-disabled="true"]') &&
+    !oneTime.find('input[name="quantity"], input[name="items[0.base][quantity]"]').length;
   const variant = $('#twister .selection').map((_, el) => $(el).text().trim()).get().filter(Boolean).join(' / ');
-  if (box.length !== 1 || oneTime.length !== 1 || hiddenOneTime || selectedAsin !== asin || !title || title.length > 1000 || !offerId || offerId.length > 2048 || !seller || seller.length > 1000 || variant.length > 2000 || shippingEvidence.length > 4000 ||
+  if (box.length !== 1 || oneTime.length !== 1 || hiddenOneTime || selectedAsin !== asin || !title || title.length > 1000 || !offerId || offerId.length > 2048 || !seller || seller.length > 1000 || variant.length > 2000 || shippingEvidence.length > 4000 || conflictingTotal ||
       $('[id="desktop_buybox"]').length !== 1 || !verifiedAsinInputs($, asin) ||
       titleElements.length !== 1 ||
       offerIds.length !== 1 || sellerSource.length !== 1 ||
-      (modern.length ? !selectedModern || hidden(oneTime) || oneTime.is('[disabled], [aria-disabled="true"]') ||
+      (modern.length || selectedDirect ? !(selectedModern || selectedDirect) || hidden(oneTime) || oneTime.is('[disabled], [aria-disabled="true"]') ||
         [offerIds, sellerSource, priceElements, shipping, availabilityElement, quantitySelect, selectedOption].some(hidden) ||
         offerIds.is('[disabled], [aria-disabled="true"]') ||
         (!quoteWithoutShippingPromise && /subscribe|定期|Prime|プライム/i.test(offer.text())) ||
@@ -372,10 +393,14 @@ export function parsePublicOffer(html: string, asin: string, quantity: number, o
         oneTime.find('input[type="radio"]:checked').length !== 1) ||
       !Number.isInteger(quantity) || quantity < 1 || quantity > 99 ||
       !Number.isSafeInteger(priceJpy) || priceJpy <= 0 || priceJpy > 100000000 ||
-      !/在庫あり|in stock|残り\s*\d+\s*点/i.test(availability) || /not\s+(?:currently\s+)?in\s+stock|out of stock|在庫なし/i.test(availability) || quantitySelect.length !== 1 || disabledQuantity || quantity > maxQuantity || selectedQuantity !== quantity ||
+      (selectedDirect && (directAddButton.length !== 1 || hidden(directAddButton) || directAddButton.is('[disabled], [aria-disabled="true"]') ||
+        fixedDirectQuantity.length > 1 || (fixedDirectQuantity.length === 1 &&
+          (!fixedDirectQuantity.is('input[type="hidden"]') || fixedDirectQuantity.attr('value') !== String(quantity))))) ||
+      !/在庫あり|in stock|残り\s*\d+\s*点/i.test(availability) || /not\s+(?:currently\s+)?in\s+stock|out of stock|在庫なし/i.test(availability) ||
+      !(soleRemainingUnit || (quantitySelect.length === 1 && !disabledQuantity && quantity <= maxQuantity && selectedQuantity === quantity)) ||
       (remainingStock !== null && quantity > Number(remainingStock[1] ?? remainingStock[2])) ||
       ($('#twister').length > 0 && !variant) ||
-      /subscribe\s*&\s*save|定期おトク便|Prime exclusive|プライム会員限定/i.test(offer.text()) ||
+      /subscribe\s*(?:&\s*save|monthly|weekly)|定期おトク便|Prime\s*(?:exclusive|members?\s+only)|プライム会員限定/i.test(`${offer.text()} ${directAddButton.attr('value') ?? ''}`) ||
       (!verifiedFreeShipping && !quoteWithoutShippingPromise)) {
     const preview = parseProductPreview($, asin, observedAt, displayPermission);
     throw new QuoteError('offer_not_verified', 422, preview ? { preview } : undefined);
