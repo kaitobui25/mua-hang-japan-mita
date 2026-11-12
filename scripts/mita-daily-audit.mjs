@@ -3,7 +3,7 @@
 import { createHash, randomInt } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
-import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, open } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { tableSpecs } from '../backend/scripts/sync-catalog-vps.mjs';
@@ -27,6 +27,192 @@ export function checkoutKey(day) {
 const fingerprint = payload => sha(JSON.stringify({ items: payload.items, quoteItems: [], customer: payload.customer }));
 const literal = value => `'${String(value).replaceAll("'", "''")}'`;
 const safeName = value => String(value).replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, ' ').slice(0, 180);
+const states = new Set(['pending','running','completed','skipped','partial','failed','unknown','deferred','success']);
+const safeState = state => states.has(state) ? state : 'không xác định';
+const safeCount = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+const metric = (value, label) => safeCount(value) === null ? null : `${label}: ${value}`;
+const syncLogPaths = {
+  journal:'mita-supervisor.jsonl', stderr:'nightly-sync.err.log', stdout:'nightly-sync.out.log'
+};
+const knownTables = new Set(tableSpecs.map(([table]) => table));
+
+// Private worker/sync messages are untrusted and may contain credentials or customer data.
+// Report ONLY recognized, bounded state fields, SQLSTATEs and numeric VERIFY counts.
+export function diagnoseJob(job, day) {
+  const fix = 'Đối chiếu mita-daily-' + day + '.json và nhật ký Supervisor; kiểm tra lượt job đã ghi nhận trước khi quyết định xử lý, không tự chạy bù.';
+  if (!job) return { reason:'Supervisor chưa ghi nhận job trong ngày JST.', fix };
+  if (job.day !== day) return { reason:'Job không có bằng chứng thuộc ngày JST đang kiểm tra.', fix };
+  const state = safeState(job.state);
+  if ([job.failed,job.warnings].some(value => value != null && safeCount(value) === null)) {
+    return { reason:'Số liệu lỗi/cảnh báo của job không hợp lệ; chưa thể xác nhận sạch lỗi.', fix };
+  }
+  const counts = [metric(job.failed,'lỗi'),metric(job.warnings,'cảnh báo')].filter(Boolean);
+  if (state === 'completed' && counts.every(x => !/^(lỗi|cảnh báo): [1-9]/.test(x))) return null;
+  if (state === 'partial' || counts.some(x => /^(lỗi|cảnh báo): [1-9]/.test(x))) {
+    return { reason:`Job ${state}; ${counts.length ? counts.join(', ') : 'chưa có số liệu lỗi/cảnh báo'}.`, fix:'Đối chiếu số liệu run trong DB local với log worker tương ứng; xử lý các mục thất bại sau khi xác minh, không chạy bù từ audit.' };
+  }
+  const descriptions = {
+    failed:'Job được Supervisor ghi nhận failed.',
+    unknown:'Supervisor không xác định được kết quả job.',
+    running:'Job vẫn ở trạng thái running; chưa có kết quả cuối.',
+    pending:'Job chưa có kết quả chạy trong ngày.',
+    skipped:'Job đã bị bỏ qua theo trạng thái Supervisor.',
+    deferred:'Job được hoãn; chưa hoàn tất trong ngày.'
+  };
+  return { reason:descriptions[state] ?? 'Trạng thái job chưa được nhận diện.', fix };
+}
+
+export function diagnoseLedger(row, day, syncEvidence = null) {
+  const committed = Boolean(row?.committed_at && /^[a-f0-9]{64}$/.test(row.source_hash) && /^[a-f0-9]{64}$/.test(row.remote_hash));
+  const state = safeState(row?.state);
+  if (state === 'completed' && committed) return { status:'OK', committed };
+  const status = state === 'failed' ? 'FAIL' : 'WARN';
+  const fix = 'Đối chiếu ledger VPS và nhật ký nightly-sync; giữ nguyên run/ledger, không tự chạy lại hoặc sửa DB.';
+  if (state === 'failed' && row?.note === 'Transfer rolled back before COMMIT') {
+    return { status, committed,
+      reason:`Ledger xác nhận ROLLBACK trước COMMIT.${syncEvidence?.reason ? ' ' + syncEvidence.reason : ''}`,
+      fix:syncEvidence?.fix ?? 'Đọc lỗi trong nightly-sync.err.log và kết quả VERIFY trước khi đề xuất sửa schema/dữ liệu; không tự chạy lại.' };
+  }
+  if (state === 'partial' && committed && row?.note === 'Partial gallery preserved; verify identities') {
+    return { status, committed, reason:'Ledger xác nhận đã COMMIT nhưng ảnh gallery chưa đầy đủ; giữ lại ảnh tốt trước đó.', fix:'Đối chiếu danh tính và độ đầy đủ ảnh trong log GALLERY/VERIFY; chỉ đồng bộ lại theo quy trình được duyệt.' };
+  }
+  const note = typeof row?.note === 'string' ? row.note : '';
+  const partial = /^(?:Partial galleries preserved: ([0-9]{1,8})(?:; )?)?(?:Deferred stale Codex titles: ([0-9]{1,8}) \(source_changed\))?$/.exec(note);
+  if (state === 'partial' && committed && partial && (Number(partial[1]) > 0 || Number(partial[2]) > 0)) {
+    const reasons = [];
+    if (Number(partial[1]) > 0) reasons.push(`${Number(partial[1])} gallery thiếu ảnh hoàn chỉnh được giữ ảnh cũ`);
+    if (Number(partial[2]) > 0) reasons.push(`${Number(partial[2])} tiêu đề Codex cũ được hoãn do nguồn đổi (source_changed)`);
+    return { status, committed, reason:`Ledger COMMIT partial: ${reasons.join('; ')}.`,
+      fix:'Đối chiếu số lượng GALLERY và SYNC_DEFERRED_TRANSLATIONS trong nightly-sync.out.log với revision/ảnh đã xuất bản; không ghi đè dữ liệu hoặc chạy bù.' };
+  }
+  if (state === 'completed' && !committed) return { status:'WARN', committed, reason:'Ledger completed nhưng thiếu dấu COMMIT hoặc hash hợp lệ.', fix:'Kiểm tra committed_at/source_hash/remote_hash và bản ghi giao dịch; chưa kết luận dữ liệu đã đồng bộ.' };
+  if (syncEvidence?.reason && (state === 'failed' || state === 'partial')) {
+    return { status, committed, reason:`Ledger ${state}. ${syncEvidence.reason}`, fix:syncEvidence.fix };
+  }
+  return { status, committed, reason:`Ledger ở trạng thái ${state}${committed ? ', có dấu COMMIT' : ', chưa đủ dấu COMMIT'}. Chưa có nguyên nhân được xác minh trong ledger.`, fix };
+}
+
+export function diagnoseSyncError(message, verify = []) {
+  const issues = verify.filter(x => knownTables.has(x?.table) && safeCount(x?.missing) !== null && safeCount(x?.contentMismatch) !== null &&
+    (x.missing > 0 || x.contentMismatch > 0)).slice(0, 3);
+  const detail = issues.length ? ` VERIFY: ${issues.map(x => `${x.table} (thiếu ${x.missing}, lệch ${x.contentMismatch})`).join('; ')}.` : '';
+  if (message === 'Data verification failed before commit' || message === 'Data verification failed: missing/mismatched remote content') {
+    return { reason:`Đối chiếu dữ liệu trước COMMIT không đạt.${detail}`, fix:'Đọc bảng/count sai lệch trong nightly-sync.out.log (VERIFY), đối chiếu dữ liệu nguồn và VPS bằng truy vấn chỉ đọc; giữ ledger, không chạy lại sync.' };
+  }
+  const schema = /^((?:Local|VPS) transfer schema incompatible): ([a-z_]+) \(([0-9A-Z]{5})\)$/.exec(message ?? '');
+  if (schema && knownTables.has(schema[2])) {
+    const detail = schema[3] === '42703' ? ' (thiếu cột)' : schema[3] === '42P01' ? ' (thiếu bảng)' : '';
+    return { reason:`Schema ${schema[1].startsWith('VPS') ? 'VPS' : 'local'} không tương thích: ${schema[2]}, SQLSTATE ${schema[3]}${detail}.`, fix:'Đối chiếu schema thực tế với hợp đồng sync; migration chỉ sau khi được xem xét và duyệt riêng.' };
+  }
+  const classified = new Map([
+    ['Catalog writer is active; no reservation made', ['Đã có writer giữ khóa catalog; sync không chiếm được khóa.', 'Xác minh tiến trình/khóa đang chạy và ledger, không cưỡng ép chạy lại.']],
+    ['Daily batch already claimed but not completed; manual inspection required', ['Ledger đồng bộ ngày JST đã được claim nhưng chưa completed.', 'Đối chiếu run_id, trạng thái commit và tiến trình hiện tại; không claim hoặc chạy lại.']],
+    ['Unresolved daily batch; manual inspection required', ['Có batch đồng bộ ngày trước chưa kết thúc.', 'Đối chiếu ledger running/commit trước khi quyết định bước tiếp theo.']],
+    ['Unresolved deploy batch; manual inspection required', ['Có batch deploy chưa kết thúc, sync bị chặn.', 'Kiểm tra catalog_deploy_ledger và tiến trình deploy; không giải phóng claim thủ công.']],
+    ['Catalog ledger reservation changed; refusing commit', ['Dấu claim ledger thay đổi trước COMMIT.', 'Điều tra run_id/ledger và transaction; không lặp lại.']],
+    ['Daily sync requires all three terminal job states for the same JST day', ['Barrier 3 worker chưa có trạng thái kết thúc cùng ngày JST.', 'Đối chiếu ngày và trạng thái trong mita-daily-YYYY-MM-DD.json.']],
+    ['Sync ledger is missing; run reviewed migrate-vps-sync-ledger.mjs --apply separately', ['VPS thiếu catalog_sync_ledger.', 'Đối chiếu schema và đề xuất migration riêng để duyệt.']],
+    ['Encrypted VPS database connection is not configured', ['Thiếu cấu hình kết nối VPS được mã hóa.', 'Kiểm tra cấu hình mã hóa và quyền đọc cục bộ; không in chuỗi kết nối.']]
+  ]);
+  const match = classified.get(message);
+  return match ? { reason:match[0], fix:match[1] } : null;
+}
+
+// Tail only private audit-relevant files. The raw messages never reach stdout.
+async function readPrivateTail(name) {
+  let handle;
+  try {
+    handle = await open(path.join(root,'.agents','runtime',name),'r');
+    const stat = await handle.stat();
+    const size = Math.min(stat.size, 128 * 1024);
+    const buffer = Buffer.alloc(size);
+    const bytesRead = size ? (await handle.read(buffer,0,size,stat.size - size)).bytesRead : 0;
+    return { text:buffer.toString('utf8',0,bytesRead), mtimeMs:stat.mtimeMs };
+  } catch { return null; }
+  finally { await handle?.close().catch(() => {}); }
+}
+
+export function syncEvidenceFromLogs(day, sync, journal, stderr, stdout) {
+  if (sync?.state !== 'failed' && sync?.state !== 'partial' && sync?.state !== 'unknown') return null;
+  const finishedAt = Date.parse(sync.at);
+  if (!Number.isFinite(finishedAt) || !journal?.text) return null;
+  let startedAt = null, lastFinished = null;
+  for (const line of journal.text.split(/\r?\n/)) {
+    let item;
+    try { item = JSON.parse(line); } catch { continue; }
+    if (item.day !== day) continue;
+    const at = Date.parse(item.at);
+    if (!Number.isFinite(at)) continue;
+    if (item.event === 'sync_started') startedAt = at;
+    if (item.event === 'sync_finished') lastFinished = { at, code:item.exitCode, start:startedAt };
+  }
+  if (!lastFinished || lastFinished.start === null || lastFinished.start > lastFinished.at ||
+      Math.abs(lastFinished.at - finishedAt) > 60_000) return null;
+  const inWindow = file => file?.mtimeMs >= lastFinished.start - 1000 && file.mtimeMs <= lastFinished.at + 60_000;
+  const attemptLines = file => {
+    if (!file?.text) return [];
+    const lines = file.text.split(/\r?\n/);
+    const markers = lines.flatMap((line,index) => line.startsWith('SYNC_ATTEMPT_START ')
+      ? [{ index, at:Date.parse(line.slice('SYNC_ATTEMPT_START '.length)) }] : []);
+    if (markers.length) {
+      // New supervisor writes dated markers to both logs. Never use an earlier
+      // attempt's error merely because the same append-only file was modified.
+      const current = markers.filter(marker => Number.isFinite(marker.at) &&
+        marker.at >= lastFinished.start - 60_000 && marker.at <= lastFinished.at + 30_000).at(-1);
+      if (!current) return [];
+      const next = markers.find(marker => marker.index > current.index);
+      return lines.slice(current.index + 1,next?.index ?? lines.length).filter(line => line.trim());
+    }
+    // Historical logs from before the per-attempt marker was introduced.
+    return inWindow(file) ? lines.filter(line => line.trim()) : [];
+  };
+  const messages = attemptLines(stderr);
+  const failureIndex = messages.findLastIndex(line => line.startsWith('SYNC_FAILED '));
+  // The wrapper ends a transfer error with this exact line. A prior error plus a new
+  // unrelated failure must not be attributed to the new run.
+  const suffix = messages.slice(failureIndex + 1);
+  const trace = line => /^\s*\+/.test(line) ||
+    (line.length <= 300 && line.includes('nightly-vps-sync.ps1'));
+  const lastFailure = failureIndex >= 0 && suffix[0] === 'Daily sync failed; inspect remote ledger and private logs' &&
+    suffix.length <= 9 && suffix.slice(1).every(trace)
+    ? messages[failureIndex] : null;
+  const outLines = attemptLines(stdout);
+  const verifyLine = outLines.filter(line => line.startsWith('VERIFY ')).at(-1);
+  let verify = [];
+  if (verifyLine) {
+    try { const parsed = JSON.parse(verifyLine.slice(7)); if (Array.isArray(parsed)) verify = parsed; } catch { /* Untrusted private log. */ }
+  }
+  const unconfirmedIndex = messages.findLastIndex(line => line === 'SYNC_ROLLBACK_UNCONFIRMED: running ledger preserved; manual inspection required');
+  const unconfirmed = unconfirmedIndex >= 0 && failureIndex >= 0 && failureIndex - unconfirmedIndex <= 1 && Boolean(lastFailure);
+  if (unconfirmed && lastFinished.code !== 0) return {
+    exitCode:lastFinished.code, reason:'Nhật ký ghi ROLLBACK chưa được xác nhận; kết quả commit có thể chưa rõ.',
+    fix:'Kiểm tra ledger VPS và trạng thái transaction bằng truy vấn chỉ đọc; tuyệt đối không chạy lại khi commit còn bất định.'
+  };
+  const diagnosis = lastFailure && diagnoseSyncError(lastFailure.slice('SYNC_FAILED '.length), verify);
+  if (sync.state === 'partial') {
+    const commitLine = outLines.filter(line => line.startsWith('SYNC_COMMIT_OK ')).at(-1);
+    let marker;
+    try { marker = JSON.parse(commitLine?.slice('SYNC_COMMIT_OK '.length)); } catch { /* Not trusted. */ }
+    if (marker?.day === day && marker.state === 'partial' &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(marker.runId) &&
+        safeCount(marker.galleryPartial) !== null && safeCount(marker.deferredTranslations) !== null) {
+      const reasons = [];
+      if (marker.galleryPartial > 0) reasons.push(`${marker.galleryPartial} gallery thiếu ảnh hoàn chỉnh`);
+      if (marker.deferredTranslations > 0) reasons.push(`${marker.deferredTranslations} bản dịch Codex hoãn do nguồn đổi`);
+      if (reasons.length) return { exitCode:lastFinished.code,
+        reason:`Nhật ký COMMIT partial ngày ${day}: ${reasons.join('; ')}.`,
+        fix:'Đối chiếu GALLERY, SYNC_DEFERRED_TRANSLATIONS và ledger VPS; không cưỡng ép cập nhật dữ liệu đã giữ.' };
+    }
+  }
+  return { exitCode:lastFinished.code,
+    ...(diagnosis ? {reason:`Nhật ký gần nhất ghi: ${diagnosis.reason}`,fix:diagnosis.fix} : {}) };
+}
+
+async function loadSyncEvidence(day, sync) {
+  if (!['failed','partial','unknown'].includes(sync?.state)) return null;
+  const [journal, stderr, stdout] = await Promise.all(Object.values(syncLogPaths).map(readPrivateTail));
+  return syncEvidenceFromLogs(day, sync, journal, stderr, stdout);
+}
 
 // Shared replication contract comes from the guarded, import-safe sync module.
 // Local worker infrastructure and the VPS daily ledger are intentionally separate.
@@ -92,7 +278,7 @@ export function schemaProblems(snapshot, target) {
   return problems;
 }
 const snapshotSql = `SELECT json_build_object(
-  'identity', (SELECT row_to_json(x) FROM (SELECT current_database() AS database, inet_server_addr()::text AS host, inet_server_port() AS port, current_setting('port') AS configured_port, current_user AS role, to_char(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Tokyo','YYYY-MM-DD') AS jst_day) x),
+  'identity', (SELECT row_to_json(x) FROM (SELECT current_database() AS database, host(inet_server_addr()) AS host, inet_server_port() AS port, current_setting('port') AS configured_port, current_user AS role, to_char(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Tokyo','YYYY-MM-DD') AS jst_day) x),
   'columns', COALESCE((SELECT json_agg(x) FROM (SELECT c.relname AS table,a.attname AS column,format_type(a.atttypid,a.atttypmod) AS type
     FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace
     WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m') AND a.attnum>0 AND NOT a.attisdropped) x),'[]'),
@@ -272,33 +458,18 @@ export async function checkout({ day, readOnly, record, products, query, post, s
 // Tất cả dòng trạng thái được gói ở chiều rộng dễ đọc trên cửa sổ CMD.
 function createReporter() {
   const results = [];
-  const print = (value, indent = '       ', width = 96) => {
-    for (const line of String(value).split('\n')) {
-      let current = '';
-      for (const word of line.split(/\s+/u)) {
-        if (!word) continue;
-        const parts = word.match(/[\s\S]{1,80}/gu) ?? [];
-        for (const part of parts) {
-          if (current && (indent.length + current.length + part.length + 1 > width)) {
-            console.log(indent + current);
-            current = '';
-          }
-          current += (current ? ' ' : '') + part;
-        }
-      }
-      if (current) console.log(indent + current);
-    }
+  const entries = [];
+  let sectionName = 'Khác';
+  const detailDefaults = {
+    reason:'Chưa đủ bằng chứng để kết luận nguyên nhân cụ thể.',
+    fix:'Đối chiếu trạng thái và nhật ký liên quan trước khi thực hiện thay đổi.'
   };
   const report = (status, title, { reason, fix, details = [] } = {}) => {
     results.push(status);
-    const label = `[${status}]`;
-    const color = { OK:32, WARN:33, FAIL:31 }[status];
-    console.log(`${process.stdout.isTTY ? `\x1b[${color}m${label}\x1b[0m` : label} ${title}`);
-    if (reason) print(`Nguyên nhân: ${reason}`);
-    if (fix) print(`Cách xử lý: ${fix}`);
-    for (const detail of details) print(detail);
+    entries.push({ status, title, reason:status === 'OK' ? null : reason ?? detailDefaults.reason,
+      fix:status === 'OK' ? null : fix ?? detailDefaults.fix, details, section:sectionName });
   };
-  const section = title => console.log(`\n========== ${title} ==========`);
+  const section = title => { sectionName = title; };
   const checked = async (fn, title, fix) => {
     try { return await fn(); }
     catch (error) {
@@ -312,7 +483,146 @@ function createReporter() {
   };
   const count = status => results.filter(s => s === status).length;
   const exitCode = () => count('FAIL') ? 1 : count('WARN') ? 2 : 0;
-  return { report, section, checked, count, exitCode };
+  const render = ({heading='KẾT QUẢ KIỂM TRA',qaOutcome=null,readOnly=false}={}) => {
+    const maxWidth=88;
+    const width=90;
+    const leftWidth=22;
+    const stateWidth=6;
+    const infoWidth=width-leftWidth-stateWidth-9;
+    const plain = text => String(text).replace(/\s+/gu,' ').trim();
+    const length = value => Array.from(value).length;
+    const clean = value => String(value).replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g,' ');
+    const fit = (value,size) => {
+      const chars=Array.from(plain(clean(value)));
+      return chars.length>size ? chars.slice(0,size-1).join('')+'…' : chars.join('');
+    };
+    const pad = (value,size) => {
+      const str=fit(value,size);
+      return str+' '.repeat(Math.max(0,size-length(str)));
+    };
+    const wrap = (value,size) => {
+      const words=plain(clean(value)).split(' ');
+      const lines=[];
+      let line='';
+      for (const word of words) {
+        const chunks=Array.from(word);
+        while (chunks.length>size) {
+          if (line) {lines.push(line);line='';}
+          lines.push(chunks.splice(0,size).join(''));
+        }
+        const part=chunks.join('');
+        if (!part) continue;
+        if (line && length(line)+1+length(part)>size) {lines.push(line);line='';}
+        line+=(line?' ':'')+part;
+      }
+      if (line) lines.push(line);
+      return lines.length ? lines : [''];
+    };
+    const line = '-'.repeat(width);
+    const statusColor = {OK:32,WARN:33,FAIL:31};
+    const colored = state => process.stdout.isTTY
+      ? `\x1b[${statusColor[state]}m${pad(state,stateWidth)}\x1b[0m` : pad(state,stateWidth);
+    console.log('\n'+heading);
+    console.log(line);
+    console.log(`| ${pad('HẠNG MỤC',leftWidth)} | ${pad('KQ',stateWidth)} | ${pad('TÓM TẮT',infoWidth)} |`);
+    console.log(line);
+    const sectionGroups = [
+      {heading:'01 / DATA PIPELINE',match:s=>/POSTGRESQL MITA LOCAL|KẾT QUẢ JOB/.test(s),
+        include:e=>!(e.title==='Đồng bộ VPS theo Supervisor.' && entries.some(other=>other.title==='Đồng bộ danh mục VPS hôm nay.'))},
+      {heading:'02 / VPS & WEBSITE',match:s=>/POSTGRESQL VPS|WEBSITE HTTPS|QA CHECKOUT/.test(s)}
+    ];
+    const summary = entry => {
+      const d=entry.details.map(clean);
+      const counts = [entry.reason,...d].filter(Boolean).join(' ').match(/(?:lỗi|cảnh báo|lệch|thiếu|lưu|dịch):?\s*\d+/gi);
+      if (entry.status==='OK') {
+        if (/Detail 05:15/.test(entry.title)) return 'Hoàn thành';
+        if (/Schema/.test(entry.title)) return 'Schema và index đạt';
+        if (/Đơn QA/.test(entry.title)) return 'Đã xác minh; không tạo lại';
+        if (/Sản phẩm danh mục/.test(entry.title)) {
+          const asin=d.find(item=>/^ASIN:/.test(item)) ?? '';
+          const price=d.find(item=>/^Giá:/.test(item)) ?? '';
+          return [asin,price].filter(Boolean).join(' | ') || 'Sản phẩm và ảnh hợp lệ';
+        }
+        return d.find(item=>/^Đã hoàn thành|^Chi tiết:|^Database:|^Máy chủ:/.test(item)) ?? 'Đạt yêu cầu';
+      }
+      if (entry.title==='Đồng bộ danh mục VPS hôm nay.' || entry.title==='Đồng bộ VPS theo Supervisor.') {
+        const mismatch=entry.reason?.match(/(?:product_translations|[a-z_]+) \(thiếu \d+, lệch \d+\)/u);
+        if (mismatch) return `Chưa COMMIT / ${mismatch[0]}`;
+      }
+      if (counts?.length) return counts.slice(0,4).join(' / ');
+      return entry.reason ?? 'Chưa xác minh';
+    };
+    const tableName = title => title
+      .replace(/^Kết nối PostgreSQL Mita.*$/u,'Local PostgreSQL')
+      .replace(/^Schema local.*$/u,'Schema local')
+      .replace(/^Amazon 04:00.*$/u,'Amazon 04:00')
+      .replace(/^Names 05:00.*$/u,'Names 05:00')
+      .replace(/^Detail 05:15.*$/u,'Detail 05:15')
+      .replace(/^Đồng bộ VPS theo Supervisor.*$/u,'VPS Sync (Supervisor)')
+      .replace(/^Bản ghi Amazon hôm nay.*$/u,'Amazon (DB run)')
+      .replace(/^Bản ghi Names Codex.*$/u,'Names (DB run)')
+      .replace(/^Kết nối PostgreSQL VPS.*$/u,'VPS PostgreSQL')
+      .replace(/^Schema VPS.*$/u,'Schema VPS')
+      .replace(/^Đồng bộ danh mục VPS.*$/u,'VPS Sync (Ledger)')
+      .replace(/^Đối chiếu job (amazon|names|detail) trong ledger VPS.*$/u,(_,name)=>`Ledger ${name}`)
+      .replace(/^Sản phẩm danh mục (.+) hợp lệ.*$/u,(_,name)=>`Web ${name}`)
+      .replace(/^Đơn QA.*$/u,'QA Checkout');
+    let rowNumber=0;
+    for (const group of sectionGroups) {
+      const groupEntries=entries.filter(entry=>group.match(entry.section) && (!group.include || group.include(entry)));
+      if (!groupEntries.length) continue;
+      console.log(group.heading);
+      for (const entry of groupEntries) {
+        rowNumber++;
+        const info=summary(entry);
+        const pieces=wrap(info,infoWidth);
+        for (let n=0;n<pieces.length;n++) console.log(`| ${pad(n===0?tableName(entry.title):'',leftWidth)} | ${n===0?colored(entry.status):' '.repeat(stateWidth)} | ${pad(pieces[n],infoWidth)} |`);
+      }
+      console.log(line);
+    }
+    const remaining=entries.filter(entry=>!sectionGroups.some(group=>group.match(entry.section)));
+    if (remaining.length) {
+      console.log('03 / KHÁC');
+      for (const entry of remaining) {
+        rowNumber++;
+        const pieces=wrap(summary(entry),infoWidth);
+        for(let i=0;i<pieces.length;i++) console.log(`| ${pad(i? '':tableName(entry.title),leftWidth)} | ${i?' '.repeat(stateWidth):colored(entry.status)} | ${pad(pieces[i],infoWidth)} |`);
+      }
+      console.log(line);
+    }
+    const warnings=entries.filter(entry=>entry.status!=='OK');
+    if (warnings.length) {
+      console.log('\nCHI TIẾT CẦN XỬ LÝ');
+      // The table counts all independent checks; diagnostic details can be
+      // consolidated when Supervisor and VPS ledger describe the same sync run.
+      const ledgerSync=warnings.find(entry=>entry.title==='Đồng bộ danh mục VPS hôm nay.');
+      const displayed=new Set();
+      for (const entry of warnings) {
+        if (ledgerSync && entry.title==='Đồng bộ VPS theo Supervisor.' &&
+            entry.reason?.includes('Đối chiếu dữ liệu trước COMMIT không đạt') &&
+            ledgerSync.reason?.includes('Đối chiếu dữ liệu trước COMMIT không đạt')) continue;
+        const key=`${entry.reason}|${entry.fix}`;
+        if (displayed.has(key)) continue;
+        displayed.add(key);
+        const header=`[${entry.status}] ${tableName(entry.title)}`;
+        console.log(header);
+        for(const [label,value] of [['Lỗi',entry.reason],['Xử lý',entry.fix]]) {
+          const prefix=`  ${label}: `;
+          const lines=wrap(clean(value),maxWidth-length(prefix));
+          lines.forEach((item,index)=>console.log((index?' '.repeat(length(prefix)):prefix)+item));
+        }
+      }
+    }
+    console.log('\nTỔNG KẾT: '+`${count('OK')} OK | ${count('WARN')} WARN | ${count('FAIL')} FAIL`);
+    if (qaOutcome) {
+      console.log('QA: '+qaOutcome);
+    }
+    console.log(count('FAIL')?'KẾT LUẬN: CÓ LỖI CẦN XỬ LÝ.':count('WARN')?'KẾT LUẬN: CÓ CẢNH BÁO.':'KẾT LUẬN: TẤT CẢ ĐỀU ĐẠT.');
+    console.log('An toàn: Không chạy bù job/sync; không đổi checkoutKey hoặc replay QA.');
+    if (readOnly) console.log('CHẾ ĐỘ CHỈ ĐỌC: không POST checkout.');
+    return rowNumber;
+  };
+  return { report, section, checked, count, exitCode, render, entries };
 }
 
 async function checkLocal(day, view, readLocal = localSnapshot) {
@@ -335,10 +645,10 @@ async function checkLocal(day, view, readLocal = localSnapshot) {
   return { localSchemaDrift, workerEvidence };
 }
 
-async function checkWorkers(day, view, workerEvidence, readDaily = readFile) {
+async function checkWorkers(day, view, workerEvidence, readDaily = readFile, readSyncEvidence = loadSyncEvidence) {
   const { report, section, checked } = view;
   section('2. KẾT QUẢ JOB HÔM NAY (JST)');
-  let status;
+  let status, syncEvidence;
   await checked(async () => {
     let contents;
     try { contents = await readDaily(path.join(root, '.agents', 'runtime', `mita-daily-${day}.json`), 'utf8'); }
@@ -349,43 +659,57 @@ async function checkWorkers(day, view, workerEvidence, readDaily = readFile) {
     try { status = JSON.parse(contents); }
     catch { throw new AuditError(`File kết quả ${day} không phải JSON hợp lệ.`); }
     need(status?.day === day, 'File kết quả không thuộc ngày JST hiện tại.');
+    syncEvidence = await readSyncEvidence(day, status.sync);
     for (const worker of ['amazon', 'names', 'detail']) {
       const job = status.jobs?.[worker];
       const complete = job?.day === day && job.state === 'completed';
-      const clean = complete && !Number(job.failed) && !Number(job.warnings);
+      const clean = complete && [job.failed,job.warnings].every(value => value == null || safeCount(value) === 0);
       const label = { amazon:'Amazon 04:00', names:'Names 05:00', detail:'Detail 05:15' }[worker];
+      const diagnosis = clean ? null : diagnoseJob(job, day);
       report(clean ? 'OK' : ['failed','unknown'].includes(job?.state) ? 'FAIL' : 'WARN',
         `${label}: ${clean ? 'đã hoàn thành' : 'chưa xác nhận hoàn thành'}.`, {
-          details:[`Trạng thái Supervisor: ${safeName(job?.state ?? 'chưa có kết quả')}`],
-          ...(!clean && ['failed','unknown'].includes(job?.state) ? {
-            reason:'Supervisor ghi nhận trạng thái lỗi hoặc không xác định.',
-            fix:'Xem log Supervisor và bản ghi job; không tự chạy bù.'
-          } : {})
+          details:[`Trạng thái Supervisor: ${safeState(job?.state)}`],
+          ...(diagnosis ?? {})
         });
     }
-    report(status.sync?.state === 'completed' ? 'OK' : 'WARN', 'Đồng bộ VPS theo Supervisor.', {
-      details:[`Trạng thái local: ${safeName(status.sync?.state ?? 'chưa có kết quả')}. Đối chiếu ledger VPS tại phần riêng.`]
+    const syncState = safeState(status.sync?.state);
+    const syncClean = syncState === 'completed';
+    report(syncClean ? 'OK' : ['failed','unknown'].includes(syncState) ? 'FAIL' : 'WARN', 'Đồng bộ VPS theo Supervisor.', {
+      ...(!syncClean ? {
+        reason:syncEvidence?.reason ?? `Supervisor ghi nhận sync ${syncState}; chưa xác minh nguyên nhân chi tiết từ nhật ký.`,
+        fix:syncEvidence?.fix ?? 'Kiểm tra ledger VPS và .agents/runtime/nightly-sync.err.log; không tự chạy lại sync.'
+      } : {}),
+      details:[`Trạng thái local: ${syncState}; mã thoát log: ${Number.isInteger(syncEvidence?.exitCode) ? syncEvidence.exitCode : 'chưa có'}.`]
     });
   }, 'Chưa xác minh được kết quả job trong ngày.', 'Kiểm tra file daily của Supervisor và nhật ký mita-supervisor.jsonl; không tự chạy bù job.');
   if (workerEvidence) {
     const amazonRun = workerEvidence.amazon?.find(row => row.id === String(status?.jobs?.amazon?.runId));
-    report(amazonRun?.state === 'success' && amazonRun.finished_at && amazonRun.error_count === 0 ? 'OK' : 'WARN',
+    const amazonClean = amazonRun?.state === 'success' && amazonRun.finished_at && amazonRun.error_count === 0;
+    report(amazonClean ? 'OK' : 'WARN',
       'Bản ghi Amazon hôm nay trong PostgreSQL local.', {
-        details:[`Run: ${safeName(amazonRun?.id ?? 'chưa liên kết được với daily file')}; trạng thái: ${safeName(amazonRun?.state ?? 'chưa xác minh')}; lưu: ${amazonRun?.saved_count ?? '?'}; lỗi: ${amazonRun?.error_count ?? '?'}.`]
+        ...(!amazonClean ? { reason:amazonRun ? `Run Amazon ${safeState(amazonRun.state)}; lỗi: ${safeCount(amazonRun.error_count) ?? 'chưa có số liệu'}.` : 'Không tìm thấy run Amazon khớp ID với file Supervisor hôm nay.',
+          fix:'Đối chiếu sync_runs theo runId và file log Amazon trong .agents/runtime; không chạy bù.' } : {}),
+        details:[`Trạng thái: ${safeState(amazonRun?.state)}; lưu: ${safeCount(amazonRun?.saved_count) ?? '?'}; lỗi: ${safeCount(amazonRun?.error_count) ?? '?'}.`]
       });
     if (workerEvidence.settings?.engine === 'codex') {
       const runs = workerEvidence.names ?? [];
       const nameRun = runs.length === 1 ? runs[0] : null;
-      report(nameRun?.state === 'completed' && nameRun.finished_at && nameRun.failed === 0 && nameRun.warnings === 0 ? 'OK' : 'WARN',
+      const nameClean = nameRun?.state === 'completed' && nameRun.finished_at && nameRun.failed === 0 && nameRun.warnings === 0;
+      report(nameClean ? 'OK' : 'WARN',
         'Bản ghi Names Codex theo lịch trong PostgreSQL local.', {
-          details:[`Trạng thái: ${safeName(nameRun?.state ?? 'chưa có đúng một lượt scheduled')}; dịch: ${nameRun?.translated ?? '?'}; lỗi: ${nameRun?.failed ?? '?'}; cảnh báo: ${nameRun?.warnings ?? '?'}.`]
+          ...(!nameClean ? { reason:nameRun ? `Run Names ${safeState(nameRun.state)}; lỗi: ${safeCount(nameRun.failed) ?? '?'}, cảnh báo: ${safeCount(nameRun.warnings) ?? '?'}.` : `Không có đúng một run Names scheduled hôm nay (đếm được ${runs.length}).`,
+            fix:'Đối chiếu codex_name_runs theo ngày JST với file names.out.log và names.err.log; không chạy bù.' } : {}),
+          details:[`Trạng thái: ${safeState(nameRun?.state)}; dịch: ${safeCount(nameRun?.translated) ?? '?'}; lỗi: ${safeCount(nameRun?.failed) ?? '?'}; cảnh báo: ${safeCount(nameRun?.warnings) ?? '?'}.`]
         });
     }
   } else {
     report('WARN', 'Chưa đọc được bản ghi worker từ PostgreSQL local.', {
+      reason:'Snapshot PostgreSQL local chưa cung cấp bảng kết quả worker (DB chưa xác minh hoặc schema lệch).',
+      fix:'Xác minh đúng PID/cổng 5433 và schema local; chạy lại phần local-recheck sau khi có quyền.',
       details:['Không suy diễn rằng job đã chạy chỉ từ trạng thái dịch vụ.']
     });
   }
+  return { status, syncEvidence };
 }
 
 async function localRecheck({ readLocal = localSnapshot, readDaily = readFile } = {}) {
@@ -393,9 +717,8 @@ async function localRecheck({ readLocal = localSnapshot, readDaily = readFile } 
   console.log(`MITA JAPAN — KIỂM TRA LẠI RIÊNG DATABASE 5433 | ${day} JST`);
   const local = await checkLocal(day, view, readLocal);
   await checkWorkers(day, view, local.workerEvidence, readDaily);
-  view.section('KẾT QUẢ KIỂM TRA LẠI 5433');
-  console.log(`Đạt: ${view.count('OK')} | Cảnh báo: ${view.count('WARN')} | Lỗi: ${view.count('FAIL')}`);
-  console.log('Chỉ đọc DB local và file job. Không kết nối VPS, không gọi HTTP, không gửi checkout hoặc chạy worker.');
+  view.render({heading:`MITA JAPAN — KIỂM TRA LẠI 5433 | ${day} JST`,readOnly:true});
+  console.log('Không kết nối VPS, HTTP, checkout hay worker; chỉ đọc dữ liệu local.');
   return view.exitCode();
 }
 
@@ -408,7 +731,7 @@ async function run(readOnly) {
   console.log('Mã thoát: 0=Đạt, 1=Lỗi, 2=Cảnh báo. Không tự khởi động DB, worker hoặc chạy migration.');
   await mkdir(runtime, { recursive:true });
   const { localSchemaDrift, workerEvidence } = await checkLocal(day, view);
-  await checkWorkers(day, view, workerEvidence);
+  const workers = await checkWorkers(day, view, workerEvidence);
   section('3. POSTGRESQL VPS / SCHEMA / ĐỒNG BỘ');
   let remoteGood = false;
   await checked(async () => {
@@ -426,20 +749,23 @@ async function run(readOnly) {
     if (remoteGood) report('OK', 'Schema VPS catalog, checkout, ledger và index đạt yêu cầu.');
   }, 'Không kiểm tra được PostgreSQL VPS.', 'Kiểm tra SSH, quyền đọc DB và kết nối Hermes; không thay đổi dịch vụ.');
   if (remoteGood) await checked(async () => {
-    const rows = await remoteQuery(`SELECT state,jobs,committed_at,source_hash,remote_hash FROM catalog_sync_ledger WHERE sync_day=${literal(day)}::date`);
+    const rows = await remoteQuery(`SELECT state,jobs,note,committed_at,source_hash,remote_hash FROM catalog_sync_ledger WHERE sync_day=${literal(day)}::date`);
     need(rows.length === 1, 'VPS chưa có bản ghi đồng bộ (daily sync ledger) hôm nay.');
     const row = rows[0];
-    const committed = row.committed_at && /^[a-f0-9]{64}$/.test(row.source_hash) && /^[a-f0-9]{64}$/.test(row.remote_hash);
-    report(row.state === 'completed' && committed ? 'OK' : row.state === 'failed' ? 'FAIL' : 'WARN',
+    const diagnosis = diagnoseLedger(row, day, workers.syncEvidence);
+    report(diagnosis.status,
       'Đồng bộ danh mục VPS hôm nay.', {
-        details:[`Trạng thái ledger: ${safeName(row.state)}; đã commit: ${Boolean(committed)}. Ledger không chứng minh toàn bộ catalog đúng.`],
-        ...(row.state === 'failed' ? { reason:'Ledger VPS ghi nhận đồng bộ lỗi.', fix:'Xem log đồng bộ; không chạy bù từ audit.' } : {})
+        ...diagnosis,
+        details:[`Trạng thái ledger: ${safeState(row.state)}; có dấu COMMIT/hash: ${diagnosis.committed}. Ledger không tự chứng minh dữ liệu đúng.`]
       });
     for (const name of ['amazon','names','detail']) {
       const job = row.jobs?.[name];
-      report(job?.day === day && job.state === 'completed' ? 'OK' : 'WARN',
+      const jobDiagnosis = diagnoseJob(job, day);
+      const clean = !jobDiagnosis;
+      report(clean ? 'OK' : ['failed','unknown'].includes(job?.state) ? 'FAIL' : 'WARN',
         `Đối chiếu job ${name} trong ledger VPS.`, {
-          details:[`Trạng thái: ${safeName(job?.state ?? 'chưa có')}`]
+          ...(!clean ? {reason:`Ledger VPS: ${jobDiagnosis.reason}`,fix:'Đối chiếu trạng thái worker trong mita-daily-' + day + '.json với ledger jobs; không tự đồng bộ lại.'} : {}),
+          details:[`Trạng thái: ${safeState(job?.state)}; ngày: ${job?.day === day ? 'hôm nay' : 'khác/thiếu'}.`]
         });
     }
   }, 'Chưa xác nhận được đồng bộ VPS hôm nay.', 'Kiểm tra daily sync ledger và Supervisor; không tự đồng bộ hoặc chạy bù.');
@@ -466,6 +792,8 @@ async function run(readOnly) {
     const chosen = record?.products.find(p => p.category === category);
     const asin = chosen?.asin ?? eligible[randomInt(eligible.length)].asin;
     if (chosen && !eligible.some(p => p.asin === asin)) report('WARN', 'Mẫu QA cũ không còn ở trang 1; không tự đổi sản phẩm.', {
+      reason:'ASIN trong replay không xuất hiện ở tập sản phẩm checkout được trên trang đầu hiện tại.',
+      fix:'Giữ nguyên ASIN/replay và xác minh sản phẩm qua API chi tiết; không đổi mẫu đã ghi.',
       details:[`ASIN đã ghi trong replay: ${asin}`]
     });
     const product = await jsonGet(`/api/catalog/products/${asin}`);
@@ -507,25 +835,120 @@ async function run(readOnly) {
     report(result.status === 'read_only' ? 'WARN' : 'OK',
       result.status === 'read_only' ? 'Chế độ chỉ đọc: chưa thử tạo đơn QA.' :
         result.status === 'already_submitted' ? 'Đơn QA đã có, không tạo lại.' : 'Đặt hàng QA thành công và đã xác minh DB.', {
+        ...(result.status === 'read_only' ? {reason:'Đã chọn chế độ --read-only; checkout QA không được thực thi.',fix:'Chỉ dùng chế độ QA thông thường khi đã xác nhận an toàn; không chạy lại checkout với key mới.'} : {}),
         details: result.status === 'read_only' ? ['Không gọi POST checkout.'] :
           [`Mã đơn: ${result.order.id}`, 'Hai sản phẩm; pending_confirmation / unpaid / manual.']
       });
   }, 'Không xác minh được checkout QA.', 'Giữ nguyên checkoutKey và replay; kiểm tra DB VPS, tuyệt đối không gửi lại bằng key khác.');
-  section('TỔNG KẾT');
-  console.log(`Đạt: ${view.count('OK')} | Cảnh báo: ${view.count('WARN')} | Lỗi: ${view.count('FAIL')}`);
-  console.log('Đơn hàng QA:');
-  console.log(`  ${checkoutOutcome}`);
-  console.log(view.count('FAIL') ? 'HỆ THỐNG: CÓ LỖI CẦN XỬ LÝ (xem mục [FAIL]).' :
-    view.count('WARN') ? 'HỆ THỐNG: CÓ CẢNH BÁO (xem mục [WARN]).' : 'HỆ THỐNG: TẤT CẢ MỤC ĐỀU ĐẠT.');
-  console.log('Lệch schema: cần phê duyệt migration riêng. Job/sync: không chạy bù từ audit.');
-  console.log('Checkout chưa chắc chắn: giữ replay và checkoutKey, không xóa hoặc đổi key.');
-  console.log('Payload QA nằm trong .agents/runtime/daily-audit; không hiển thị dữ liệu khách hàng.');
+  view.render({heading:`MITA JAPAN — DAILY AUDIT | ${day} JST`,qaOutcome:checkoutOutcome,readOnly});
+  console.log('Lệch schema cần duyệt migration riêng. Payload QA không hiển thị dữ liệu khách hàng.');
   return view.exitCode();
 }
 
 async function selfTest() {
   const { default:assert } = await import('node:assert/strict');
   const day = '2026-11-08';
+  const goodHash = 'a'.repeat(64);
+  const ledgerRow = {state:'failed', note:'Transfer rolled back before COMMIT', source_hash:goodHash, remote_hash:null, committed_at:null};
+  assert.match(diagnoseLedger(ledgerRow,day).reason, /ROLLBACK/);
+  assert.match(diagnoseLedger(ledgerRow,day,{reason:'VERIFY: product_translations (thiếu 0, lệch 15)',fix:'Đối chiếu VERIFY.'}).reason,/lệch 15/);
+  assert.match(diagnoseLedger({...ledgerRow,note:'private-password-value'},day).reason, /Chưa có nguyên nhân/);
+  assert(!JSON.stringify(diagnoseLedger({...ledgerRow,note:'private-password-value'},day)).includes('private-password-value'));
+  const partialLedger = diagnoseLedger({...ledgerRow,state:'partial',note:'Partial gallery preserved; verify identities',
+    committed_at:'2026-11-08T00:00:00Z',remote_hash:goodHash},day);
+  assert.equal(partialLedger.status,'WARN');
+  assert.match(partialLedger.reason,/gallery/);
+  const combined = diagnoseLedger({...ledgerRow,state:'partial',note:'Partial galleries preserved: 4; Deferred stale Codex titles: 2 (source_changed)',
+    committed_at:'2026-11-08T00:00:00Z',remote_hash:goodHash},day);
+  assert.match(combined.reason,/4 gallery/);
+  assert.match(combined.reason,/2 tiêu đề/);
+  assert.match(diagnoseLedger({...ledgerRow,state:'completed'},day).reason,/thiếu dấu COMMIT/);
+  assert.equal(diagnoseLedger({...ledgerRow,state:'completed',committed_at:'2026-11-08',remote_hash:goodHash},day).status,'OK');
+  assert.match(diagnoseJob({day,state:'partial',failed:6,warnings:77},day).reason,/lỗi: 6, cảnh báo: 77/);
+  assert.match(diagnoseJob({day,state:'failed',reason:'secret-token'},day).reason,/failed/);
+  assert.match(diagnoseJob({day,state:'completed',warnings:'secret'},day).reason,/không hợp lệ/);
+  assert(!JSON.stringify(diagnoseJob({day,state:'failed',reason:'secret-token'},day)).includes('secret-token'));
+  assert.match(diagnoseJob({day:'2026-11-07',state:'completed'},day).reason,/không có bằng chứng/);
+  assert.match(diagnoseJob(null,day).reason,/chưa ghi nhận/);
+  assert.equal(diagnoseJob({day,state:'completed',failed:0,warnings:0},day),null);
+  assert.match(diagnoseSyncError('VPS transfer schema incompatible: product_translations (42703)').reason,/thiếu cột/);
+  assert.equal(diagnoseSyncError('password=secret; customer_data'),null);
+  const verify = [{table:'product_translations',missing:0,contentMismatch:15,sample:'secret customer info'}];
+  assert.match(diagnoseSyncError('Data verification failed before commit',verify).reason,/product_translations \(thiếu 0, lệch 15\)/);
+  assert(!JSON.stringify(diagnoseSyncError('Data verification failed before commit',verify)).includes('secret customer info'));
+  const sync = {state:'failed',at:'2026-11-08T01:05:00.100Z'};
+  const journal = {text:[
+    {event:'sync_started',day,at:'2026-11-08T01:00:00Z'},
+    {event:'sync_finished',day,at:'2026-11-08T01:05:00Z',exitCode:1}
+  ].map(JSON.stringify).join('\n')};
+  const stderr = {text:'SYNC_FAILED Data verification failed before commit\nDaily sync failed; inspect remote ledger and private logs\n',mtimeMs:Date.parse('2026-11-08T01:05:00Z')};
+  const stdout = {text:'VERIFY '+JSON.stringify(verify)+'\n',mtimeMs:stderr.mtimeMs};
+  const evidence = syncEvidenceFromLogs(day,sync,journal,stderr,stdout);
+  assert.equal(evidence.exitCode,1);
+  assert.match(evidence.reason,/product_translations.*lệch 15/);
+  assert(!JSON.stringify(evidence).includes('secret customer info'));
+  assert.equal(syncEvidenceFromLogs(day,sync,journal,{...stderr,mtimeMs:Date.parse('2026-11-07T01:05:00Z')},stdout).reason,undefined);
+  assert.equal(syncEvidenceFromLogs(day,{...sync,at:'2026-11-08T03:05:00Z'},journal,stderr,stdout),null);
+  assert.match(syncEvidenceFromLogs(day,sync,journal,
+    {text:'SYNC_ROLLBACK_UNCONFIRMED: running ledger preserved; manual inspection required\n'+stderr.text,mtimeMs:stderr.mtimeMs},stdout).reason,/ROLLBACK chưa được xác nhận/);
+  assert.equal(syncEvidenceFromLogs(day,sync,journal,{text:'SYNC_FAILED password=secret customer=private',mtimeMs:stderr.mtimeMs},stdout).reason,undefined);
+  assert.equal(syncEvidenceFromLogs(day,sync,journal,null,null).reason,undefined); // Missing private logs cannot invent a cause.
+  assert.match(syncEvidenceFromLogs(day,sync,journal,{text:stderr.text+'C:\\audit\\nightly-vps-sync.ps1:61\n    + stack detail\n \n',mtimeMs:stderr.mtimeMs},stdout).reason,/lệch 15/);
+  assert.equal(syncEvidenceFromLogs(day,sync,journal,{text:stderr.text+'Unexpected unrelated failure',mtimeMs:stderr.mtimeMs},stdout).reason,undefined);
+  const priorMarker = 'SYNC_ATTEMPT_START 2026-11-07T01:00:00.000Z\n';
+  const currentMarker = 'SYNC_ATTEMPT_START 2026-11-08T01:00:00.000Z\n';
+  const markerError = {text:priorMarker+stderr.text+currentMarker+stderr.text,mtimeMs:stderr.mtimeMs};
+  const markerOut = {text:priorMarker+stdout.text+currentMarker+stdout.text,mtimeMs:stderr.mtimeMs};
+  assert.match(syncEvidenceFromLogs(day,sync,journal,markerError,markerOut).reason,/lệch 15/);
+  assert.equal(syncEvidenceFromLogs(day,sync,journal,{...markerError,text:priorMarker+stderr.text+currentMarker},markerOut).reason,undefined);
+  assert.equal(syncEvidenceFromLogs(day,sync,journal,{...markerError,text:priorMarker+stderr.text},{...markerOut,text:priorMarker+stdout.text}).reason,undefined);
+  const committedPartial = {text:currentMarker+'SYNC_COMMIT_OK '+JSON.stringify({day,runId:'12345678-1234-4234-8234-123456789abc',
+    state:'partial',galleryPartial:4,deferredTranslations:2,customer:'do not print'})+'\n',mtimeMs:stderr.mtimeMs};
+  const partialSync = syncEvidenceFromLogs(day,{...sync,state:'partial'},journal,{text:currentMarker,mtimeMs:stderr.mtimeMs},committedPartial);
+  assert.match(partialSync.reason,/4 gallery/);
+  assert.match(partialSync.reason,/2 bản dịch/);
+  assert(!JSON.stringify(partialSync).includes('do not print'));
+  const captured = [], savedLog = console.log;
+  try {
+    console.log = (...args) => captured.push(args.join(' '));
+    await createReporter().checked(async () => { throw Error('password=secret customer=private'); },
+      'Truy vấn ngoài sync không thành công.', 'Xem log nội bộ.');
+  } finally { console.log = savedLog; }
+  const layout = createReporter();
+  layout.section('1. POSTGRESQL MITA LOCAL (5433) / SCHEMA');
+  layout.report('OK','Schema local và các index theo hợp đồng đã đạt.');
+  layout.section('2. KẾT QUẢ JOB HÔM NAY (JST)');
+  layout.report('WARN','Amazon 04:00: chưa xác nhận hoàn thành.',{
+    reason:'Run Amazon partial; lỗi: 10.',fix:'Đối chiếu nhật ký Amazon.'});
+  layout.report('WARN','Names 05:00: chưa xác nhận hoàn thành.',{
+    reason:'Job partial; lỗi: 6, cảnh báo: 77.',fix:'Đối chiếu nhật ký Names.'});
+  layout.report('OK','Detail 05:15: đã hoàn thành.');
+  layout.report('FAIL','Đồng bộ VPS theo Supervisor.',{
+    reason:'Nhật ký: Đối chiếu dữ liệu trước COMMIT không đạt. product_translations lệch 15.',fix:'Xem VERIFY.'});
+  layout.section('3. POSTGRESQL VPS / SCHEMA / ĐỒNG BỘ');
+  layout.report('FAIL','Đồng bộ danh mục VPS hôm nay.',{
+    reason:'Ledger rollback. Đối chiếu dữ liệu trước COMMIT không đạt. product_translations lệch 15.',fix:'Xem VERIFY.'});
+  layout.section('4. WEBSITE HTTPS — TRANG 1 MỖI DANH MỤC');
+  layout.report('OK','Sản phẩm danh mục thuc-pham-cho-be hợp lệ.',{
+    details:['ASIN: B00JWK5ILK','Giá: 660000 VND']});
+  layout.section('5. QA CHECKOUT / ĐỐI CHIẾU VPS DB ĐỘC LẬP');
+  layout.report('OK','Đơn QA đã có, không tạo lại.',{details:['Mã đơn: sample-fixture']});
+  const rendered=[], restored=console.log;
+  try { console.log=(...args)=>rendered.push(args.join(' '));
+    assert.equal(layout.render({heading:'KIỂM TRA BẢNG'}),7);
+  } finally { console.log=restored; }
+  assert(rendered.some(line=>line.includes('01 / DATA PIPELINE')));
+  assert(rendered.some(line=>line.includes('02 / VPS & WEBSITE')));
+  assert(rendered.some(line=>line.includes('VPS Sync (Ledger)')));
+  assert(rendered.some(line=>line.includes('product_translations')));
+  assert(rendered.join(' ').includes('lệch 15'));
+  assert(rendered.some(line=>line.includes('Xử lý: Xem VERIFY.')));
+  assert(rendered.some(line=>line.includes('3 OK | 2 WARN | 2 FAIL'))===false);
+  assert(rendered.some(line=>line.includes('4 OK | 2 WARN | 2 FAIL')));
+  assert.equal(rendered.filter(line=>line.includes('[FAIL] VPS Sync (Supervisor)')).length,0,
+    'không lặp nguyên nhân sync khi đã có ledger');
+  assert(rendered.every(line=>Array.from(line.replace(/\x1b\[[0-9;]*m/g,'')).length<=92));
+  assert(!captured.join('\n').includes('password=secret'));
   const product = (asin,categorySlug) => ({ asin, categorySlug, name:'San pham QA', priceVnd:120000, canCheckout:true,
     imageUrl:'https://m.media-amazon.com/images/I/test.jpg', detail:{ features:['Chi tiet'], ingredients:[], usage:[], cautions:[], specs:{} } });
   const products = [product('B000000001',categories[0]),product('B000000002',categories[1])];
@@ -604,11 +1027,12 @@ async function selfTest() {
       readLocal:async () => structuredClone(localFixture),
       readDaily:async () => { throw noFile; }
     }), 1); // Job chưa chạy => FAIL, không biến thành OK sau khi DB khởi động.
-    assert(output.some(line => line.includes('KIỂM TRA LẠI RIÊNG DATABASE 5433')));
-    assert(output.some(line => line.includes('Nguyên nhân: Chưa có file kết quả 3 worker')));
-    assert(output.filter(line => line.startsWith('       ')).every(line => Array.from(line).length <= 100));
+    assert(output.some(line => line.includes('KIỂM TRA LẠI 5433')));
+    assert(output.some(line => line.includes('Chưa có file kết quả 3 worker')));
+    assert(output.every(line => Array.from(line.replace(/\x1b\[[0-9;]*m/g,'')).length <= 100));
   } finally { console.log = originalLog; }
   console.log('[OK] Tự kiểm thử fixture: JST/key, schema/index, sản phẩm, replay, một POST giả lập, timeout/đối chiếu DB, lỗi lưu đĩa.');
+  console.log('       Chẩn đoán ledger/job/sync: xác minh VERIFY số lượng, rollback, schema, log stale và không rò thông tin riêng tư.');
   console.log('       Đã thử chế độ kiểm tra lại 5433 với fixture và job thiếu; không gọi HTTP, SSH, DB thật hoặc khởi động dịch vụ.');
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

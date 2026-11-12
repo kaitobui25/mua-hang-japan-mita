@@ -1,6 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {applyWorkerWindows, canRunReviewSync, windows, unresolvedManualRequests} from './mita-supervisor.mjs';
+import {applyWorkerWindows, canRunReviewSync, windows, unresolvedManualRequests, canRecoverMitaPostgres} from './mita-supervisor.mjs';
+
+test('Supervisor only attempts Mita local PostgreSQL recovery after connection refusal',()=>{
+  const refused={code:'ECONNREFUSED'};
+  assert.equal(canRecoverMitaPostgres(refused,undefined),true);
+  assert.equal(canRecoverMitaPostgres(refused,'postgresql://mita_local@127.0.0.1:5433/postgres'),true);
+  assert.equal(canRecoverMitaPostgres({code:'28P01'},undefined),false);
+  assert.equal(canRecoverMitaPostgres({code:'ETIMEDOUT'},undefined),false);
+  assert.equal(canRecoverMitaPostgres(refused,'postgresql://mita_local@127.0.0.1:5432/postgres'),false);
+  assert.equal(canRecoverMitaPostgres(refused,'postgresql://mita_local@127.0.0.1:15432/postgres'),false);
+});
 
 test('Supervisor applies only correctly ordered JST schedules',()=>{
   const previous={...windows};

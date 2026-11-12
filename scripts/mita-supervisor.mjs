@@ -33,6 +33,37 @@ function reserveTunnel(runId){
 }
 const LOCKS={amazon:70400200,names:70400300,detail:70400301};
 const execFileAsync=promisify(execFile);
+const PG_CTL='C:\\Program Files\\PostgreSQL\\18\\bin\\pg_ctl.exe';
+const PG_DATA=path.join(backend,'.local-db');
+const PG_LOG=path.join(backend,'.local-postgres.log');
+const PG_RECOVERY_INTERVAL_MS=60*1000;
+let lastPgRecoveryAttempt=0;
+export function canRecoverMitaPostgres(error,databaseUrl) {
+  return error?.code==='ECONNREFUSED' && (!databaseUrl ||
+    databaseUrl==='postgresql://mita_local@127.0.0.1:5433/postgres');
+}
+async function recoverMitaPostgres(error) {
+  if(!canRecoverMitaPostgres(error,process.env.MITA_LOCAL_DATABASE_URL) || existsSync(STOP_FILE) ||
+     Date.now()-lastPgRecoveryAttempt<PG_RECOVERY_INTERVAL_MS)return;
+  lastPgRecoveryAttempt=Date.now();
+  try {
+    if(readFileSync(path.join(PG_DATA,'PG_VERSION'),'utf8').trim()!=='18')
+      throw Error('local_cluster_missing_or_wrong_version');
+    try {
+      await execFileAsync(PG_CTL,['-D',PG_DATA,'status'],{windowsHide:true,timeout:5000});
+      return; // The cluster is running; do not start a second PostgreSQL process.
+    }catch(statusError){
+      if(statusError.code!==3)throw Error('local_cluster_status_uncertain');
+    }
+    record('database_recovery_starting',{port:5433});
+    await execFileAsync(PG_CTL,['-D',PG_DATA,'-l',PG_LOG,'-o','-p 5433 -h 127.0.0.1',
+      '-w','-t','30','start'],{windowsHide:true,timeout:35000});
+    record('database_recovery_started',{port:5433});
+  }catch(recoveryError){
+    record('database_recovery_failed',{reason:recoveryError.message==='local_cluster_missing_or_wrong_version' ||
+      recoveryError.message==='local_cluster_status_uncertain' ? recoveryError.message : 'pg_ctl_start_failed'});
+  }
+}
 const terminalStates=['completed','skipped','partial','failed'];
 export function assertManualSyncReady(snapshot,today) {
   if(snapshot?.day!==today || snapshot.sync?.state!=='pending')throw Error('Sync is not pending; replay/retry is unsupported. Inspect the daily state and remote ledger.');
@@ -476,7 +507,11 @@ export async function runSupervisor({keys=defaultKeys,refreshMs=20000}={}){
       updateDay();
       let observed;
       try{observed=await activeLocks();}
-      catch(error){record('database_unavailable',{reason:error.code??'connection_failed'});return;}
+      catch(error){
+        record('database_unavailable',{reason:error.code??'connection_failed'});
+        await recoverMitaPostgres(error);
+        return; // Resume regular dispatch on the next tick after DB recovery.
+      }
       if(observed.schedules){
         const before=JSON.stringify(windows);
         applyWorkerWindows(observed.schedules);
