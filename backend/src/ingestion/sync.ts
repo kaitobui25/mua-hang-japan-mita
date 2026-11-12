@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { db } from '../db/pool.js';
 import { seeds, SourceError, type DiscoveryResult, type DiscoveryIssue, type Observation } from './source.js';
 import { ingestObservations } from './store.js';
+import { countFullSavedProduct, emptyFullCategoryCounts,
+  type FullCategoryBreakdown, type FullProductSnapshot } from './full-report.js';
 import { ScraplingSession, isScraplingStopping } from './scrapling.js';
 import { collectDetail } from './detail.js';
 import { config } from '../config.js';
@@ -157,6 +159,8 @@ export async function syncCatalog(options: {
   let id: number | undefined;
   let discovered = 0, saved = 0, errors = 0, blocked = false;
   let attempted = 0, newProducts = 0, updatedProducts = 0, warnings = 0;
+  const categoryBreakdown: FullCategoryBreakdown = options.manualExclusive
+    ? Object.fromEntries(seeds.map(seed => [seed.categorySlug, emptyFullCategoryCounts()])) : {};
   const session = new ScraplingSession();
   const deferred: Record<string, number> = {};
   try {
@@ -217,14 +221,34 @@ export async function syncCatalog(options: {
           save: async items => {
             await lock.query('BEGIN');
             try {
-              const existing = await lock.query<{ asin: string }>(
-                'SELECT asin FROM products WHERE asin=ANY($1::varchar(10)[])',
-                [items.map(item => item.asin)]);
+              const asins = items.map(item => item.asin);
+              // Lock the existing row before comparing: never report an unrelated
+              // concurrent update as a change made by this run.
+              const snapshotSql = `SELECT p.asin,p.name,p.price_jpy,
+                ARRAY(SELECT i.source_url FROM product_images i WHERE i.asin=p.asin ORDER BY i.position) AS image_urls
+                FROM products p WHERE p.asin=ANY($1::varchar(10)[]) FOR UPDATE OF p`;
+              const existing = options.manualExclusive
+                ? await lock.query<FullProductSnapshot>(snapshotSql, [asins])
+                : await lock.query<{asin:string}>('SELECT asin FROM products WHERE asin=ANY($1::varchar(10)[])', [asins]);
               const count = await ingestObservations(items, id, lock);
+              const after = options.manualExclusive && count
+                ? await lock.query<FullProductSnapshot>(snapshotSql, [asins]) : null;
               await lock.query('COMMIT');
               if (count) {
-                newProducts += items.filter(item => !existing.rows.some(row => row.asin === item.asin)).length;
-                updatedProducts += items.filter(item => existing.rows.some(row => row.asin === item.asin)).length;
+                if (after) {
+                  const prior = new Map(existing.rows.map(row => [row.asin, row as FullProductSnapshot]));
+                  const persisted = new Map(after.rows.map(row => [row.asin, row]));
+                  for (const item of items) {
+                    const current = persisted.get(item.asin);
+                    if (!current) continue;
+                    const previous = prior.get(item.asin);
+                    countFullSavedProduct(categoryBreakdown, seed.categorySlug, previous, current);
+                    if (previous) updatedProducts++; else newProducts++;
+                  }
+                } else {
+                  newProducts += items.filter(item => !existing.rows.some(row => row.asin === item.asin)).length;
+                  updatedProducts += items.filter(item => existing.rows.some(row => row.asin === item.asin)).length;
+                }
               }
               return count;
             } catch (error) { await lock.query('ROLLBACK'); throw error; }
@@ -245,8 +269,12 @@ export async function syncCatalog(options: {
     // A failed re-entry retains tomorrow's reservation, including transient failures.
     if (!errors) await completeAmazonReentry(lock);
     await lock.query('UPDATE sync_runs SET finished_at=now(),state=$2,discovered_count=$3,saved_count=$4,error_count=$5,note=$6 WHERE id=$1',
-      [id, state, discovered, saved, errors, runNote(JSON.stringify({ deferred, attempted, newProducts, updatedProducts, warnings }), { deferred, attempted, newProducts, updatedProducts, warnings })]);
-    return { id, state, discovered, saved, errors, warnings, attempted, newProducts, updatedProducts, deferred };
+      [id, state, discovered, saved, errors, runNote(JSON.stringify({ deferred, attempted, newProducts, updatedProducts, warnings,
+        ...(options.manualExclusive ? { categoryBreakdown } : {}) }),
+        { deferred, attempted, newProducts, updatedProducts, warnings,
+          ...(options.manualExclusive ? { categoryBreakdown } : {}) })]);
+    return { id, state, discovered, saved, errors, warnings, attempted, newProducts, updatedProducts, deferred,
+      ...(options.manualExclusive ? { categoryBreakdown } : {}) };
   } catch (error) {
     if (id) await lock.query('UPDATE sync_runs SET finished_at=now(),state=$2,note=$3 WHERE id=$1', [id, 'failed', runNote(String(error))]);
     throw error;

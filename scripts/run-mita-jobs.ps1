@@ -33,7 +33,35 @@ function Read-Count($result, [string]$property) {
   return [string]$result.$property
 }
 
+function Format-FullCategoryBreakdown($result) {
+  if (!$result -or !($result.PSObject.Properties.Name -contains 'categoryBreakdown') -or
+      !$result.categoryBreakdown) { return @('Chua co thong ke truoc/sau theo danh muc trong bao cao nay.') }
+  $labels=[ordered]@{
+    'thuc-pham-bo-sung'='THUC PHAM BO SUNG'
+    'thuc-pham-cho-be'='THUC PHAM CHO BE'
+  }
+  $lines=@('========== THONG KE AMAZON FULL THEO DANH MUC ==========')
+  foreach ($slug in $labels.Keys) {
+    $counts=$result.categoryBreakdown.$slug
+    $lines+=('--- '+$labels[$slug]+' ---')
+    $lines+=('San pham moi them: '+(Read-Count $counts 'newProducts'))
+    $lines+=('San pham cu duoc luu: '+(Read-Count $counts 'existingProducts'))
+    $lines+=('  - Ten goc thay doi: '+(Read-Count $counts 'nameChanged'))
+    $lines+=('  - Gia JPY thay doi: '+(Read-Count $counts 'priceChanged'))
+    $lines+=('  - Bo anh thay doi: '+(Read-Count $counts 'imagesChanged'))
+  }
+  $lines+='Chi dem gia tri truoc/sau khac nhau tren PostgreSQL local; khong dem viec ghi lai gia tri cu.'
+  return $lines
+}
+
 if ($SelfTest) {
+  $fixture='{"categoryBreakdown":{"thuc-pham-bo-sung":{"newProducts":2,"existingProducts":3,"nameChanged":1,"priceChanged":2,"imagesChanged":1},"thuc-pham-cho-be":{"newProducts":0,"existingProducts":5,"nameChanged":0,"priceChanged":1,"imagesChanged":0}}}' | ConvertFrom-Json
+  $formatted=@(Format-FullCategoryBreakdown $fixture)
+  if (@($formatted | Where-Object {$_ -eq 'San pham moi them: 2'}).Count -ne 1 -or
+      @($formatted | Where-Object {$_ -eq '  - Gia JPY thay doi: 1'}).Count -ne 1 -or
+      @($formatted | Where-Object {$_ -eq '  - Ten goc thay doi: 0'}).Count -ne 1) {
+    throw 'Amazon full category report self-test failed'
+  }
   Write-Output 'PASS: manual Mita menu script loaded without contacting workers/DB.'
   return
 }
@@ -102,11 +130,20 @@ try {
   if (!$result) {
     Write-Host 'Khong co MITA_WORKER_RESULT hop le. KHONG duoc coi la thanh cong.' -ForegroundColor Red
   } elseif ($job -eq 'amazon') {
-    Write-Host ('Da thu: {0}; thanh cong: {1}; that bai: {2}; hoan: {3}' -f `
-      (Read-Count $result 'attempted'),(Read-Count $result 'succeeded'),(Read-Count $result 'failed'),(Read-Count $result 'deferred'))
-    Write-Host ('Du lieu cap nhat: {0}; khong doi: {1}' -f `
-      (Read-Count $result 'updated'),(Read-Count $result 'unchanged'))
-    if ($mode -eq 'full') { Write-Host ('Loi nguon: '+(Read-Count $result 'sourceErrors')) }
+    if ($mode -eq 'full') {
+      Write-Host ('Da thu: {0}; luu thanh cong: {1}; that bai: {2}' -f `
+        (Read-Count $result 'attempted'),(Read-Count $result 'succeeded'),(Read-Count $result 'failed'))
+      Write-Host ('Tong san pham moi: {0}; tong san pham cu duoc luu: {1}' -f `
+        (Read-Count $result 'newProducts'),(Read-Count $result 'updated'))
+      Write-Host ('Loi nguon: '+(Read-Count $result 'sourceErrors'))
+      Write-Host ''
+      foreach ($line in @(Format-FullCategoryBreakdown $result)) { Write-Host $line }
+    } else {
+      Write-Host ('Da thu: {0}; thanh cong: {1}; that bai: {2}; hoan: {3}' -f `
+        (Read-Count $result 'attempted'),(Read-Count $result 'succeeded'),(Read-Count $result 'failed'),(Read-Count $result 'deferred'))
+      Write-Host ('Du lieu cap nhat: {0}; khong doi: {1}' -f `
+        (Read-Count $result 'updated'),(Read-Count $result 'unchanged'))
+    }
     if ($mode -eq 'presence') { Write-Host ('Trang xac nhan ton tai: {0}; het hang: {1}; ton kho khong ro: {2}' -f `
       (Read-Count $result 'present'),(Read-Count $result 'outOfStock'),(Read-Count $result 'unknownAvailability')) }
   } elseif ($job -eq 'names') {

@@ -34,6 +34,16 @@ ASIN có slot thành công/lỗi; không diễn giải slot như số sản ph�
 Không có kết quả có bằng chứng thì hiện `unresolved`, không tự coi exit 0
 là thành công.
 
+Riêng Amazon **Full chạy tay**, terminal và JSON `result.categoryBreakdown` còn
+hiển thị từng danh mục: `newProducts` (ASIN thêm mới),
+`existingProducts` (ASIN cũ lưu thành công), và trong nhóm ASIN cũ có
+`nameChanged`, `priceChanged`, `imagesChanged`. Ba chỉ số thay đổi
+được so sánh **giá trị trước/sau khi lưu** trong transaction local:
+tên gốc Amazon, giá JPY và danh sách URL gallery theo thứ tự. Một ASIN có
+thể góp vào nhiều chỉ số; ghi lại cùng giá trị không tính là đổi.
+Báo cáo cũ không có `categoryBreakdown` thì hiển thị chưa có dữ liệu,
+không tự điền số 0. Chỉ thống kê lần chạy phát sinh từ sau cập nhật này.
+
 `AMAZON_GALLERY_PILOT_DATE=verified` là mặc định mới trong
 `scripts/mita-supervisor.mjs`; `scripts/start-mita-supervisor.ps1` thiết lập
 rõ `verified` để không lấy lại ngày pilot cũ của shell.

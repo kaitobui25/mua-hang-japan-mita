@@ -60,7 +60,8 @@ async function run() {
     emit({version:1,worker:'amazon',mode:'full',runId:uuid,syncRunId:outcome.id,
       state:outcome.state,selected:limit || null,attempted:outcome.attempted,succeeded:outcome.saved,
       failed:Math.max(0,outcome.attempted-outcome.saved),updated:outcome.updatedProducts,
-      newProducts:outcome.newProducts,discovered:outcome.discovered,sourceErrors:outcome.errors,
+      newProducts:outcome.newProducts,categoryBreakdown:outcome.categoryBreakdown,
+      discovered:outcome.discovered,sourceErrors:outcome.errors,
       warnings:outcome.warnings,deferred:outcome.deferred,
       failures:rows.rows.map(row=>({asin:row.asin,code:row.state,detail:row.message.slice(0,160),category:row.category_slug}))});
     if (outcome.state!=='success' && outcome.state!=='partial') process.exitCode=2;
