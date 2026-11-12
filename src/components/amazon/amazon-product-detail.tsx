@@ -7,7 +7,8 @@ import { ProductImage } from "@/components/ui/product-image";
 import { ProductInformation } from "@/components/catalog/product-information";
 import { QuantitySelector } from "@/components/cart/quantity-selector";
 import { formatVnd } from "@/lib/format";
-import type { AmazonQuote, AmazonSourcePreview } from "@/types/amazon-quote";
+import type { AmazonQuote, AmazonSourcePreview, AmazonObservedDetails } from "@/types/amazon-quote";
+import { AmazonPurchaseRequest } from "@/components/amazon/amazon-purchase-request";
 
 type Props = {
   quote: AmazonQuote;
@@ -50,85 +51,71 @@ function SourceRating({ rating, count }: { rating?: number; count?: number }) {
   const stars = typeof rating === "number" && rating > 0 && rating <= 5 && Number.isFinite(rating) ? rating : undefined;
   const reviews = typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? count : undefined;
   if (stars === undefined && reviews === undefined) return null;
-  return <div className="amazon-detail-rating" aria-label="Đánh giá tại Amazon Japan">
-    {stars !== undefined && <span aria-label={`${stars} trên 5 sao`} className="amazon-rating-value">
-      {stars.toLocaleString("vi-VN")}
-      <span className="amazon-rating-stars" aria-hidden="true">★★★★★<span style={{ width: `${Math.round(stars * 20)}%` }}>★★★★★</span></span>
+  return <div className="amazon-stars" style={{ fontSize: "0.8rem" }}>
+    {stars !== undefined && <span aria-label={`${stars} trên 5 sao`} style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem" }}>
+      <span>{stars.toLocaleString("vi-VN")}</span>
+      <span aria-hidden="true" style={{ position: "relative", display: "inline-block", color: "var(--color-muted)", lineHeight: 1, whiteSpace: "nowrap" }}>
+        ★★★★★<span style={{ position: "absolute", inset: 0, width: `${Math.round(stars * 20)}%`, overflow: "hidden", color: "var(--color-accent)" }}>★★★★★</span>
+      </span>
     </span>}
-    {reviews !== undefined && <span>{reviews.toLocaleString("vi-VN")} lượt đánh giá trên Amazon</span>}
+    {reviews !== undefined && <span> ({reviews.toLocaleString("vi-VN")} lượt đánh giá)</span>}
   </div>;
 }
 
+function info(source?: AmazonObservedDetails, translated?: AmazonObservedDetails) {
+  if (!source) return null;
+  const fields = { ...source, ...translated };
+  return { description: fields.description, detail: {
+    features: fields.features ?? [], ingredients: fields.ingredients ? [fields.ingredients] : [],
+    usage: fields.usage ? [fields.usage] : [], cautions: fields.warnings ? [fields.warnings] : [],
+    specs: Object.fromEntries((fields.specifications ?? []).map(({ name, value }) => [name, value])),
+    variantAttributes: {},
+  } };
+}
+
 /** Match the catalog detail hierarchy without turning source facts into a purchase quote. */
-export function AmazonSourceProductDetail({ preview }: { preview: AmazonSourcePreview }) {
+export function AmazonSourceProductDetail({ preview, purchaseRequest }: {
+  preview: AmazonSourcePreview; purchaseRequest?: { id: string; expiresAt: string } | null;
+}) {
   const [selectedImage, setSelectedImage] = useState("");
   const display = preview.display ?? preview.observedDetails;
+  const localized = info(display, preview.translated);
+  const title = preview.translated?.title || preview.title;
   const pictures = [...new Set((display?.images ?? []).filter(sourceImage))].slice(0, 10);
   const currentImage = pictures.includes(selectedImage) ? selectedImage : pictures[0];
-  const detail = display && {
-    features: display.features ?? [],
-    ingredients: display.ingredients ? [display.ingredients] : [],
-    usage: display.usage ? [display.usage] : [],
-    cautions: display.warnings ? [display.warnings] : [],
-    specs: Object.fromEntries((display.specifications ?? []).map(({ name, value }) => [name, value])),
-    variantAttributes: {},
-  };
-  const translationText = Array.from([preview.title, display?.description, ...(display?.features ?? [])]
-    .filter(Boolean).join("\n\n").toWellFormed()).slice(0, 1200).join("");
-  const googleTranslateUrl = `https://translate.google.com/?sl=auto&tl=vi&text=${encodeURIComponent(translationText)}&op=translate`;
-  const japaneseTitle = /[\u3040-\u30ff\u3400-\u9fff]/u.test(preview.title);
-
-  return <article className="amazon-quote-result amazon-source-result" aria-label="Thông tin sản phẩm từ Amazon">
-    <section className="product-detail amazon-product-detail" aria-label="Sản phẩm quan sát từ Amazon">
+  return <article className="amazon-quote-result amazon-source-result" aria-label="Chi tiết sản phẩm mua hộ">
+    <section className="product-detail" aria-label="Sản phẩm Amazon">
       <div className="detail-image">
-        <ProductImage key={currentImage ?? "empty"} src={currentImage} name={preview.title} priority/>
-        {pictures.length > 1 && <div className="detail-gallery" aria-label="Ảnh sản phẩm từ Amazon">
+        <ProductImage key={currentImage ?? "empty"} src={currentImage} name={title} priority/>
+        {pictures.length > 1 && <div className="detail-gallery" aria-label="Ảnh sản phẩm">
           {pictures.map((src, index) => <button key={src} type="button" className={src === currentImage ? "gallery-thumb active" : "gallery-thumb"}
             onClick={() => setSelectedImage(src)} aria-pressed={src === currentImage} aria-label={`Xem ảnh ${index + 1}`}>
-            <ProductImage src={src} name={`Ảnh ${index + 1} của ${preview.title}`}/>
+            <img src={src} alt="" loading="lazy"/>
           </button>)}
         </div>}
       </div>
-      <div className="detail-content amazon-detail-content">
-        {display?.brand && <p className="product-brand">{display.brand}</p>}
-        <h1 className={japaneseTitle ? "amazon-preview-title amazon-preview-title-jp" : "amazon-preview-title"}>{preview.title}</h1>
+      <div className="detail-content">
+        {display?.brand && <p className="product-brand">{preview.translated?.brand || display.brand}</p>}
+        <h1 className="amazon-preview-title">{title}</h1>
         <SourceRating rating={display?.rating} count={display?.reviewCount}/>
-        <p className="amazon-preview-links">
-          <a href={preview.sourceUrl} target="_blank" rel="noopener noreferrer">Xem sản phẩm gốc trên Amazon Japan <Icon name="arrow" size={13}/></a>
-          <a href={googleTranslateUrl} target="_blank" rel="noopener noreferrer">Dịch bằng Google <Icon name="arrow" size={13}/></a>
-        </p>
+        <p><a href={preview.sourceUrl} target="_blank" rel="noopener noreferrer">Xem sản phẩm gốc trên Amazon Japan ↗</a></p>
+        <p className="detail-category">Mua hộ Amazon</p>
         <div className="detail-price-block">
-          <p className="amazon-price-caption">Giá Amazon</p>
-          <div className="detail-price">{preview.priceJpy !== undefined ? jpy(preview.priceJpy) : "Giá đang cập nhật"}</div>
+          <div className="detail-price">{preview.estimatedPriceVnd ? formatVnd(preview.estimatedPriceVnd) : "Giá đang cập nhật"}</div>
+          <small>Giá VND tham khảo theo tỷ giá và phụ phí Mita; chưa phải báo giá chốt.</small>
         </div>
-        <div className="detail-facts amazon-preview-facts">
-          <p><Icon name="truck" size={18}/> {preview.freeDelivery ? "Miễn phí vận chuyển nội địa Nhật." : "Chưa có thông tin miễn phí vận chuyển nội địa Nhật."}</p>
-          <p><Icon name="bag" size={18}/> Phí vận chuyển về Việt Nam tính riêng.</p>
-        </div>
-        <p className="amazon-preview-notice" role="status">Sản phẩm hiện chưa nhận đặt hàng trực tuyến qua Mita.</p>
+        <p className="detail-eta"><Icon name="truck" size={18}/> Ngày giao dự kiến tại Nhật: <strong>{preview.advertisedJapanDeliveryDate ? date(preview.advertisedJapanDeliveryDate) : "Chưa xác định"}</strong>
+          {preview.advertisedDeliveryConditional && <small> (ưu đãi có điều kiện, chưa chắc áp dụng cho Mita)</small>}
+        </p>
+        {purchaseRequest ? <AmazonPurchaseRequest key={purchaseRequest.id} requestId={purchaseRequest.id} expiresAt={purchaseRequest.expiresAt}/> :
+          <p className="detail-notice" role="status">Chưa đủ dữ liệu để gửi yêu cầu. Hãy tra lại link Amazon.</p>}
+        <div className="detail-facts"><p><Icon name="truck"/> Phí vận chuyển tính riêng, Mita xác nhận trước khi mua.</p></div>
         <dl className="detail-metadata"><div><dt>Mã sản phẩm</dt><dd>{preview.asin}</dd></div></dl>
-        <details className="amazon-preview-provenance">
-          <summary>Chi tiết thông tin Amazon <Icon name="chevron" size={16}/></summary>
-          <div>
-            <p>Tra cứu lúc <time dateTime={preview.observedAt}>{deadline(preview.observedAt)}</time>.</p>
-            <p>Giá và điều kiện vận chuyển có thể thay đổi trên Amazon. Đây chưa phải báo giá đặt mua tại Mita.</p>
-            {preview.deliveryText && <p><strong>Thông tin giao hàng trên Amazon:</strong> <span lang="ja">{preview.deliveryText}</span></p>}
-          </div>
-        </details>
       </div>
     </section>
-    {display && <ProductInformation description={display.description} detail={detail}
-      hasStructuredRatings={display.rating !== undefined || display.reviewCount !== undefined}
-      className="detail-description amazon-detail-description"/>}
-    {!!preview.display?.reviews?.length && <section className="amazon-detail-reviews" aria-label="Đánh giá từ nguồn Amazon">
-      <h2>Đánh giá từ Amazon</h2>
-      <p>Đánh giá của nguồn Amazon, không phải đánh giá của khách Mita.</p>
-      <div className="amazon-review-list">{preview.display.reviews.map((review, index) => <article key={index} className="detail-info-card">
-        {review.title && <h3>{review.title}</h3>}
-        {review.rating !== undefined && <p>{review.rating.toLocaleString("vi-VN")} / 5 sao</p>}
-        <p>{review.body}</p>
-      </article>)}</div>
-    </section>}
+    {localized && <ProductInformation description={localized.description} detail={localized.detail}
+      hasStructuredRatings={display?.rating !== undefined || display?.reviewCount !== undefined}
+      className="detail-description"/>}
   </article>;
 }
 
@@ -138,77 +125,39 @@ export function AmazonProductDetail({
 }: Props) {
   const [selectedImage, setSelectedImage] = useState("");
   const display = quote.display;
-  // Legacy quote.imageUrl alone does not establish permission to re-display a source image.
   const pictures = [...new Set((display?.images ?? []).filter(sourceImage))].slice(0, 10);
   const currentImage = pictures.includes(selectedImage) ? selectedImage : pictures[0];
   const quantityChanged = quantity !== quote.quantity;
   const canAdd = quote.canOrder && quote.freeShipping && !refreshing && !expired && !quantityChanged;
-  const detail = display && {
-    features: display.features ?? [],
-    ingredients: display.ingredients ? [display.ingredients] : [],
-    usage: display.usage ? [display.usage] : [],
-    cautions: display.warnings ? [display.warnings] : [],
-    specs: Object.fromEntries((display.specifications ?? []).map(({ name, value }) => [name, value])),
-    variantAttributes: {},
-  };
-  // Only user-triggered navigation to Google's public site: no paid API, no unofficial endpoint.
-  // Never include any customer, cart or order details in the translation request.
-  const translationText = [
-    quote.name, display?.description, ...(display?.features ?? []),
-    ...(display?.specifications ?? []).map(({ name, value }) => `${name}: ${value}`),
-    display?.ingredients, display?.usage, display?.warnings,
-  ].filter(Boolean).join("\n\n").toWellFormed();
-  const shortTranslationText = Array.from(translationText).slice(0, 1200).join("");
-  const googleTranslateUrl = `https://translate.google.com/?sl=auto&tl=vi&text=${encodeURIComponent(shortTranslationText)}&op=translate`;
+  const localized = info(display, quote.translated);
   const amazonUrl = `https://www.amazon.co.jp/dp/${encodeURIComponent(quote.asin)}`;
 
   return <article className="amazon-quote-result" aria-live="polite">
-    <section className="product-detail amazon-product-detail" aria-label="Chi tiết sản phẩm mua hộ Amazon">
+    <section className="product-detail" aria-label="Chi tiết sản phẩm mua hộ Amazon">
       <div className="detail-image">
-        <ProductImage key={currentImage ?? "empty"} src={currentImage} name={quote.name} priority/>
-        {pictures.length > 1 && <div className="detail-gallery" aria-label="Bộ ảnh sản phẩm từ Amazon">
+        <ProductImage key={currentImage ?? "empty"} src={currentImage} name={quote.translated?.title || quote.name} priority/>
+        {pictures.length > 1 && <div className="detail-gallery" aria-label="Bộ ảnh sản phẩm">
           {pictures.map((src, index) => <button type="button" key={src}
             className={src === currentImage ? "gallery-thumb active" : "gallery-thumb"}
             onClick={() => setSelectedImage(src)} aria-label={`Xem ảnh ${index + 1}`}
             aria-pressed={src === currentImage}>
-            <ProductImage src={src} name={`Ảnh ${index + 1} của ${quote.name}`}/>
+            <img src={src} alt="" loading="lazy"/>
           </button>)}
         </div>}
-        <p>{pictures.length ? "Ảnh sản phẩm từ nguồn Amazon Japan." : "Chưa có ảnh được xác minh; đang hiển thị ảnh dự phòng Mita."}</p>
       </div>
 
-      <div className="detail-content amazon-detail-content">
-        {display?.brand && <p className="product-brand">{display.brand}</p>}
-        <p className="amazon-source">Sản phẩm mua hộ Amazon Japan</p>
-        <h1>{quote.name}</h1>
+      <div className="detail-content">
+        {display?.brand && <p className="product-brand">{quote.translated?.brand || display.brand}</p>}
+        <h1>{quote.translated?.title || quote.name}</h1>
         <SourceRating rating={display?.rating} count={display?.reviewCount}/>
-        <div className="amazon-detail-identifiers">
-          <p><strong>Phiên bản:</strong> {quote.variant || quote.name}</p>
-          <p><strong>Người bán:</strong> {quote.seller}</p>
-          <p><strong>ASIN:</strong> {quote.asin}</p>
-        </div>
-        <div className="amazon-detail-links">
-          <a className="inline-link" href={amazonUrl} target="_blank" rel="noopener noreferrer">Xem sản phẩm gốc trên Amazon <Icon name="arrow" size={15}/></a>
-        </div>
-
-        <div className="detail-price-block">
-          <p className="amazon-price-caption">Giá Mita đã bao gồm phụ phí</p>
-          <div className="detail-price">{formatVnd(quote.priceVnd * quote.quantity)}</div>
-          <small>Giá Amazon: {jpy(quote.priceJpy * quote.quantity)} / {quote.quantity} sản phẩm · Giá bán 1 sản phẩm: {formatVnd(quote.priceVnd)}</small>
-        </div>
-
-        <dl className="amazon-delivery-details">
-          <div><dt><Icon name="truck" size={18}/> Ngày giao thường Amazon hiển thị</dt><dd>{period(quote.amazonDeliveryDate, quote.amazonDeliveryEnd)}</dd></div>
-          <div><dt><Icon name="home" size={18}/> Dự kiến tới nhà tại Việt Nam</dt><dd>{period(quote.vietnamDeliveryDate, quote.vietnamDeliveryEnd)}</dd></div>
-          <div><dt><Icon name="clock" size={18}/> Thời gian vận chuyển cộng thêm</dt><dd>{quote.deliveryBufferDays} ngày lịch</dd></div>
-          <div><dt><Icon name="bag" size={18}/> Phí vận chuyển về Việt Nam</dt><dd>Chưa xác định · Báo riêng, khách xác nhận trước khi thu</dd></div>
-        </dl>
-        <p className="amazon-quote-validity"><Icon name="clock" size={16}/> Báo giá có hiệu lực đến {deadline(quote.expiresAt)}. Ngày giao chỉ là dự kiến, không xác minh đích nhận tại Nhật.</p>
-        <p className="amazon-observed-at">Quan sát nguồn: <time dateTime={quote.observedAt}>{deadline(quote.observedAt)}</time>.</p>
+        <p><a href={amazonUrl} target="_blank" rel="noopener noreferrer">Xem sản phẩm gốc trên Amazon Japan ↗</a></p>
+        <p className="detail-category">Mua hộ Amazon</p>
+        <div className="detail-price-block"><div className="detail-price">{formatVnd(quote.priceVnd)}</div></div>
+        <p className="detail-eta"><Icon name="truck" size={18}/> Dự kiến tới Việt Nam: <strong>{period(quote.vietnamDeliveryDate, quote.vietnamDeliveryEnd)}</strong></p>
         {quote.warning && <p className="inline-alert" role="status">{quote.warning}</p>}
         {expired && <p className="inline-alert" role="alert">Báo giá đã hết hạn. Cần tra lại trước khi thêm vào giỏ.</p>}
 
-        <div className="quantity-field amazon-quantity-field"><span>Số lượng</span><QuantitySelector value={quantity} onChange={onQuantityChange}/></div>
+        <div className="quantity-field"><span>Số lượng</span><QuantitySelector value={quantity} onChange={onQuantityChange}/></div>
         {quantityChanged && <p className="inline-alert" role="status">Bạn đã đổi số lượng. Giá và điều kiện giao hiện tại chỉ áp dụng cho {quote.quantity} sản phẩm. Hãy cập nhật báo giá.</p>}
         {(expired || quantityChanged) && <button type="button" className="button button-outline amazon-update-quote" disabled={refreshing} onClick={onRefresh}>Cập nhật báo giá cho {quantity} sản phẩm</button>}
 
@@ -217,40 +166,15 @@ export function AmazonProductDetail({
             <span>Tôi xác nhận đúng sản phẩm, phiên bản, người bán, số lượng, giá và hiểu phí vận chuyển về Việt Nam được tính riêng sau.{!quote.amazonDeliveryDate && " Ngày giao hiện chưa xác định."}</span>
           </label>
           <button type="button" className="button button-primary detail-cta" disabled={!confirmed || added} onClick={onAdd}>
-            <Icon name={added ? "check" : "bag"}/>{added ? "Đã thêm vào giỏ" : "Thêm vào giỏ hàng"}<Icon name="arrow"/>
+            <Icon name={added ? "check" : "bag"}/>{added ? "Đã thêm vào giỏ" : "Thêm vào giỏ"}<Icon name="arrow"/>
           </button>
           {added && <p className="cart-added" role="status"><Icon name="check" size={18}/> Đã thêm vào giỏ. <Link href="/gio-hang">Xem giỏ hàng</Link></p>}
         </> : !expired && !quantityChanged && <p className="detail-notice">Chưa đủ điều kiện đặt mua. Vui lòng kiểm tra lại dữ liệu nguồn.</p>}
-        <dl className="detail-metadata">
-          <div><dt>Giao thường miễn phí tại Nhật</dt><dd>{quote.freeShipping ? "Đã xác minh cho báo giá này" : "Chưa xác minh"}</dd></div>
-          <div><dt>Điều kiện nguồn</dt><dd>{quote.shippingEvidence}</dd></div>
-        </dl>
+        <div className="detail-facts"><p><Icon name="truck"/> Phí vận chuyển tính riêng.</p></div>
+        <dl className="detail-metadata"><div><dt>Mã sản phẩm</dt><dd>{quote.asin}</dd></div></dl>
       </div>
     </section>
-
-    <section className="amazon-translation-bar" aria-label="Dịch thông tin sản phẩm">
-      <div>
-        <h2>Thông tin nguồn Amazon</h2>
-        <p>Thông tin dưới đây giữ nguyên từ nguồn. Google Dịch miễn phí mở ở tab riêng, không tự dịch trong Mita. Nếu Google Dịch không khả dụng, bạn vẫn có thể xem nguyên văn và mở trang Amazon. Văn bản gửi dịch có thể được rút gọn.</p>
-      </div>
-      <a className="button button-outline" href={googleTranslateUrl} target="_blank" rel="noopener noreferrer">Dịch bằng Google <Icon name="arrow" size={18}/></a>
-      <details className="amazon-original-disclosure">
-        <summary>Xem nguyên văn để đối chiếu</summary>
-        <p>{quote.name}</p>
-        {display?.description && <p>{display.description}</p>}
-      </details>
-      {display && <p className="amazon-display-provenance">Nội dung nguồn Amazon quan sát lúc <time dateTime={display.provenance.observedAt}>{deadline(display.provenance.observedAt)}</time>.</p>}
-    </section>
-
-    {display && <ProductInformation description={display.description} detail={detail} hasStructuredRatings={display.rating !== undefined || display.reviewCount !== undefined} className="detail-description amazon-detail-description"/>}
-    {!!display?.reviews?.length && <section className="amazon-detail-reviews" aria-labelledby="amazon-review-heading">
-      <h2 id="amazon-review-heading">Đánh giá từ Amazon</h2>
-      <p>Trích thông tin nguồn được xác minh, không phải nhận xét của khách Mita.</p>
-      <div className="amazon-review-list">{display.reviews.map((review, index) => <article key={index} className="detail-info-card">
-        {review.title && <h3>{review.title}</h3>}
-        {review.rating !== undefined && <p>{review.rating.toLocaleString("vi-VN")} / 5 sao</p>}
-        <p>{review.body}</p>
-      </article>)}</div>
-    </section>}
+    {localized && <ProductInformation description={localized.description} detail={localized.detail}
+      hasStructuredRatings={display?.rating !== undefined || display?.reviewCount !== undefined} className="detail-description"/>}
   </article>;
 }

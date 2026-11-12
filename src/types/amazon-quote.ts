@@ -17,6 +17,7 @@ export type AmazonQuoteDisplay = {
 /** Facts observed on the requested product page for local source browsing only.
  * No checkout authority or claim of Amazon republication licensing. */
 export type AmazonObservedDetails = Omit<AmazonQuoteDisplay, 'provenance'>;
+export type AmazonVietnameseText = AmazonObservedDetails & { title?: string };
 
 /** Source-backed identity for a product that did not qualify for a purchase quote. */
 export type AmazonSourcePreview = {
@@ -25,6 +26,12 @@ export type AmazonSourcePreview = {
   sourceUrl: string;
   observedAt: string;
   priceJpy?: number;
+  /** Approximate VND conversion at the current Mita policy; not a checkout quote. */
+  estimatedPriceVnd?: number;
+  /** Amazon's advertised date, may be a first-order promotional condition. */
+  advertisedJapanDeliveryDate?: string;
+  advertisedDeliveryConditional?: true;
+  translated?: AmazonVietnameseText;
   observedDetails?: AmazonObservedDetails;
   deliveryText?: string;
   freeDelivery?: true;
@@ -45,6 +52,7 @@ export type AmazonQuote = {
   imageUrl?: string | null;
   /** Optional source-backed content; unavailable without verified display permission. */
   display?: AmazonQuoteDisplay;
+  translated?: AmazonVietnameseText;
   quantity: number;
   priceJpy: number;
   priceVnd: number;

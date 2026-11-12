@@ -1,10 +1,12 @@
 import { amazonInputAsin } from "@/lib/amazon-input";
-import type { AmazonQuote, AmazonQuoteDisplay, AmazonObservedDetails, AmazonSourcePreview } from "@/types/amazon-quote";
+import type { AmazonQuote, AmazonQuoteDisplay, AmazonObservedDetails, AmazonSourcePreview, AmazonVietnameseText } from "@/types/amazon-quote";
+import type { Customer } from "@/types/catalog";
 
 type DateRange = { start: string; end: string } | null;
 type ServerQuote = {
   id: string; asin: string; title: string; seller: string; sourceUrl: string; imageUrl: string | null;
   display?: AmazonQuoteDisplay;
+  translated?: unknown;
   quantity: number; priceJpy: number; unitPriceVnd: number; observedAt: string; expiresAt: string;
   deliveryDays: number; amazonDelivery: DateRange; vietnamDelivery: DateRange;
   freeJapanShipping: true; shippingEvidence: string; variant: string; offerId: string;
@@ -48,6 +50,13 @@ function parseObservedDetails(value: unknown): AmazonObservedDetails | undefined
     .map(v => ({ body: v.body as string, ...(text(v.title, 500) ? { title: v.title } : {}), ...(rating(v.rating) ? { rating: v.rating } : {}) }));
   return Object.keys(display).length ? display : undefined;
 }
+function parseVietnameseText(value: unknown): AmazonVietnameseText | undefined {
+  if (!record(value)) return;
+  const details = parseObservedDetails(value);
+  const title = text(value.title, 4000) ? value.title : undefined;
+  if (!title && !details) return;
+  return { ...details, ...(title ? { title } : {}) };
+}
 
 /** Quote display still requires a trusted backend rights decision. */
 function parseDisplay(value: unknown, asin: string, sourceUrl: string): AmazonQuoteDisplay | undefined {
@@ -73,6 +82,7 @@ function projectQuote(raw: ServerQuote): AmazonQuote {
     variant: raw.variant, offerId: raw.offerId,
     shippingEvidence: raw.shippingEvidence, shippingType: 'standard',
     sourceUrl: raw.sourceUrl, imageUrl: allowedImage, display, quantity: raw.quantity,
+    translated: parseVietnameseText(raw.translated),
     priceJpy: raw.priceJpy, priceVnd: raw.unitPriceVnd,
     observedAt: raw.observedAt, expiresAt: raw.expiresAt,
     amazonDeliveryDate: raw.amazonDelivery?.start || null, amazonDeliveryEnd: raw.amazonDelivery?.end || null,
@@ -119,12 +129,19 @@ const messages: Record<string,string> = {
   quote_unavailable: "Máy chủ báo giá chưa thể xử lý yêu cầu. Vui lòng thử lại sau.",
   amazon_unavailable: "Chưa thể lấy thông tin sản phẩm từ Amazon. Vui lòng thử lại sau.",
   quote_service_unavailable: "Không kết nối được máy chủ báo giá. Vui lòng thử lại."
+  ,request_not_found: "Yêu cầu mua hộ không còn hiệu lực. Vui lòng tra lại link Amazon."
+  ,request_expired: "Thông tin đã quá 15 phút. Vui lòng tra lại link Amazon trước khi gửi."
+  ,request_already_submitted: "Yêu cầu này đã được gửi. Không tạo yêu cầu trùng; liên hệ Mita nếu cần kiểm tra."
+  ,invalid_purchase_request: "Yêu cầu mua hộ không hợp lệ."
+  ,invalid_customer: "Vui lòng kiểm tra tên, điện thoại và địa chỉ nhận hàng."
 };
 
 export class AmazonQuoteApiError extends Error {
   constructor(message: string, public readonly code: string | null = null,
     public readonly preview: AmazonSourcePreview | null = null,
-    public readonly retryAfterAt: string | null = null) { super(message); }
+    public readonly retryAfterAt: string | null = null,
+    public readonly requestId: string | null = null,
+    public readonly requestExpiresAt: string | null = null) { super(message); }
 }
 
 function parseSourcePreview(value: unknown): AmazonSourcePreview | null {
@@ -139,6 +156,12 @@ function parseSourcePreview(value: unknown): AmazonSourcePreview | null {
   const deliveryText = text(raw.deliveryText, 400) ? raw.deliveryText.trim() : undefined;
   return { asin: raw.asin, title: raw.title.trim(), sourceUrl: raw.sourceUrl, observedAt: raw.observedAt,
     ...(Number.isSafeInteger(raw.priceJpy) && Number(raw.priceJpy) > 0 && Number(raw.priceJpy) <= 100000000 ? { priceJpy: Number(raw.priceJpy) } : {}),
+    ...(Number.isSafeInteger(raw.estimatedPriceVnd) && Number(raw.estimatedPriceVnd) > 0 && Number(raw.estimatedPriceVnd) < 1e12
+      ? { estimatedPriceVnd: Number(raw.estimatedPriceVnd) } : {}),
+    ...(typeof raw.advertisedJapanDeliveryDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.advertisedJapanDeliveryDate) &&
+      !Number.isNaN(Date.parse(raw.advertisedJapanDeliveryDate)) ? { advertisedJapanDeliveryDate: raw.advertisedJapanDeliveryDate } : {}),
+    ...(raw.advertisedDeliveryConditional === true ? { advertisedDeliveryConditional: true as const } : {}),
+    ...(parseVietnameseText(raw.translated) ? { translated: parseVietnameseText(raw.translated) } : {}),
     ...(observedDetails ? { observedDetails } : {}),
     ...(deliveryText ? { deliveryText } : {}),
     ...(deliveryText && raw.freeDelivery === true ? { freeDelivery: true as const } : {}),
@@ -153,12 +176,15 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
     throw new AmazonQuoteApiError(messages.quote_service_unavailable, "quote_service_unavailable");
   }
   if (!response.ok) {
-    const body = await response.json().catch(() => null) as { error?: string; code?: string; retryAfterAt?: unknown; details?: { preview?: unknown; retryAfterAt?: unknown } } | null;
+    const body = await response.json().catch(() => null) as { error?: string; code?: string; retryAfterAt?: unknown; details?: { preview?: unknown; retryAfterAt?: unknown; requestId?: unknown; expiresAt?: unknown } } | null;
     const code = typeof body?.code === "string" ? body.code : [502, 503, 504].includes(response.status) ? "quote_service_unavailable" : null;
     const message = (code && messages[code]) || (typeof body?.error === "string" && body.error) || "Không thể tra giá Amazon lúc này. Vui lòng thử lại.";
     throw new AmazonQuoteApiError(message, code,
       code === "offer_not_verified" ? parseSourcePreview(body?.details?.preview) : null,
-      timestamp(body?.details?.retryAfterAt ?? body?.retryAfterAt) ? String(body?.details?.retryAfterAt ?? body?.retryAfterAt) : null);
+      timestamp(body?.details?.retryAfterAt ?? body?.retryAfterAt) ? String(body?.details?.retryAfterAt ?? body?.retryAfterAt) : null,
+      code === "offer_not_verified" && typeof body?.details?.requestId === "string" &&
+        /^[a-f0-9-]{36}$/i.test(body.details.requestId) ? body.details.requestId : null,
+      code === "offer_not_verified" && timestamp(body?.details?.expiresAt) ? String(body?.details?.expiresAt) : null);
   }
   return response.json() as Promise<T>;
 }
@@ -178,4 +204,22 @@ export function refreshAmazonQuote(id: string, quantity: number): Promise<Amazon
   return api<{quote:ServerQuote}>(`/api/amazon/quotes/${encodeURIComponent(id)}/refresh`, {
     method: "POST", headers: jsonHeaders, body: JSON.stringify({})
   }).then(data=>parseAmazonQuote(data.quote));
+}
+
+export type AmazonPurchaseReceipt = {
+  orderId: string; requestId: string; status: 'purchase_request' | 'already_submitted';
+  priceConfirmed: false; shippingConfirmed: false; payableNowVnd: 0;
+};
+export function submitAmazonPurchaseRequest(requestId: string, checkoutKey: string, customer: Customer, quantity: number): Promise<AmazonPurchaseReceipt> {
+  return api<AmazonPurchaseReceipt>("/api/amazon/purchase-requests", {
+    method: "POST", headers: jsonHeaders,
+    body: JSON.stringify({ requestId, checkoutKey, customer, quantity, confirmed: true }),
+  }).then(result => {
+    if (result.requestId !== requestId || !/^[a-f0-9-]{36}$/i.test(result.orderId) ||
+        !['purchase_request', 'already_submitted'].includes(result.status) ||
+        result.priceConfirmed !== false || result.shippingConfirmed !== false || result.payableNowVnd !== 0) {
+      throw new Error("Máy chủ chưa xác nhận đã lưu yêu cầu mua hộ.");
+    }
+    return result;
+  });
 }

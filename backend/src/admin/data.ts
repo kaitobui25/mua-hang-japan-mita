@@ -131,6 +131,7 @@ export async function orderDetail(id: string) {
 
 /** Real order workflow; simulation records are immutable historical data. */
 const orderNext: Record<string, string[]> = {
+  purchase_request: ['cancelled'],
   pending_confirmation: ['confirmed', 'cancelled'],
   confirmed: ['purchasing', 'cancelled'],
   purchasing: ['purchased', 'cancelled'],
@@ -152,6 +153,10 @@ export async function updateOrder(id: string, change: { status?: string; payment
     }
     if (change.status && !orderNext[old.status]?.includes(change.status)) {
       throw new AdminError(409, 'Không thể chuyển trạng thái đơn hàng theo thứ tự này.');
+    }
+    if (old.status === 'purchase_request' &&
+        (change.paymentStatus !== undefined || change.shippingFinalVnd !== undefined)) {
+      throw new AdminError(409, 'Yêu cầu mua hộ chưa có báo giá. Không được xác nhận thanh toán hoặc phí vận chuyển.');
     }
     if (change.status === 'completed' && old.payment_status !== 'paid') {
       throw new AdminError(409, 'Cần ghi nhận thanh toán trước khi hoàn tất đơn.');

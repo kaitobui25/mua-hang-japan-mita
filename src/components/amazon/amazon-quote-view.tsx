@@ -14,6 +14,7 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
   const [quantity, setQuantity] = useState(1);
   const [quote, setQuote] = useState<AmazonQuote | null>(null);
   const [preview, setPreview] = useState<AmazonSourcePreview | null>(null);
+  const [purchaseRequest, setPurchaseRequest] = useState<{ id: string; expiresAt: string } | null>(null);
   const [recognizedAsin, setRecognizedAsin] = useState<string | null>(null);
   const [retryAfterAt, setRetryAfterAt] = useState<string | null>(null);
   const [sourcePaused, setSourcePaused] = useState(false);
@@ -34,6 +35,7 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
     setError("");
     setQuote(null);
     setPreview(null);
+    setPurchaseRequest(null);
     setRetryAfterAt(null);
     setSourcePaused(false);
     setConfirmed(false);
@@ -55,7 +57,10 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
       if (sequence === requestSequence.current) {
         setError(cause instanceof Error ? cause.message : "Không thể báo giá.");
         if (cause instanceof AmazonQuoteApiError) {
-          if (cause.preview?.asin === asin) setPreview(cause.preview);
+          if (cause.preview?.asin === asin) {
+            setPreview(cause.preview);
+            if (cause.requestId && cause.requestExpiresAt) setPurchaseRequest({ id: cause.requestId, expiresAt: cause.requestExpiresAt });
+          }
           setRetryAfterAt(cause.retryAfterAt);
           setSourcePaused(["amazon_cooldown", "amazon_blocked", "amazon_rate_limited"].includes(cause.code ?? ""));
         }
@@ -108,6 +113,7 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
     setQuantity(1);
     setQuote(null);
     setPreview(null);
+    setPurchaseRequest(null);
     setRecognizedAsin(null);
     setRetryAfterAt(null);
     setSourcePaused(false);
@@ -119,24 +125,25 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
 
   const sourceAsin = quote?.asin ?? recognizedAsin;
   const expired = quote ? now >= Date.parse(quote.expiresAt) : false;
-  return <section className="container amazon-quote-page">
-    <nav className="breadcrumb detail-breadcrumb" aria-label="Đường dẫn"><Link href="/">Trang chủ</Link><span>/</span><span>Mua hộ Amazon</span>{sourceAsin && <><span>/</span><span>{sourceAsin}</span></>}</nav>
-    <div className={quote || preview ? "amazon-quote-intro amazon-quote-intro--result" : "amazon-quote-intro"}>
-      {!quote && !preview && <h1>Mua hộ Amazon Nhật</h1>}
-      {(quote || preview) && <p className="amazon-source">Mua hộ Amazon Nhật</p>}
-      {!quote && !preview && <p>Dán link Amazon.co.jp hoặc nhập ASIN để xem thông tin, giá bán và ngày giao dự kiến.</p>}
+  const showingProduct = Boolean(quote || preview);
+  const searchForm = <form className="amazon-quote-form" onSubmit={submit} role="search">
+    <label htmlFor="amazon-link">Link sản phẩm Amazon.co.jp hoặc ASIN</label>
+    <div className="amazon-quote-controls">
+      <input ref={inputRef} id="amazon-link" type="search" autoComplete="off" value={input} onChange={event => updateInput(event.target.value)} maxLength={2048}
+        placeholder="https://www.amazon.co.jp/dp/B0…" enterKeyHint="search" aria-invalid={Boolean(error && !recognizedAsin)}
+        aria-describedby={error && !recognizedAsin ? "amazon-input-error" : undefined} required/>
+      <button className="button button-primary" type="submit" disabled={loading}>{loading ? "Đang tra thông tin…" : "Xem thông tin sản phẩm"}</button>
     </div>
-    <form className={preview ? "amazon-quote-form amazon-quote-form--result" : "amazon-quote-form"} onSubmit={submit} role="search">
-      <label htmlFor="amazon-link">Link sản phẩm Amazon.co.jp hoặc ASIN</label>
-      <div className="amazon-quote-controls">
-        <input ref={inputRef} id="amazon-link" type="search" autoComplete="off" value={input} onChange={event => updateInput(event.target.value)} maxLength={2048} placeholder="https://www.amazon.co.jp/dp/B0…" enterKeyHint="search" aria-invalid={Boolean(error && !recognizedAsin)} aria-describedby={error && !recognizedAsin ? "amazon-input-error" : undefined} required/>
-        <button className="button button-primary" type="submit" disabled={loading}>{loading ? "Đang tra thông tin…" : "Xem thông tin sản phẩm"}</button>
-      </div>
-      {error && !recognizedAsin && <p id="amazon-input-error" className="inline-alert amazon-quote-alert" role="alert">{error}</p>}
-      {!preview && <p className="amazon-note">Thông tin hiển thị theo trang Amazon tại thời điểm tra cứu. Giá đặt mua qua Mita và phí vận chuyển về Việt Nam được báo riêng.</p>}
-    </form>
+    {error && !recognizedAsin && <p id="amazon-input-error" className="inline-alert amazon-quote-alert" role="alert">{error}</p>}
+    {!showingProduct && <p className="amazon-note">Giá VND tham khảo theo chính sách Mita; giá và phí cuối cùng được xác nhận trước khi mua.</p>}
+  </form>;
+  return <section className="container amazon-quote-page">
+    <nav className="breadcrumb detail-breadcrumb" aria-label="Đường dẫn"><Link href="/">Trang chủ</Link><span>/</span><Link href="/mua-ho-amazon">Mua hộ Amazon</Link>{sourceAsin && <><span>/</span><span>{sourceAsin}</span></>}</nav>
+    {!showingProduct && <div className="amazon-quote-intro"><h1>Mua hộ Amazon Nhật</h1>
+      <p>Dán link Amazon.co.jp hoặc nhập ASIN để tra sản phẩm.</p></div>}
+    {!showingProduct && searchForm}
     <div ref={resultRef} className="amazon-quote-feedback" tabIndex={-1}>
-    {preview && <AmazonSourceProductDetail preview={preview}/>}
+    {preview && <AmazonSourceProductDetail preview={preview} purchaseRequest={purchaseRequest}/>}
     {recognizedAsin && !quote && !preview && !loading && <section className="amazon-source-preview" role="status" aria-label="Đã nhận diện ASIN, chưa xác minh sản phẩm">
       <p className="amazon-source">Đã nhận diện ASIN</p>
       <h2>ASIN: {recognizedAsin}</h2>
@@ -158,7 +165,7 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
         setAdded(true);
       }}/>}
     </div>
-    <section className="amazon-service-info" aria-labelledby="amazon-service-title">
+    {!showingProduct && <section className="amazon-service-info" aria-labelledby="amazon-service-title">
       <h2 id="amazon-service-title">Cách mua hộ từ Amazon.co.jp</h2>
       <ol>
         <li><strong>Nhập link hoặc mã ASIN.</strong> Dán đường dẫn sản phẩm Amazon.co.jp hoặc nhập mã ASIN gồm 10 ký tự.</li>
@@ -167,6 +174,6 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
       </ol>
       <p>Thông tin Amazon có thể thay đổi hoặc chưa xác minh được tại thời điểm tra cứu. Mita không tự chuyển sang ASIN hoặc lựa chọn hàng khác khi bạn nhập link mua hộ.</p>
       <Link href="/cach-mua-hang" className="inline-link">Xem hướng dẫn mua hàng</Link>
-    </section>
+    </section>}
   </section>;
 }

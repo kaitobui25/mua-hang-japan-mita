@@ -77,7 +77,7 @@ export async function seedOrderTelegramDeliveries(now = new Date()) {
   return result.rowCount ?? 0;
 }
 
-type Claim = { id: string; event_id: string; order_id: string; created_at: Date; attempt_count: number };
+type Claim = { id: string; event_id: string; order_id: string; order_status: string; created_at: Date; attempt_count: number };
 async function claimTelegram(now: Date): Promise<Claim | null> {
   const connection = await db.connect();
   try {
@@ -87,8 +87,9 @@ async function claimTelegram(now: Date): Promise<Claim | null> {
        last_failure_code='telegram_transient',updated_at=$1
        WHERE state='sending' AND lease_until<=$1 AND attempt_count>=$2`, [now, MAX_TELEGRAM_ATTEMPTS]);
     const row = (await connection.query<Claim>(
-      `SELECT d.id,d.event_id,d.attempt_count,e.order_id,e.created_at
+      `SELECT d.id,d.event_id,d.attempt_count,e.order_id,e.created_at,o.status AS order_status
        FROM order_telegram_deliveries d JOIN order_notification_outbox e ON e.id=d.event_id
+       JOIN orders o ON o.id=e.order_id
        WHERE d.chat_id=$3 AND d.attempt_count<$2 AND
          ((d.state='pending' AND d.next_attempt_at<=$1) OR (d.state='sending' AND d.lease_until<=$1))
        ORDER BY d.next_attempt_at,d.id FOR UPDATE OF d SKIP LOCKED LIMIT 1`,
@@ -122,7 +123,9 @@ export async function processOrderTelegramDeliveries(send: TelegramSender, now =
     let messageId: number;
     try {
       messageId = await send([
-        'Mita Japan: Đơn mới đã đặt, chưa thanh toán.',
+        row.order_status === 'purchase_request'
+          ? 'Mita Japan: Yêu cầu mua hộ mới, giá/phí chưa xác nhận. Chưa đặt mua tại Amazon.'
+          : 'Mita Japan: Đơn mới đã đặt, chưa thanh toán.',
         `Mã đơn: ${row.order_id}`, `Sự kiện: ${row.event_id}`,
         `Thời gian (UTC): ${row.created_at.toISOString()}`,
         'Mở Admin qua đường truy cập riêng để xử lý.'

@@ -115,9 +115,10 @@ function composeOrderEmail(row: ClaimedEmail, from: string): OutgoingOrderEmail 
   return {
     from,
     to: row.recipient_email,
-    subject: 'Mita Japan: Có đơn đặt hàng mới',
+    subject: row.order_status === 'purchase_request' ? 'Mita Japan: Có yêu cầu mua hộ chờ báo giá' : 'Mita Japan: Có đơn đặt hàng mới',
     text: [
-      'Một đơn hàng Mita Japan đã được lưu thành công.',
+      row.order_status === 'purchase_request' ? 'Một yêu cầu mua hộ chưa báo giá đã được lưu. Chưa có giá chốt hoặc thanh toán.' :
+        'Một đơn hàng Mita Japan đã được lưu thành công.',
       `Mã đơn: ${row.order_id}`,
       `Trạng thái đơn: ${row.order_status}`,
       `Thời điểm tạo (UTC): ${created}`,

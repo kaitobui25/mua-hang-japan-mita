@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { db } from '../src/db/pool.js';
 import { buildQuote, createAmazonQuote, quoteRateLimit, refreshAmazonQuote } from '../src/amazon-quotes.js';
-import { AMAZON_ACCESS_LOCK } from '../src/ingestion/source-access.js';
+import { AMAZON_QUOTE_ACCESS_LOCK, AMAZON_QUOTE_SOURCE } from '../src/ingestion/source-access.js';
 import { getPricingPolicy } from '../src/pricing.js';
 import { createOrder } from '../src/orders.js';
 import { config } from '../src/config.js';
@@ -51,6 +51,93 @@ test('Amazon quote checkout and migration regressions in disposable DB only', { 
       await assert.rejects(createOrder({ ...payload, quoteItems: [{ quoteId: quote.id, confirmed: true }] }));
       await assert.rejects(createOrder({ ...payload, quoteItems: [{ quoteId: quote.id, confirmed: false }] }));
     });
+    await t.test('conditional first-order delivery enables a genuine unpriced purchase request, not a fake quote', async () => {
+      const oldEnabled = process.env.AMAZON_QUOTES_ENABLED;
+      process.env.AMAZON_QUOTES_ENABLED = '1';
+      await db.query('DELETE FROM source_access_blocks WHERE source=$1', [AMAZON_QUOTE_SOURCE]);
+      const mocked = t.mock.method(ScraplingSession.prototype, 'quote', async () => ({
+        html: `<input id="ASIN" value="B0BSPC5JR8"><span id="productTitle">Synthetic real-source match</span>
+          <div id="desktop_buybox"><div id="corePrice_feature_div"><span class="a-offscreen">￥2,782</span></div>
+          <div id="mir-layout-DELIVERY_BLOCK">無料配送（土曜日・初回注文特典）</div></div>`,
+        observedAt: new Date()
+      }));
+      const post = (requestId: string, checkoutKey: string, person = customer, quantity = 1) =>
+        server.inject({ method: 'POST', url: '/api/amazon/purchase-requests',
+          payload: { requestId, checkoutKey, customer: person, quantity, confirmed: true } });
+      try {
+        const quote = await server.inject({ method: 'POST', url: '/api/amazon/quotes',
+          payload: { input: 'https://www.amazon.co.jp/dp/B0BSPC5JR8/ref=navm_hdr_signin', quantity: 1 } });
+        assert.equal(quote.statusCode, 422);
+        const data = quote.json();
+        assert.equal(data.code, 'offer_not_verified');
+        assert.equal(data.details.preview.asin, 'B0BSPC5JR8');
+        assert.equal(data.details.preview.priceJpy, 2782);
+        assert.ok(Number.isSafeInteger(data.details.preview.estimatedPriceVnd));
+        assert.ok(data.details.preview.estimatedPriceVnd > 0);
+        assert.match(data.details.preview.deliveryText, /初回注文特典/);
+        assert.match(data.details.requestId, /^[a-f0-9-]{36}$/);
+        assert.equal((await db.query('SELECT 1 FROM products WHERE asin=$1', ['B0BSPC5JR8'])).rowCount, 0);
+        const id = data.details.requestId as string;
+        const invalidCheckout = await server.inject({
+          method: 'POST', url: '/api/checkout',
+          payload: { customer, checkoutKey: randomUUID(), quoteItems:
+            [{ quoteId: id, confirmed: true, acknowledgeMissingEta: true }] },
+        });
+        assert.equal(invalidCheckout.statusCode, 404, 'preview UUID cannot be used as an approved Amazon quote');
+        assert.equal(invalidCheckout.json().code, 'quote_not_found');
+        const invalidRefresh = await server.inject({
+          method: 'POST', url: `/api/amazon/quotes/${id}/refresh`,
+        });
+        assert.equal(invalidRefresh.statusCode, 404);
+        // Contact submission must still work when the Amazon source-fetch
+        // budget has been exhausted; the source-backed UUID is already issued.
+        await db.query('DELETE FROM amazon_quote_rate_limits');
+        for (let i = 0; i < 6; i++) await quoteRateLimit('purchase-request-synthetic');
+        await assert.rejects(quoteRateLimit('purchase-request-synthetic'), /quote_rate_limited/);
+        const invalid = await post(id, randomUUID(), { ...customer, phone: 'not-a-phone' });
+        assert.equal(invalid.statusCode, 422);
+        const invalidQuantity = await server.inject({ method: 'POST', url: '/api/amazon/purchase-requests',
+          payload: { requestId: id, checkoutKey: randomUUID(), customer, quantity: 100, confirmed: true } });
+        assert.equal(invalidQuantity.statusCode, 400);
+        assert.equal((await db.query('SELECT order_id FROM amazon_quotes WHERE id=$1', [id])).rows[0].order_id, null);
+        const key = randomUUID();
+        const submitted = await post(id, key, customer, 2);
+        assert.equal(submitted.statusCode, 200);
+        assert.equal(submitted.json().status, 'purchase_request');
+        assert.equal(submitted.json().priceConfirmed, false);
+        assert.equal(submitted.json().shippingConfirmed, false);
+        assert.equal(submitted.json().payableNowVnd, 0);
+        const orderId = submitted.json().orderId;
+        const saved = (await db.query('SELECT status,merchandise_vnd,estimated_shipping_vnd,shipping_final_vnd FROM orders WHERE id=$1', [orderId])).rows[0];
+        assert.equal(saved.status, 'purchase_request');
+        assert.equal(Number(saved.merchandise_vnd), 0);
+        assert.equal(saved.estimated_shipping_vnd, null);
+        assert.equal(saved.shipping_final_vnd, null);
+        const item = (await db.query('SELECT quantity,price_jpy,unit_price_vnd,quote_snapshot FROM order_items WHERE order_id=$1', [orderId])).rows[0];
+        assert.equal(item.quantity, 2);
+        assert.equal(item.price_jpy, 2782);
+        assert.equal(Number(item.unit_price_vnd), 0);
+        assert.equal(item.quote_snapshot.kind, 'purchase_request');
+        assert.equal(item.quote_snapshot.priceConfirmed, false);
+        assert.equal(item.quote_snapshot.seller, null);
+        assert.equal((await db.query('SELECT 1 FROM order_notification_outbox WHERE order_id=$1', [orderId])).rowCount, 1);
+        const retry = await post(id, key, customer, 2);
+        assert.equal(retry.json().status, 'already_submitted');
+        assert.equal(retry.json().orderId, orderId);
+        assert.equal((await post(id, randomUUID(), customer, 2)).statusCode, 409);
+        await assert.rejects(updateOrder(orderId, { status: 'confirmed' }, 1));
+        await assert.rejects(updateOrder(orderId, { paymentStatus: 'paid' }, 1));
+        await assert.rejects(updateOrder(orderId, { shippingFinalVnd: 0 }, 1));
+        const fake = await post(randomUUID(), randomUUID());
+        assert.equal(fake.statusCode, 404);
+      } finally {
+        mocked.mock.restore();
+        // The synthetic HTTP requests above share Fastify's injected peer and
+        // global quote throttle with later tests. Reset only disposable DB state.
+        await db.query('DELETE FROM amazon_quote_rate_limits');
+        if (oldEnabled === undefined) delete process.env.AMAZON_QUOTES_ENABLED; else process.env.AMAZON_QUOTES_ENABLED = oldEnabled;
+      }
+    });
     const order = await createOrder(payload);
     await t.test('locks price, retains provenance, unknown shipping and notifies Owner without catalog insertion', async () => {
       const row = (await db.query('SELECT * FROM orders WHERE id=$1', [order.orderId])).rows[0];
@@ -93,9 +180,9 @@ test('Amazon quote checkout and migration regressions in disposable DB only', { 
     });
     await t.test('expiry cannot extend old data when refresh is disabled', async () => {
       const expired = await insertQuote(901000);
-      const enabled = process.env.AMAZON_QUOTES_ENABLED; delete process.env.AMAZON_QUOTES_ENABLED;
+      const enabled = process.env.AMAZON_QUOTES_ENABLED; process.env.AMAZON_QUOTES_ENABLED = '0';
       try { await assert.rejects(createOrder({ customer, checkoutKey: randomUUID(), quoteItems: [{ quoteId: expired.id, confirmed: true, acknowledgeMissingEta: true }] })); }
-      finally { if (enabled !== undefined) process.env.AMAZON_QUOTES_ENABLED = enabled; }
+      finally { if (enabled === undefined) delete process.env.AMAZON_QUOTES_ENABLED; else process.env.AMAZON_QUOTES_ENABLED = enabled; }
       assert.equal((await db.query('SELECT order_id FROM amazon_quotes WHERE id=$1', [expired.id])).rows[0].order_id, null);
     });
     await t.test('settings changes and later source changes cannot rewrite ordered snapshots', async () => {
@@ -172,16 +259,19 @@ test('Amazon quote checkout and migration regressions in disposable DB only', { 
         if (enabled === undefined) delete process.env.AMAZON_QUOTES_ENABLED; else process.env.AMAZON_QUOTES_ENABLED = enabled;
       }
     });
-    await t.test('source gate and mutex block all fetching; CAPTCHA records shared pause without retry', async () => {
+    await t.test('quote gate and mutex isolate catalog cooldown; CAPTCHA stops quotes without retry', async () => {
       const enabled = process.env.AMAZON_QUOTES_ENABLED; process.env.AMAZON_QUOTES_ENABLED = '1';
       let calls = 0;
       const transportMock = t.mock.method(ScraplingSession.prototype, 'quote', async () => { calls++; throw new QuoteTransportError('amazon_blocked'); });
       const lock = await db.connect();
       try {
-        await lock.query('SELECT pg_advisory_lock($1)', [AMAZON_ACCESS_LOCK]);
+        await lock.query('SELECT pg_advisory_lock($1)', [AMAZON_QUOTE_ACCESS_LOCK]);
         await assert.rejects(createAmazonQuote(offer.asin, 1), /amazon_busy/);
         assert.equal(calls, 0);
-        await lock.query('SELECT pg_advisory_unlock($1)', [AMAZON_ACCESS_LOCK]);
+        await lock.query('SELECT pg_advisory_unlock($1)', [AMAZON_QUOTE_ACCESS_LOCK]);
+        // A catalog denial must not disable customer quotes.
+        await db.query(`INSERT INTO source_access_blocks(source,reason,retry_after_at)
+          VALUES('amazon.co.jp','catalog denied',now()+interval '1 day')`);
         let blockedRetryAfter: string | undefined;
         await assert.rejects(createAmazonQuote(offer.asin, 1), (error: unknown) => {
           assert.ok(error instanceof QuoteError);
@@ -198,18 +288,20 @@ test('Amazon quote checkout and migration regressions in disposable DB only', { 
           return true;
         });
         assert.equal(calls, 1);
-        assert.equal((await db.query("SELECT 1 FROM source_access_blocks WHERE source='amazon.co.jp'")).rowCount, 1);
+        assert.equal((await db.query('SELECT 1 FROM source_access_blocks WHERE source=$1', [AMAZON_QUOTE_SOURCE])).rowCount, 1);
+        assert.equal((await db.query("SELECT reason FROM source_access_blocks WHERE source='amazon.co.jp'")).rows[0].reason, 'catalog denied');
         const blockedResponse = await server.inject({ method: 'POST', url: '/api/amazon/quotes', payload: { input: offer.asin } });
         assert.equal(blockedResponse.statusCode, 503);
         assert.equal(blockedResponse.json().code, 'amazon_cooldown');
         assert.equal(blockedResponse.json().retryAfterAt, blockedRetryAfter);
-        await db.query("DELETE FROM source_access_blocks WHERE source='amazon.co.jp'");
+        await db.query('DELETE FROM source_access_blocks WHERE source=$1', [AMAZON_QUOTE_SOURCE]);
         transportMock.mock.mockImplementation(async () => { throw new QuoteTransportError('amazon_rate_limited', new Date(Date.now() + 604800000).toISOString()); });
         await assert.rejects(createAmazonQuote(offer.asin), /amazon_rate_limited/);
-        const blocked = (await db.query("SELECT retry_after_at FROM source_access_blocks WHERE source='amazon.co.jp'")).rows[0];
+        const blocked = (await db.query('SELECT retry_after_at FROM source_access_blocks WHERE source=$1', [AMAZON_QUOTE_SOURCE])).rows[0];
         assert.ok(blocked.retry_after_at.getTime() > Date.now() + 6 * 86400000);
       } finally {
-        await lock.query('SELECT pg_advisory_unlock($1)', [AMAZON_ACCESS_LOCK]); lock.release(); transportMock.mock.restore();
+        await lock.query('SELECT pg_advisory_unlock($1)', [AMAZON_QUOTE_ACCESS_LOCK]); lock.release(); transportMock.mock.restore();
+        await db.query('DELETE FROM source_access_blocks WHERE source=$1', [AMAZON_QUOTE_SOURCE]);
         await db.query("DELETE FROM source_access_blocks WHERE source='amazon.co.jp'");
         if (enabled === undefined) delete process.env.AMAZON_QUOTES_ENABLED; else process.env.AMAZON_QUOTES_ENABLED = enabled;
       }

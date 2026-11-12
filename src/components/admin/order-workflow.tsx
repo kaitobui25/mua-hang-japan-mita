@@ -6,6 +6,7 @@ import { adminWrite } from './actions';
 import { orderStatus, paymentStatus } from './shared';
 
 const next: Record<string, string[]> = {
+  purchase_request: ['cancelled'],
   pending_confirmation: ['confirmed', 'cancelled'],
   confirmed: ['purchasing', 'cancelled'],
   purchasing: ['purchased', 'cancelled'],
@@ -32,13 +33,13 @@ export function OrderWorkflow({ id, csrf, status, payment, amazon, shippingConfi
     <p>Trạng thái: <strong>{orderStatus[status] ?? status}</strong> · Thanh toán: <strong>{paymentStatus[payment] ?? payment}</strong></p>
     <div className="admin-form-row">
       {(next[status] ?? []).map(value => <button key={value} type="button" disabled={busy} onClick={() => void change({ status: value })}>{orderStatus[value]}</button>)}
-      {payment === 'unpaid' && !['pending_confirmation','cancelled'].includes(status) && <button type="button" disabled={busy} onClick={() => void change({ paymentStatus: 'paid' })}>Xác nhận đã nhận tiền</button>}
+      {payment === 'unpaid' && !['purchase_request','pending_confirmation','cancelled'].includes(status) && <button type="button" disabled={busy} onClick={() => void change({ paymentStatus: 'paid' })}>Xác nhận đã nhận tiền</button>}
       {payment === 'paid' && <button type="button" disabled={busy} onClick={() => void change({ paymentStatus: 'refunded' })}>Ghi nhận đã hoàn tiền</button>}
     </div>
-    {status !== 'cancelled' && (!amazon || !shippingConfirmed) && <div className="admin-form-row"><label>{amazon ? 'Đề xuất phí vận chuyển để khách xác nhận (VND)' : 'Phí vận chuyển cuối cùng (VND)'}
+    {!['purchase_request','cancelled'].includes(status) && (!amazon || !shippingConfirmed) && <div className="admin-form-row"><label>{amazon ? 'Đề xuất phí vận chuyển để khách xác nhận (VND)' : 'Phí vận chuyển cuối cùng (VND)'}
       <input type="number" min="0" max="1000000000" step="1" value={shippingVnd} onChange={event => setShippingVnd(event.target.value)} placeholder="Ví dụ: 50000"/>
     </label><button type="button" disabled={busy || shippingVnd === '' || !Number.isSafeInteger(Number(shippingVnd)) || Number(shippingVnd) < 0} onClick={() => void change({ shippingFinalVnd: Number(shippingVnd) })}>{amazon ? 'Gửi đề xuất phí' : 'Lưu phí vận chuyển'}</button></div>}
-    {amazon && <p>Đơn mua hộ Amazon: phí chỉ có hiệu lực sau khi khách xem và xác nhận đúng số tiền. Hãy liên hệ khách để họ sử dụng mã trên biên nhận tại trang xác nhận phí.</p>}
+    {status === 'purchase_request' ? <p>Đây chỉ là yêu cầu liên hệ mua hộ. Giá quan sát và phí chưa chốt; liên hệ khách để báo giá trước khi tạo đơn có tiền hàng xác nhận. Không thu tiền trên yêu cầu này.</p> : amazon && <p>Đơn mua hộ Amazon: phí chỉ có hiệu lực sau khi khách xem và xác nhận đúng số tiền. Hãy liên hệ khách để họ sử dụng mã trên biên nhận tại trang xác nhận phí.</p>}
     {error && <p role="alert">{error}</p>}
   </section>;
 }

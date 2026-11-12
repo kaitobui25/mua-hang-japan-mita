@@ -2,13 +2,17 @@ import { randomUUID, createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { db } from './db/pool.js';
 import { getPricingPolicy, toVnd, type PricingPolicy } from './pricing.js';
-import { AMAZON_ACCESS_LOCK, amazonGate, amazonPauseStatus, recordAmazonPause } from './ingestion/source-access.js';
+import { amazonQuotesEnabled } from './config.js';
+import { AMAZON_QUOTE_ACCESS_LOCK, amazonQuoteGate, amazonQuotePauseStatus,
+  recordAmazonQuotePause, completeAmazonQuoteReentry } from './ingestion/source-access.js';
 import { amazonAsin, quoteQuantity, readPublicOffer, addDeliveryDays, QuoteError, uuid, type PublicOffer } from './amazon-quote-source.js';
+import { translateAmazonPreview, type AmazonVietnameseText } from './amazon-translate.js';
 
 export type AmazonQuote = PublicOffer & {
   id: string; observedAt: string; expiresAt: string; unitPriceVnd: number; lineTotalVnd: number;
   pricingPolicy: PricingPolicy; deliveryDays: number; vietnamDelivery: ReturnType<typeof addDeliveryDays>;
   shippingEstimatedVnd: null; shippingDueLater: true; deliveryDestinationVerified: false;
+  translated?: AmazonVietnameseText;
 };
 export async function getQuoteSettings(client: Pick<PoolClient, 'query'> = db) {
   const result = await client.query('SELECT version,delivery_days AS "deliveryDays" FROM amazon_quote_settings WHERE id=1');
@@ -38,14 +42,14 @@ export async function quoteRateLimit(ip: string) {
 }
 export async function createAmazonQuote(input: unknown, quantity: unknown = 1): Promise<AmazonQuote> {
   const asin = amazonAsin(input), count = quoteQuantity(quantity);
-  if (process.env.AMAZON_QUOTES_ENABLED !== '1') throw new QuoteError('amazon_quotes_disabled', 503);
+  if (!amazonQuotesEnabled()) throw new QuoteError('amazon_quotes_disabled', 503);
   const client = await db.connect();
   let locked = false;
   try {
-    locked = (await client.query('SELECT pg_try_advisory_lock($1) AS locked', [AMAZON_ACCESS_LOCK])).rows[0].locked;
+    locked = (await client.query('SELECT pg_try_advisory_lock($1) AS locked', [AMAZON_QUOTE_ACCESS_LOCK])).rows[0].locked;
     if (!locked) throw new QuoteError('amazon_busy', 503);
-    if (!await amazonGate(client)) {
-      const pause = await amazonPauseStatus(client);
+    if (!await amazonQuoteGate(client)) {
+      const pause = await amazonQuotePauseStatus(client);
       throw new QuoteError('amazon_cooldown', 503, undefined, pause?.retryAfterAt ?? undefined);
     }
     const policy = await getPricingPolicy(client), settings = await getQuoteSettings(client);
@@ -55,19 +59,51 @@ export async function createAmazonQuote(input: unknown, quantity: unknown = 1): 
     try { offer = await readPublicOffer(asin, count); }
     catch (error) {
       if (error instanceof QuoteError && ['amazon_blocked', 'amazon_rate_limited'].includes(error.code)) {
-        await recordAmazonPause(client, error.code, error.retryAfterAt);
-        const pause = await amazonPauseStatus(client);
+        await recordAmazonQuotePause(client, error.code, error.retryAfterAt);
+        const pause = await amazonQuotePauseStatus(client);
         throw new QuoteError(error.code, error.status, error.details, pause?.retryAfterAt ?? undefined);
+      }
+      // Verified source HTML without a purchasable offer is not an access denial.
+      if (error instanceof QuoteError && error.code === 'offer_not_verified' &&
+          error.details && typeof error.details === 'object' && 'preview' in error.details) {
+        await completeAmazonQuoteReentry(client);
+        const preview = (error.details as { preview?: unknown }).preview;
+        // A verified product identity can support a request for a human quote,
+        // but never a locked-price purchase quote. Store server-side evidence
+        // so a client cannot invent product facts at checkout.
+        if (preview && typeof preview === 'object') {
+          const fact = preview as { asin?: unknown; title?: unknown; sourceUrl?: unknown; observedAt?: unknown; priceJpy?: unknown };
+          const time = typeof fact.observedAt === 'string' ? Date.parse(fact.observedAt) : NaN;
+          if (fact.asin === asin && fact.sourceUrl === `https://www.amazon.co.jp/dp/${asin}` &&
+              typeof fact.title === 'string' && fact.title.trim().length > 0 && fact.title.length <= 1000 &&
+              Number.isSafeInteger(fact.priceJpy) && Number(fact.priceJpy) > 0 &&
+              Number.isFinite(time) && Math.abs(Date.now() - time) < 60000) {
+            const requestId = randomUUID();
+            const expiresAt = new Date(time + 900000).toISOString();
+            await client.query('INSERT INTO amazon_quotes(id,snapshot,observed_at,expires_at) VALUES($1,$2,$3,$4)',
+              [requestId, JSON.stringify({ kind: 'purchase_request_preview', preview, quantity: count }), fact.observedAt, expiresAt]);
+            const estimatedPriceVnd = toVnd(Number(fact.priceJpy), policy);
+            const translated = await translateAmazonPreview(preview as Parameters<typeof translateAmazonPreview>[0]);
+            throw new QuoteError('offer_not_verified', 422, {
+              preview: { ...preview, ...(Number.isSafeInteger(estimatedPriceVnd) && estimatedPriceVnd > 0
+                ? { estimatedPriceVnd } : {}), ...(translated ? { translated } : {}) },
+              requestId, expiresAt,
+            });
+          }
+        }
       }
       if (error instanceof QuoteError) throw error;
       throw new QuoteError('amazon_unavailable', 503);
     }
+    await completeAmazonQuoteReentry(client);
     const quote = buildQuote(offer, policy, settings.deliveryDays, observedAt);
     await client.query('INSERT INTO amazon_quotes(id,snapshot,observed_at,expires_at) VALUES($1,$2,$3,$4)',
       [quote.id, JSON.stringify(quote), quote.observedAt, quote.expiresAt]);
-    return quote;
+    return { ...quote, translated: await translateAmazonPreview({
+      title: quote.title, display: quote.display,
+    }) };
   } finally {
-    try { if (locked) await client.query('SELECT pg_advisory_unlock($1)', [AMAZON_ACCESS_LOCK]); }
+    try { if (locked) await client.query('SELECT pg_advisory_unlock($1)', [AMAZON_QUOTE_ACCESS_LOCK]); }
     finally { client.release(); }
   }
 }
@@ -81,6 +117,7 @@ export async function refreshAmazonQuote(id: string) {
   if (!uuid.test(id)) throw new QuoteError('invalid_quote_id', 400);
   const found = (await db.query('SELECT snapshot,order_id FROM amazon_quotes WHERE id=$1', [id])).rows[0];
   if (!found) throw new QuoteError('quote_not_found', 404);
+  if (found.snapshot?.kind === 'purchase_request_preview') throw new QuoteError('quote_not_found', 404);
   if (found.order_id) throw new QuoteError('quote_already_ordered', 409);
   const old = found.snapshot as AmazonQuote;
   const quote = await createAmazonQuote(old.asin, old.quantity);
@@ -102,6 +139,9 @@ export async function loadCheckoutQuotes(client: PoolClient, items: QuoteCartLin
     FROM amazon_quotes WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE`, [items.map(x => x.quoteId)]);
   if (result.rows.length !== items.length) throw new QuoteError('quote_not_found', 404);
   return result.rows.map(row => {
+    // This table also holds contact-only Amazon previews. Their IDs can never
+    // be used as confirmed merchandise quotes, even when still unexpired.
+    if (row.snapshot?.kind === 'purchase_request_preview') throw new QuoteError('quote_not_found', 404);
     if (row.order_id) throw new QuoteError('quote_already_ordered', 409);
     if (!row.valid) throw new QuoteError('quote_expired', 409, { quoteId: row.id });
     const quote = row.snapshot as AmazonQuote;

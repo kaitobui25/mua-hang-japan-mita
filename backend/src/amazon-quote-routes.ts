@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { db } from './db/pool.js';
-import { config } from './config.js';
+import { amazonQuotesEnabled, config } from './config.js';
 import { createAmazonQuote, refreshAmazonQuote, quoteRateLimit } from './amazon-quotes.js';
 import { QuoteError, uuid, amazonAsin, quoteQuantity } from './amazon-quote-source.js';
+import { createAmazonPurchaseRequest } from './amazon-purchase-requests.js';
 
 export async function amazonQuoteRoutes(server: FastifyInstance) {
   server.addHook('onRequest', async (_request, reply) => {
@@ -25,16 +26,25 @@ export async function amazonQuoteRoutes(server: FastifyInstance) {
   server.post('/quotes', { bodyLimit: 4096 }, async request => {
     const body = request.body as { input?: unknown; quantity?: unknown } | null;
     amazonAsin(body?.input); quoteQuantity(body?.quantity ?? 1);
-    if (process.env.AMAZON_QUOTES_ENABLED !== '1') throw new QuoteError('amazon_quotes_disabled', 503);
+    if (!amazonQuotesEnabled()) throw new QuoteError('amazon_quotes_disabled', 503);
     await quoteRateLimit(request.ip);
     return { quote: await createAmazonQuote(body?.input, body?.quantity ?? 1) };
   });
   server.post('/quotes/:id/refresh', { bodyLimit: 1024 }, async request => {
     const { id } = request.params as { id: string };
     if (!uuid.test(id)) throw new QuoteError('invalid_quote_id', 400);
-    if (process.env.AMAZON_QUOTES_ENABLED !== '1') throw new QuoteError('amazon_quotes_disabled', 503);
+    if (!amazonQuotesEnabled()) throw new QuoteError('amazon_quotes_disabled', 503);
     await quoteRateLimit(request.ip);
     return refreshAmazonQuote(id);
+  });
+  // A request to contact Mita, not a priced checkout. A source-backed,
+  // unexpired preview ID is mandatory; posted product/price fields are ignored.
+  server.post('/purchase-requests', { bodyLimit: 4096 }, async request => {
+    if (!amazonQuotesEnabled()) throw new QuoteError('amazon_quotes_disabled', 503);
+    // The source lookup already used the bounded Amazon quote quota. Spending
+    // another slot here would strand the last eligible preview at the limit.
+    // The 15-minute, unguessable, once-only server ID bounds request creation.
+    return createAmazonPurchaseRequest(request.body);
   });
   // The opaque token is returned only at checkout; this endpoint exposes no customer data.
   server.post('/orders/:id/shipping', { bodyLimit: 1024 }, async request => {

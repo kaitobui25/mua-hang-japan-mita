@@ -4,6 +4,18 @@ function poolLimit(name: string, fallback: number): number {
   return value;
 }
 
+/** Default Amazon quotes ON only for the exact Windows local Mita API/DB.
+ * Other environments remain opt-in; an explicit 0 always disables quotes.
+ */
+export function amazonQuotesEnabled(environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform): boolean {
+  if (environment.AMAZON_QUOTES_ENABLED !== undefined) return environment.AMAZON_QUOTES_ENABLED === '1';
+  return platform === 'win32' && environment.MITA_VPS_WORKER !== '1' &&
+    (environment.API_PORT ?? '4000') === '4000' &&
+    (environment.DATABASE_URL ?? 'postgresql://mita_local@127.0.0.1:5433/postgres') ===
+      'postgresql://mita_local@127.0.0.1:5433/postgres';
+}
+
 if (process.env.MITA_VPS_WORKER === '1') {
   const target = new URL(process.env.DATABASE_URL ?? '');
   if (process.platform !== 'win32' || target.hostname !== '127.0.0.1' || target.port !== '15432' ||

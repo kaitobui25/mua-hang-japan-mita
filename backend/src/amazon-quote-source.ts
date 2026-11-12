@@ -21,8 +21,29 @@ export type AmazonProductPreview = {
   asin: string; sourceUrl: string; title: string; observedAt: string; priceJpy?: number;
   observedDetails?: Omit<AmazonDisplay, 'provenance'>;
   deliveryText?: string; freeDelivery?: true;
+  /** Date Amazon publicly advertises, not a Mita delivery guarantee. */
+  advertisedJapanDeliveryDate?: string;
+  advertisedDeliveryConditional?: boolean;
   display?: AmazonDisplay;
 };
+
+/** Only an explicit calendar date in the first visible delivery option qualifies.
+ * Never derive an ETA from `明日`, fastest delivery or an unknown condition. */
+export function advertisedAmazonDelivery(text: string, observedAt: Date):
+  { date: string; conditional: boolean } | null {
+  if (!Number.isFinite(observedAt.getTime()) || !text || text.length > 400) return null;
+  const first = text.split(/または|\bor\b|最も早い配送|fastest delivery/i)[0];
+  const match = first.match(/(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日/);
+  if (!match) return null;
+  const japanToday = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(observedAt);
+  const year = Number(match[1] ?? japanToday.slice(0, 4));
+  const month = match[2].padStart(2, '0'), day = match[3].padStart(2, '0');
+  let date = `${year}-${month}-${day}`;
+  if (!match[1] && date < japanToday) date = `${year + 1}-${month}-${day}`;
+  if (!calendarDate(date) || date < japanToday ||
+    Date.parse(date) - Date.parse(japanToday) > 45 * 86400000) return null;
+  return { date, conditional: /初回|初めて|Prime|プライム|条件|以上|対象|first.order|会員/i.test(first) };
+}
 
 function parseProductPreview($: CheerioAPI, asin: string, observedAt: Date, permission?: AmazonDisplayPermission): AmazonProductPreview | undefined {
   if (!/^[A-Z0-9]{10}$/.test(asin) || $('input[id="ASIN"]').length !== 1 ||
@@ -91,6 +112,11 @@ function parseProductPreview($: CheerioAPI, asin: string, observedAt: Date, perm
       if (deliveryText) {
         preview.deliveryText = deliveryText;
         if (/無料配送|通常配送\s*無料|\bFREE\s+DELIVERY\b/i.test(deliveryText)) preview.freeDelivery = true;
+        const advertised = advertisedAmazonDelivery(deliveryText, observedAt);
+        if (advertised) {
+          preview.advertisedJapanDeliveryDate = advertised.date;
+          if (advertised.conditional) preview.advertisedDeliveryConditional = true;
+        }
       }
     }
   }

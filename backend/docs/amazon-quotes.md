@@ -1,13 +1,18 @@
 # Amazon quote API
 
 Backend implementation of plan 14 and ADR 0019 (2026-11-04). No catalog import occurs.
-Amazon reading is disabled unless `AMAZON_QUOTES_ENABLED=1`; `PUBLIC_READ_ONLY=1` blocks
-quote and checkout writes. The Windows local backend manager explicitly enables quotes
-on API port `4000`, using the same `127.0.0.1:5433/postgres` database as catalog,
-checkout and workers. Next.js routes all local `/api/*` traffic to that backend, not a
-second quote-only port. Other deployment environments retain the disabled-by-default
-behavior. Enabling quotes never bypasses `source_access_blocks`, Amazon's cooldown,
-the shared source lock, or the per-peer/global request limits.
+Amazon reading is enabled by default only on Windows with API port `4000` and the
+exact local `127.0.0.1:5433/postgres` database. `AMAZON_QUOTES_ENABLED=0` explicitly
+disables it; `AMAZON_QUOTES_ENABLED=1` explicitly enables it in other environments.
+`PUBLIC_READ_ONLY=1` blocks quote and checkout writes. Next.js routes local `/api/*`
+traffic to that backend, not a second quote-only port. Other deployments remain
+disabled by default. Interactive quote access has its **own** key
+`source_access_blocks.source='amazon.co.jp:quote'` and advisory lock `70400201`.
+The daily catalog/import/backfill uses `amazon.co.jp` and lock `70400200`.
+A catalog block does not disable a customer's single-product quote, and a quote
+CAPTCHA/403/429 does not pause catalog work. Both flows retain independent durable
+denial markers, next-day safe retry reservation, and rate/source verification guards.
+Allowing a quote request does not guarantee that Amazon will accept it.
 
 The old standalone `4010` smoke backend/database is not part of the normal local
 runtime. Do not reuse smoke quote IDs in carts or orders, delete source cooldown rows,
@@ -74,7 +79,70 @@ Quote routes use `Cache-Control: no-store`. Expected error codes include
 `checkout_key_conflict` and `shipping_confirmation_conflict`. Disabled/unavailable
 sources use 503; invalid input uses 400; conflicts use 409; unverified offers use 422.
 
-### Display-only preview on rejected offers
+### Preview and purchase requests when Amazon shipping is conditional
+
+When a genuine exact-ASIN preview has one valid observed product price but the
+buybox cannot verify seller, stock, offer ID, quantity or unconditional standard
+free shipping, Mita **does not issue a locked-price quote**. In particular,
+`初回注文特典` is an Amazon first-order shipping offer, not proof that
+Mita customers receive unconditional free shipping. Instead,
+`POST /api/amazon/quotes` may reply HTTP 422 with
+`details: { preview, requestId, expiresAt }`. The UUID is issued only
+after a single genuine Amazon source read and stored in `amazon_quotes` as
+`kind: 'purchase_request_preview'`, expiring 15 minutes after observation.
+There is no additional Amazon fetch. A source with no verified product identity
+or no single observed current price cannot issue a request capability.
+
+The mobile preview uses the same `product-detail` hierarchy and CSS as the
+catalog product page (image, localized title, rating, VND price, quantity,
+purchase button, shipping note, ASIN and product information). The only extra
+product field is Amazon's advertised delivery date when explicit in the first
+delivery option; conditional first-order delivery is labelled as conditional.
+It removes the separate source-information cards, translation bar and
+instructions shown on the earlier Amazon preview.
+
+The mobile preview displays a functional **Yêu cầu đặt mua**
+button. It opens a customer contact form which calls
+`POST /api/amazon/purchase-requests` with
+`{ requestId, checkoutKey: UUID, quantity: 1..99, customer: { name, phone, address, email? }, confirmed: true }`.
+The backend ignores submitted title/price/seller fields and reads the original,
+unexpired preview under a row lock. Duplicate submissions with the same key
+return the original ID; consumed requests with any other key return 409.
+Contact submission uses the source-issued, once-only capability and does not
+consume an additional Amazon source-lookup rate-limit slot; the last eligible
+preview in a rate window remains actionable.
+Its persisted `orders.status='purchase_request'` and
+`order_items.quote_snapshot.kind='purchase_request'` explicitly mean
+**manual quote/contact requested, not an order to purchase at Amazon**.
+The observed Amazon JPY price is retained as evidence; `unit_price_vnd=0`
+and `merchandise_vnd=0` are schema placeholders, NOT a free product or
+customer amount due. `estimated_shipping_vnd=NULL`, no shipping token,
+no charge, and no seller/stock facts are manufactured. Owner must contact
+the customer with a new confirmed quote before any actual purchase/payment.
+Owner cannot mark these requests paid/confirmed or set final shipping in this
+state; cancellation remains available. Owner notification clearly labels
+these records as requests. A real customer submission sends a real Owner
+alert; tests must use only disposable DB.
+
+For display only, a rejected source preview also includes `estimatedPriceVnd`
+calculated from the current persisted Mita pricing policy (JPY/VND exchange
+rate plus service fee). This is **not** inserted as a locked order price and
+cannot be used by the regular checkout. Verified quotes retain their own
+locked `unitPriceVnd`. The storefront displays VND as its primary currency.
+Only explicit Amazon calendar dates from the first, non-fastest delivery
+option may be shown; relative/ambiguous dates remain unknown.
+
+Japanese product text is translated to Vietnamese on the backend, without
+sending customer/order data, using Google's publicly accessible free web
+translation endpoint. This interface is unofficial, has no availability
+guarantee, and may respond with HTTP 429; there are no retries on denial,
+proxy rotation or CAPTCHA workarounds. Native bounded HTTPS requests have a
+short timeout, cap source and response bytes, and return optional
+`translated` display-only fields; the original source snapshot remains
+unaltered for identity, checkout and auditing. On failure the original
+source text remains visible rather than fabricated Vietnamese.
+
+### Source preview on rejected offers
 
 An `offer_not_verified` `QuoteError` (422) may include exactly this details shape:
 
@@ -85,6 +153,10 @@ An `offer_not_verified` `QuoteError` (422) may include exactly this details shap
   title: string; // source #productTitle, plain text, at most 1000 characters
   observedAt: string; // ISO timestamp of the same source observation
   priceJpy?: number; // optional positive integer, at most 100000000
+  estimatedPriceVnd?: number; // display-only, not a committed quote
+  translated?: { title?: string; description?: string; features?: string[]; /* more source fields */ };
+  advertisedJapanDeliveryDate?: string; // explicit YYYY-MM-DD only
+  advertisedDeliveryConditional?: boolean; // e.g. 初回注文特典
   observedDetails?: { images?: string[]; brand?: string; description?: string; features?: string[];
     ingredients?: string; usage?: string; warnings?: string;
     specifications?: { name: string; value: string }[]; rating?: number; reviewCount?: number };
@@ -105,8 +177,9 @@ are omitted. The main image uses validated `data-old-hires` or `src` from
 also carry product facts, features/specifications and Amazon aggregate rating/count.
 No image or review is synthesized from the ASIN or Mita catalog.
 
-This is product information for display only, not a verified quote or checkout
-capability. If the main product delivery block contains `無料配送`, `通常配送無料`
+This is product information for display only, not a verified quote or locked-price
+checkout capability. A separate, server-issued purchase request ID may allow
+human follow-up as described above. If the main product delivery block contains `無料配送`, `通常配送無料`
 or `FREE delivery`, the UI labels that **observed source statement** as free
 delivery, including the original source wording. It does not establish standard
 service, a specific recipient/address, quantity, eligibility or checkout authority.
@@ -138,7 +211,8 @@ Missing, ambiguous, malformed or oversized fields are omitted; an empty `display
 is omitted entirely. Text is extracted without HTML/scripts, hidden or aria-hidden
 content, with block/line boundaries preserved as spaces. Consumers must render it
 as text, never as raw HTML. Numbers, units, model/brand identifiers and original
-language are retained. This does not translate content or call Google. Aggregate
+language are retained **in the stored source snapshot**. The response may
+add the optional display-only Google translation described above. Aggregate
 ratings/counts belong to Amazon and must never be labelled as Mita reviews.
 
 Extraction uses only the same validated selected-ASIN page response after all offer
@@ -197,8 +271,9 @@ NOT NULL while unknown shipping rows exist.
 
 ## Access guards and release gaps
 
-The reader shares `AMAZON_ACCESS_LOCK`, `amazonGate` and persistent CAPTCHA/403/429
-pause handling with existing collectors. It makes one bounded, timed public HTTPS
+The reader uses its own `AMAZON_QUOTE_ACCESS_LOCK`, `amazonQuoteGate` and persistent
+quote-scoped CAPTCHA/403/429 pause handling, separate from scheduled collectors.
+It makes one bounded, timed public HTTPS
 request, without cookies, redirects, alternate proxies, retry loops or PC dependence.
 Persistent limits allow 6 attempts per socket peer and 30 globally per minute across
 quote/refresh/quote checkout requests. The API does not trust forwarded IP headers;
