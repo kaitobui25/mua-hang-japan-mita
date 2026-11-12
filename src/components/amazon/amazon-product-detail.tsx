@@ -128,7 +128,7 @@ export function AmazonProductDetail({
   const pictures = [...new Set((display?.images ?? []).filter(sourceImage))].slice(0, 10);
   const currentImage = pictures.includes(selectedImage) ? selectedImage : pictures[0];
   const quantityChanged = quantity !== quote.quantity;
-  const canAdd = quote.canOrder && quote.freeShipping && !refreshing && !expired && !quantityChanged;
+  const canAdd = quote.canOrder && !refreshing && !expired && !quantityChanged;
   const localized = info(display, quote.translated);
   const amazonUrl = `https://www.amazon.co.jp/dp/${encodeURIComponent(quote.asin)}`;
 
@@ -163,7 +163,7 @@ export function AmazonProductDetail({
 
         {canAdd ? <>
           <label className="amazon-consent"><input type="checkbox" checked={confirmed} onChange={event => onConfirm(event.target.checked)}/>
-            <span>Tôi xác nhận đúng sản phẩm, phiên bản, người bán, số lượng, giá và hiểu phí vận chuyển về Việt Nam được tính riêng sau.{!quote.amazonDeliveryDate && " Ngày giao hiện chưa xác định."}</span>
+            <span>Tôi xác nhận đúng sản phẩm, phiên bản, người bán, số lượng và giá hàng. Phí vận chuyển về Việt Nam được tính riêng sau.{!quote.freeShipping && " Phí vận chuyển nội địa Nhật cũng chưa được xác minh và sẽ được báo riêng trước khi mua."}{!quote.amazonDeliveryDate && " Ngày giao hiện chưa xác định."}</span>
           </label>
           <button type="button" className="button button-primary detail-cta" disabled={!confirmed || added} onClick={onAdd}>
             <Icon name={added ? "check" : "bag"}/>{added ? "Đã thêm vào giỏ" : "Thêm vào giỏ"}<Icon name="arrow"/>

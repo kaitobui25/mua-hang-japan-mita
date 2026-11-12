@@ -9,7 +9,7 @@ type ServerQuote = {
   translated?: unknown;
   quantity: number; priceJpy: number; unitPriceVnd: number; observedAt: string; expiresAt: string;
   deliveryDays: number; amazonDelivery: DateRange; vietnamDelivery: DateRange;
-  freeJapanShipping: true; shippingEvidence: string; variant: string; offerId: string;
+  freeJapanShipping: boolean; shippingEvidence: string; variant: string; offerId: string;
   purchaseType: string; shippingType: string; pricingPolicy: { fxJpyToVnd: number; serviceFeePercent: number };
 };
 
@@ -80,7 +80,7 @@ function projectQuote(raw: ServerQuote): AmazonQuote {
   const allowedImage = display?.images?.[0] ?? null;
   return { quoteId: raw.id, asin: raw.asin, name: raw.title, seller: raw.seller,
     variant: raw.variant, offerId: raw.offerId,
-    shippingEvidence: raw.shippingEvidence, shippingType: 'standard',
+    shippingEvidence: raw.shippingEvidence, shippingType: raw.shippingType as 'standard' | 'unverified',
     sourceUrl: raw.sourceUrl, imageUrl: allowedImage, display, quantity: raw.quantity,
     translated: parseVietnameseText(raw.translated),
     priceJpy: raw.priceJpy, priceVnd: raw.unitPriceVnd,
@@ -88,7 +88,8 @@ function projectQuote(raw: ServerQuote): AmazonQuote {
     amazonDeliveryDate: raw.amazonDelivery?.start || null, amazonDeliveryEnd: raw.amazonDelivery?.end || null,
     vietnamDeliveryDate: raw.vietnamDelivery?.start || null, vietnamDeliveryEnd: raw.vietnamDelivery?.end || null,
     deliveryBufferDays: raw.deliveryDays, freeShipping: raw.freeJapanShipping, canOrder: true,
-    warning: !raw.amazonDelivery ? "Chưa xác định ngày giao Amazon. Bạn vẫn có thể gửi đơn nếu xác nhận thông tin." : null,
+    warning: !raw.freeJapanShipping ? "Phí vận chuyển nội địa Nhật chưa xác minh, chưa nằm trong giá hàng. Mita sẽ báo và xác nhận riêng trước khi thu tiền hoặc mua." :
+      !raw.amazonDelivery ? "Chưa xác định ngày giao Amazon. Bạn vẫn có thể gửi đơn nếu xác nhận thông tin." : null,
     fingerprint };
 }
 
@@ -99,7 +100,9 @@ export function parseAmazonQuote(raw: unknown): AmazonQuote {
   if (!record(raw) || !text(raw.id, 100) || typeof raw.asin !== "string" || !/^[A-Z0-9]{10}$/.test(raw.asin) ||
       raw.sourceUrl !== `https://www.amazon.co.jp/dp/${raw.asin}` ||
       !text(raw.title, 1000) || !text(raw.seller, 1000) || !text(raw.variant, 2000) || !text(raw.offerId, 2048) ||
-      !text(raw.shippingEvidence, 4000) || raw.freeJapanShipping !== true || raw.purchaseType !== "one_time" || raw.shippingType !== "standard" ||
+      !text(raw.shippingEvidence, 4000) || typeof raw.freeJapanShipping !== "boolean" ||
+      !(raw.freeJapanShipping === true && raw.shippingType === "standard" ||
+        raw.freeJapanShipping === false && raw.shippingType === "unverified") || raw.purchaseType !== "one_time" ||
       !Number.isInteger(raw.quantity) || Number(raw.quantity) < 1 || Number(raw.quantity) > 99 ||
       !Number.isSafeInteger(raw.priceJpy) || Number(raw.priceJpy) <= 0 ||
       !Number.isSafeInteger(raw.unitPriceVnd) || Number(raw.unitPriceVnd) <= 0 ||

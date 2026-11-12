@@ -31,6 +31,9 @@ separate from the single operational database.
   `shippingEvidence`. Dates are `{ start, end }` or `null`. Vietnam dates are Mita estimates
   with calendar days added, not Amazon promises. The delivery destination is unverified;
   never label it Osaka. Unknown shipping is `shippingEstimatedVnd: null`, never zero.
+  `shippingType: 'unverified'` and `freeJapanShipping: false` mean that even
+  domestic Japanese shipping remains unverified and is excluded from the
+  merchandise amount; Mita must confirm it separately before payment or buying.
 - `POST /api/amazon/quotes/:id/refresh` returns `{ quote, changed, requiresConfirmation: true }`.
   Keep the cart item if refreshing fails. Never extend an old expiry locally. Replace the
   quote only after displaying it and obtaining confirmation. Quantity/variant changes
@@ -81,9 +84,24 @@ sources use 503; invalid input uses 400; conflicts use 409; unverified offers us
 
 ### Preview and purchase requests when Amazon shipping is conditional
 
+For the newer selected one-time Amazon accordion, identical repeated hidden ASIN
+inputs are accepted only if all carry the requested identity. A unique visible
+one-time total is used instead of its different per-unit/subscription prices.
+If the source additionally proves an exact selected offer ID, selected quantity,
+stock (including an explicit Japanese `残りN点` count), and a matching selected-row
+merchant name (including `Amazon.co.jp`), the merchandise
+can receive a locked-price quote **without any domestic shipping promise**:
+`shippingType='unverified'`, `freeJapanShipping=false`, `amazonDelivery=null`,
+and separate later shipping confirmation. This does not label a generic
+`無料配送` promotion as unconditional free standard shipping. The selected seller
+name must be unambiguous across its repeated merchant links and seller labels;
+otherwise the quote is rejected. Legacy/ambiguous
+offers still fail closed and must never inherit an unrelated seller or price.
+
 When a genuine exact-ASIN preview has one valid observed product price but the
-buybox cannot verify seller, stock, offer ID, quantity or unconditional standard
-free shipping, Mita **does not issue a locked-price quote**. In particular,
+buybox cannot verify seller, stock, offer ID, quantity or either a verified
+shipping arrangement or the narrowly guarded unverified-shipping path above,
+Mita **does not issue a locked-price quote**. In particular,
 `初回注文特典` is an Amazon first-order shipping offer, not proof that
 Mita customers receive unconditional free shipping. Instead,
 `POST /api/amazon/quotes` may reply HTTP 422 with

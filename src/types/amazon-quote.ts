@@ -47,7 +47,7 @@ export type AmazonQuote = {
   variant?: string;
   offerId?: string;
   shippingEvidence: string;
-  shippingType: 'standard';
+  shippingType: 'standard' | 'unverified';
   sourceUrl: string;
   imageUrl?: string | null;
   /** Optional source-backed content; unavailable without verified display permission. */

@@ -80,7 +80,7 @@ test('modern buybox rejects ambiguous selection, identity, seller, offer and pri
     ['duplicate row', html.replace('id="addToCart"', 'id="newAccordionRow_0"')],
     ['legacy row conflict', html.replace('id="addToCart"', 'id="newAccordionRow"')],
     ['wrong ASIN', html.replace(`value="${asin}"`, 'value="B000000001"')],
-    ['duplicate ASIN', html.replace('</body>', `<input id="ASIN" value="${asin}"></body>`)],
+    ['conflicting ASIN', html.replace('</body>', '<input id="ASIN" value="B000000001"></body>')],
     ['duplicate title', html.replace('</body>', '<span id="productTitle">Another title</span></body>')],
     ['missing title', html.replace('Fixture item 200g', '')],
     ['missing seller', html.replace('<div id="merchant-info">Sold by <a id="sellerProfileTriggerId">Selected seller</a></div>', '')],
@@ -171,6 +171,61 @@ test('modern main price is displayed regardless of selected checkout accordion',
   assert.equal(rejectedPreview(active.replace('</div><span id="availability">', '<div id="newAccordionRow_1" class="a-accordion-active">￥900</div></div><span id="availability">'))?.priceJpy, 1000);
 });
 
+test('same-ASIN Amazon form duplicates and scoped one-time total retain a preview', () => {
+  const html = modernVerifiedHtml()
+    .replace('class="a-price priceToPay"', 'class="a-price apex-pricetopay-value"')
+    .replace('</form>', '<span class="apex-priceperunit-value"><span class="a-offscreen">&#165;500</span></span></form>')
+    .replace('FREE Standard Delivery', 'FREE delivery on orders over JPY 3,500')
+    .replace('</body>', `<input id="ASIN" value="${asin}"></body>`);
+  const result = rejectedPreview(html);
+  assert.equal(result?.asin, asin);
+  assert.equal(result?.priceJpy, 1000, 'selected one-time total must not be replaced with per-unit price');
+  assert.equal(rejectedPreview(html.replace(`value="${asin}"></body>`, 'value="B000000001"></body>')), undefined);
+  assert.equal(rejectedPreview(html.replace('apex-pricetopay-value', 'apex-priceperunit-value'))?.priceJpy, undefined);
+});
+
+test('current Amazon one-time buybox quotes merchandise without inventing free domestic shipping', () => {
+  const html = modernVerifiedHtml()
+    .replace('<div id="merchant-info">Sold by <a id="sellerProfileTriggerId">Selected seller</a></div>',
+      '<div id="merchantInfoFeature_feature_div">出荷元 / 販売元 <a>Amazon.co.jp</a> <a>Amazon.co.jp</a></div>')
+    .replace('class="a-price priceToPay"', 'class="a-price apex-pricetopay-value"')
+    .replace('</span></div>\n          <div id="merchantInfoFeature_feature_div">',
+      '</span><span class="apex-priceperunit-value"><span class="a-offscreen">&#165;500</span></span></div>\n          <div id="merchantInfoFeature_feature_div">')
+    .replace('<div id="mir-layout-DELIVERY_BLOCK-slot"><div id="mir-layout-DELIVERY_BLOCK">FREE Standard Delivery</div></div>',
+      '<div id="mir-layout-DELIVERY_BLOCK">無料配送 11月14日</div><div id="mir-layout-DELIVERY_BLOCK">Prime 最も早い配送</div>')
+    .replace('</body>', `<input id="ASIN" value="${asin}"><input id="productTitle" value="tracking"></body>`);
+  const offer = parsePublicOffer(html, asin, 1, now);
+  assert.equal(offer.priceJpy, 1000);
+  assert.equal(offer.seller, 'Amazon.co.jp');
+  assert.equal(offer.purchaseType, 'one_time');
+  assert.equal(offer.shippingType, 'unverified');
+  assert.equal(offer.freeJapanShipping, false);
+  assert.equal(offer.amazonDelivery, null);
+  assert.throws(() => parsePublicOffer(html.replace('<a>Amazon.co.jp</a> <a>Amazon.co.jp</a>',
+    '<a>Amazon.co.jp</a> <a>Other seller</a>'), asin, 1, now), QuoteError);
+  assert.throws(() => parsePublicOffer(html.replace('a-box a-accordion-active', 'a-box'), asin, 1, now), QuoteError);
+  assert.throws(() => parsePublicOffer(html.replace('&#165;1,000', '&#165;900 Prime exclusive'), asin, 1, now), QuoteError);
+});
+
+test('realistic independent seller and Japanese limited stock require matching seller evidence', () => {
+  const html = modernVerifiedHtml()
+    .replace('<div id="merchant-info">Sold by <a id="sellerProfileTriggerId">Selected seller</a></div>',
+      '<div id="merchantInfoFeature_feature_div">販売元 <a>Bodywing</a> <a>Bodywing</a></div><a id="sellerProfileTriggerId">Bodywing</a><a id="sellerProfileTriggerId">Bodywing</a>')
+    .replace('class="a-price priceToPay"', 'class="a-price apex-pricetopay-value"')
+    .replace('Only 2 left in stock', '残り4点 ご注文はお早めに')
+    .replace('<div id="mir-layout-DELIVERY_BLOCK-slot"><div id="mir-layout-DELIVERY_BLOCK">FREE Standard Delivery</div></div>',
+      '<div id="mir-layout-DELIVERY_BLOCK">無料配送 11月16日</div>');
+  const quote = parsePublicOffer(html, asin, 1, now);
+  assert.equal(quote.priceJpy, 1000);
+  assert.equal(quote.seller, 'Bodywing');
+  assert.equal(quote.freeJapanShipping, false);
+  assert.throws(() => parsePublicOffer(html.replace('残り4点', '残り0点'), asin, 1, now), QuoteError);
+  assert.throws(() => parsePublicOffer(html.replace('Bodywing</a><a id="sellerProfileTriggerId">Bodywing',
+    'Other seller</a><a id="sellerProfileTriggerId">Bodywing'), asin, 1, now), QuoteError);
+  assert.throws(() => parsePublicOffer(html.replace('<a>Bodywing</a> <a>Bodywing</a>',
+    '<a>Bodywing</a> <a>Other seller</a>'), asin, 1, now), QuoteError);
+});
+
 test('preview never invents price from invalid, hidden, conflicting or unrelated price elements', () => {
   const html = modernHtml();
   const extraPrice = '<span class="priceToPay"><span class="a-offscreen">￥900</span></span>';
@@ -206,7 +261,7 @@ test('preview never invents price from invalid, hidden, conflicting or unrelated
 test('preview requires exact unique ASIN and visible valid title; CAPTCHA never carries preview', () => {
   const html = modernHtml();
   for (const candidate of [html.replace(asin, 'B000000001'), html.replace('id="ASIN"', 'id="otherASIN"'),
-    html + `<input id="ASIN" value="${asin}">`, html.replace('id="productTitle"', 'id="otherTitle"'),
+    html + '<input id="ASIN" value="B000000001">', html.replace('id="productTitle"', 'id="otherTitle"'),
     html + '<span id="productTitle">Duplicate</span>', html.replace('Fixture item', ''),
     html.replace('Fixture item', 'x'.repeat(1001)), html.replace('id="productTitle"', 'id="productTitle" hidden'),
     html.replace('Fixture item', '<span style="display:none">Hidden title</span>')]) {
