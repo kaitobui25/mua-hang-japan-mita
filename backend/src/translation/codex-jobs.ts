@@ -102,11 +102,20 @@ export async function translateCodexNames(options: {
       // Cohort grows with newly observed products; progress reports its actual size.
       await client.query(`INSERT INTO codex_name_cycle_items(cycle_id,asin)
         SELECT $1,asin FROM products ON CONFLICT DO NOTHING`, [cycleId]);
+      // Revisit completed titles if Amazon has changed the source since translation.
+      // A successful old translation is otherwise omitted until the next full cycle.
+      await client.query(`UPDATE codex_name_cycle_items i
+        SET completed_at=NULL,attempts=0,last_attempt_at=NULL
+        FROM products p JOIN product_translations t ON t.asin=p.asin AND t.locale='vi'
+        WHERE i.cycle_id=$1 AND i.asin=p.asin AND i.completed_at IS NOT NULL
+          AND t.name_model='gpt-6.1-sol' AND t.name_source->>'name' IS DISTINCT FROM p.name`, [cycleId]);
       const selected = await client.query<CodexSnapshot>(`SELECT p.asin,p.name,p.brand,t.name AS prior_name,t.updated_at::text AS prior_updated_at
         FROM codex_name_cycle_items i JOIN products p ON p.asin=i.asin
         LEFT JOIN product_translations t ON t.asin=p.asin AND t.locale='vi'
         WHERE i.cycle_id=$1 AND i.completed_at IS NULL AND i.attempts<3
-        ORDER BY CASE WHEN t.name IS NULL OR t.status IN ('failed','pending','warning') THEN 0 ELSE 1 END,
+        ORDER BY CASE WHEN t.name_model='gpt-6.1-sol' AND
+            t.name_source->>'name' IS DISTINCT FROM p.name THEN -1
+          WHEN t.name IS NULL OR t.status IN ('failed','pending','warning') THEN 0 ELSE 1 END,
           i.last_attempt_at ASC NULLS FIRST,t.translated_at ASC NULLS FIRST,p.asin LIMIT $2`, [cycleId, input.maxProducts]);
       candidates = selected.rows;
       for (const row of candidates) await client.query(`INSERT INTO codex_name_run_items(run_id,asin,source,prior_name,prior_updated_at)

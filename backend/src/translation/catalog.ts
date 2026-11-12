@@ -28,7 +28,8 @@ export async function applyTranslations(products: CatalogText[], client: Pick<Po
   if (!products.length) return;
   const { rows } = await client.query<{
     asin: string; name: string; detail: ProductText | null; source_hash: string; name_only: boolean;
-  }>(`SELECT asin,name,detail,source_hash,name_only FROM product_translations
+    name_model: string | null; name_source: { name?: string } | null;
+  }>(`SELECT asin,name,detail,source_hash,name_only,name_model,name_source FROM product_translations
       WHERE locale='vi' AND (status IN ('success','warning') OR detail_approved) AND asin=ANY($1::varchar(10)[])`,
     [products.map(product => product.asin)]);
   const byAsin = new Map(rows.map(row => [row.asin, row]));
@@ -36,7 +37,9 @@ export async function applyTranslations(products: CatalogText[], client: Pick<Po
     const translated = byAsin.get(product.asin);
     if (!translated) continue;
     const d = product.detail;
-    if (translated.name) {
+    const staleCodexTitle = translated.name_model === 'gpt-6.1-sol' &&
+      translated.name_source?.name !== product.name;
+    if (translated.name && !staleCodexTitle) {
       try { product.name = usableTranslation(translated.name, 600); }
       catch { /* Legacy structurally invalid candidates fall back to source. */ }
     }

@@ -80,7 +80,9 @@ async function persistOrder(body: unknown, simulation: boolean) {
     const policy = await getPricingPolicy(connection);
     const products = await connection.query<DbProduct & { shipping_estimate_vnd: number }>(
       `SELECT p.*,
-        COALESCE((SELECT t.name FROM product_translations t WHERE t.asin=p.asin AND t.locale='vi' AND t.status IN ('success','warning') AND t.name IS NOT NULL),p.name) AS name,
+        COALESCE((SELECT t.name FROM product_translations t WHERE t.asin=p.asin AND t.locale='vi'
+          AND t.status IN ('success','warning') AND t.name IS NOT NULL
+          AND (t.name_model IS DISTINCT FROM 'gpt-6.1-sol' OR t.name_source->>'name'=p.name)),p.name) AS name,
         c.shipping_estimate_vnd,
         (SELECT NOT hide_local_test_only FROM catalog_settings WHERE id=1) AS owner_all_products_enabled
         FROM products p JOIN categories c ON c.slug = p.category_slug WHERE p.asin = ANY($1::text[]) FOR SHARE OF p, c`,

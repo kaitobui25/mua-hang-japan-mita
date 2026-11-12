@@ -55,7 +55,7 @@ test('scheduled pilot claims durably before requests, attempts only five, and ne
       throw new SourceError('temporary', 'offline fixture');
     } };
   const result = await syncCatalog(options);
-  assert.equal(result.attempted, 5);
+  assert.equal('attempted' in result ? result.attempted : undefined, 5);
   assert.deepEqual(calls, [...galleryPilotAsins]);
   assert.equal((await syncCatalog(options)).state, 'pilot_consumed');
   assert.equal(calls.length, 5);

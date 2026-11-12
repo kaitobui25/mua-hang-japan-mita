@@ -192,6 +192,32 @@ const keyColumns = {
   price_observations:['asin','observed_at'],product_detail_queue:['category_slug','asin']
 };
 const rowKey = (name,row) => digest(keyColumns[name].map(column=>row[column]));
+// A translated Codex title belongs to the exact Amazon name that was checked
+// when it was created. Defer only that title when the source changes; keep the
+// remaining fields (including approved detail) eligible for transfer.
+export function prepareSyncSource(source) {
+  const products = new Map(source.products.map(row => [row.asin,row]));
+  const deferredTranslations = [];
+  const translations = source.product_translations.map(row => {
+    const product = products.get(row.asin);
+    if (!product || row.name_model !== 'gpt-6.1-sol' ||
+        !['success','warning'].includes(row.status) || !row.name ||
+        row.name_revision == null || !row.name_generation ||
+        typeof row.name_source?.name !== 'string' || row.name_source.name === product.name) return row;
+    deferredTranslations.push({asin:row.asin,locale:row.locale,reason:'source_changed'});
+    // The existing VPS title is preserved by keepTitle, while a new VPS row
+    // receives no obsolete title. Approved details still sync independently.
+    return {...row,name:null,status:'pending',translated_at:null,
+      name_revision:null,name_generation:null,name_model:null};
+  });
+  return {transferSource:{...source,product_translations:translations},deferredTranslations};
+}
+
+function reportDeferred(deferredTranslations) {
+  console.log('SYNC_DEFERRED_TRANSLATIONS '+JSON.stringify({count:deferredTranslations.length,
+    reason:'source_changed',sampleAsins:deferredTranslations.slice(0,20).map(item=>item.asin)}));
+}
+
 // A new transfer table/column must be migrated separately on both databases.
 // Fail before reserving the one-attempt-per-day VPS ledger entry.
 export async function assertTransferSchema(client, label) {
@@ -277,16 +303,22 @@ export async function verifyContents(source, targetClient) {
   for (const name of transferNames) {
     const target=(await targetClient.query(`SELECT * FROM "${name}"`)).rows;
     const known=new Map(target.map(row=>[rowKey(name,row),row]));
-    const missing=[],incorrect=[];
+    const missing=[],incorrect=new Set();
+    let sampleAsin=null;
+    const markIncorrect = row => {
+      incorrect.add(rowKey(name,row));
+      sampleAsin ??= row.asin ?? null;
+    };
     if (name === 'product_images') {
       const asins = new Set(source[name].map(row => row.asin));
       for (const asin of asins) {
         if (galleryNeedsSync(source[name].filter(row => row.asin === asin),
-          target.filter(row => row.asin === asin))) incorrect.push(asin);
+          target.filter(row => row.asin === asin))) incorrect.add(asin);
       }
-      mismatched += incorrect.length;
+      mismatched += incorrect.size;
       report.push({table:name,local:source[name].length,vps:target.length,
-        missing:0,contentMismatch:incorrect.length,sample:incorrect[0] ?? null});
+        missing:0,contentMismatch:incorrect.size,sample:incorrect.values().next().value ?? null,
+        sampleAsin:incorrect.values().next().value ?? null});
       continue;
     }
     const significant = name==='product_details'
@@ -297,10 +329,10 @@ export async function verifyContents(source, targetClient) {
         : [];
     for (const row of source[name]) {
       const remote=known.get(rowKey(name,row));
-      if (!remote) { missing.push(rowKey(name,row)); continue; }
-      if (translationCoverageMissing(name, row, remote)) incorrect.push(rowKey(name,row));
+      if (!remote) { missing.push(rowKey(name,row)); sampleAsin ??= row.asin ?? null; continue; }
+      if (translationCoverageMissing(name, row, remote)) markIncorrect(row);
       if (name==='product_translations' && codexRevisionMissing(row,remote,productsByAsin.get(row.asin)))
-        incorrect.push(rowKey(name,row));
+        markIncorrect(row);
       // Remote newer data is valid. A newer local detail/source snapshot must
       // have arrived unchanged; immutable source snapshots are never replaced.
       if (significant.length &&
@@ -309,13 +341,14 @@ export async function verifyContents(source, targetClient) {
         if (name==='product_details' ? !mergedDetailMatches(row,remote) :
           significant.some(field=>digest(row[field])!==digest(remote[field]) &&
             !(name==='local_detail_translation_items' && field==='translated' && remote.translated && !remote.warning))) {
-          incorrect.push(rowKey(name,row));
+          markIncorrect(row);
         }
       }
     }
-    mismatched+=missing.length+incorrect.length;
+    mismatched+=missing.length+incorrect.size;
     report.push({table:name,local:source[name].length,vps:target.length,missing:missing.length,
-      contentMismatch:incorrect.length,sample:missing[0]??incorrect[0]??null});
+      contentMismatch:incorrect.size,sample:missing[0]??incorrect.values().next().value??null,
+      sampleAsin});
   }
   return {report,mismatched};
 }
@@ -401,16 +434,24 @@ export async function main({Client}={}) {
     const watermark=(await from.query('SELECT transaction_timestamp() AS watermark')).rows[0].watermark;
     console.log('BEFORE '+JSON.stringify(await counts()));
     if (mode==='--dry-run') {
-      await assertCompatibleSnapshots(await snapshotFrom(), to);
+      const source=await snapshotFrom();
+      await assertCompatibleSnapshots(source, to);
+      reportDeferred(prepareSyncSource(source).deferredTranslations);
       console.log('DRY_RUN_OK: catalogs are readable; remote writes have NOT been attempted');
     } else if (mode==='--verify') {
       const source=await snapshotFrom();
       await assertCompatibleSnapshots(source, to);
-      const {report,mismatched}=await verifyContents(source, to);
+      const {transferSource,deferredTranslations}=prepareSyncSource(source);
+      reportDeferred(deferredTranslations);
+      const {report,mismatched}=await verifyContents(transferSource, to);
+      report.find(row=>row.table==='product_translations').deferred=deferredTranslations.length;
       console.log('VERIFY '+JSON.stringify(report));
       if (mismatched) throw Error('Data verification failed: missing/mismatched remote content');
       const names=(await from.query("SELECT count(*)::int AS n FROM product_translations WHERE locale='vi' AND status='success' AND name IS NOT NULL")).rows[0].n;
-      const remoteNames=(await to.query("SELECT count(*)::int AS n FROM product_translations WHERE locale='vi' AND status IN ('success','warning') AND name IS NOT NULL")).rows[0].n;
+      const remoteNames=(await to.query(`SELECT count(*)::int AS n FROM product_translations t
+        JOIN products p ON p.asin=t.asin WHERE t.locale='vi' AND t.status IN ('success','warning')
+          AND t.name IS NOT NULL AND (t.name_model IS DISTINCT FROM 'gpt-6.1-sol'
+          OR t.name_source->>'name'=p.name)`)).rows[0].n;
       const details=(await to.query('SELECT count(*)::int AS n FROM local_detail_translation_items WHERE translated IS NOT NULL')).rows[0].n;
       console.log(`VERIFIED_TRANSLATIONS local_success_titles=${names} remote_published_titles=${remoteNames} remote_atomic_details=${details}`);
 
@@ -428,6 +469,8 @@ export async function main({Client}={}) {
       const jobs=deploy?null:parseBarrier();
       const source=await snapshotFrom();
       await assertCompatibleSnapshots(source, to);
+      const {transferSource,deferredTranslations}=prepareSyncSource(source);
+      reportDeferred(deferredTranslations);
       const sourceHash=digest(transferNames.map(name=>[name,
         source[name].map(row=>[rowKey(name,row),digest(row)]).sort(([a],[b])=>a.localeCompare(b))]));
       runId=randomUUID();
@@ -443,7 +486,7 @@ export async function main({Client}={}) {
       await to.query('SELECT pg_advisory_xact_lock(70400421)');
       await assertCompatibleSnapshots(source, to);
       for (const [name,columns,conflict] of tableSpecs) {
-        const rows=source[name];
+        const rows=transferSource[name];
         const statement=insertSql(name,columns,conflict);
         let changed=0;
         for (let i=0;i<rows.length;i+=80) {
@@ -454,7 +497,8 @@ export async function main({Client}={}) {
         console.log(`TRANSFER ${name} source=${rows.length} inserted_or_updated=${changed}`);
       }
       const gallery=await syncGallery(source.product_images);
-      const verification=await verifyContents(source, to);
+      const verification=await verifyContents(transferSource, to);
+      verification.report.find(row=>row.table==='product_translations').deferred=deferredTranslations.length;
       console.log('VERIFY '+JSON.stringify(verification.report));
       if (verification.mismatched) throw Error('Data verification failed before commit');
       const remoteHashes=[];
@@ -468,14 +512,19 @@ export async function main({Client}={}) {
       const remoteHash=digest(remoteHashes);
       // The remote COMMIT and the marker are one transaction. Disconnect after
       // COMMIT can safely be diagnosed by inspecting the marker.
-      const finalState=gallery.partial?'partial':'completed';
+      const finalState=gallery.partial || deferredTranslations.length?'partial':'completed';
+      const notes=[];
+      if (gallery.partial) notes.push(`Partial galleries preserved: ${gallery.partial}`);
+      if (deferredTranslations.length) notes.push(`Deferred stale Codex titles: ${deferredTranslations.length} (source_changed)`);
       const finalized=await to.query(`UPDATE ${ledgerTable} SET state=$2,remote_hash=$3,committed_at=now(),
         note=$4 WHERE run_id=$1 AND state='running'`,
-        [runId,finalState,remoteHash,gallery.partial?'Partial gallery preserved; verify identities':'']);
+        [runId,finalState,remoteHash,notes.join('; ')]);
       if (finalized.rowCount!==1) throw Error('Catalog ledger reservation changed; refusing commit');
       commitAttempted=true;
       await to.query('COMMIT');remoteTx=false;
-      console.log('SYNC_COMMIT_OK '+JSON.stringify({day:ledgerDay,runId,state:finalState,watermark,sourceHash,remoteHash}));
+      console.log('SYNC_COMMIT_OK '+JSON.stringify({day:ledgerDay,runId,state:finalState,
+        galleryPartial:gallery.partial,deferredTranslations:deferredTranslations.length,
+        watermark,sourceHash,remoteHash}));
       console.log('AFTER '+JSON.stringify(await counts()));
     }
   } catch(error) {

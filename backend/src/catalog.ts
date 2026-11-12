@@ -140,10 +140,13 @@ export async function listCatalog(options: { category?: string; q?: string; page
   const params: unknown[] = [];
   if (category) { params.push(category); where.push(`category_slug = $${params.length}`); }
   if (q) { params.push(`%${q}%`); where.push(`(name ILIKE $${params.length} OR brand ILIKE $${params.length} OR asin ILIKE $${params.length}
-    OR EXISTS (SELECT 1 FROM product_translations tr WHERE tr.asin=products.asin AND tr.locale='vi' AND tr.status IN ('success','warning') AND tr.name ILIKE $${params.length})
+    OR EXISTS (SELECT 1 FROM product_translations tr WHERE tr.asin=products.asin AND tr.locale='vi'
+      AND tr.status IN ('success','warning') AND tr.name ILIKE $${params.length}
+      AND (tr.name_model IS DISTINCT FROM 'gpt-6.1-sol' OR tr.name_source->>'name'=products.name))
     OR EXISTS (SELECT 1 FROM product_title_presentations pt
       JOIN product_translations tr ON tr.asin=pt.asin AND tr.locale='vi'
       WHERE pt.asin=products.asin AND pt.source_name=products.name AND pt.translated_name=tr.name
+        AND (tr.name_model IS DISTINCT FROM 'gpt-6.1-sol' OR tr.name_source->>'name'=products.name)
         AND (pt.short_name ILIKE $${params.length} OR EXISTS (
           SELECT 1 FROM jsonb_array_elements_text(pt.omitted_facts) AS omitted(value)
           WHERE omitted.value ILIKE $${params.length}))))`); }

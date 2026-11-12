@@ -18,6 +18,7 @@ export async function applyTitlePresentations<T extends ProductTitle>(
     JOIN products p ON p.asin=pt.asin AND p.name=pt.source_name
     JOIN product_translations t ON t.asin=pt.asin AND t.locale='vi'
       AND t.name=pt.translated_name AND t.status IN ('success','warning')
+      AND (t.name_model IS DISTINCT FROM 'gpt-6.1-sol' OR t.name_source->>'name'=p.name)
     WHERE pt.asin=ANY($1::varchar(10)[])`, [products.map(product => product.asin)]);
   const titles = new Map(rows.map(row => [row.asin, row]));
   for (const product of products) {

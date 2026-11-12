@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   tableSpecs, insertSql, assertCompatibleSnapshots,
-  translationCoverageMissing, galleryNeedsSync, verifyContents, assertTransferSchema,
+  translationCoverageMissing, galleryNeedsSync, verifyContents, assertTransferSchema, prepareSyncSource,
 } from './sync-catalog-vps.mjs';
 
 const conflict = table => tableSpecs.find(([name]) => name === table)[2];
@@ -100,6 +100,50 @@ const catalogClient = catalog => ({query:async sql => {
   return {rows:catalog[table]};
 }});
 
+test('defer only Codex titles whose Amazon source changed; retain approved details and valid titles', async () => {
+  const source=emptyCatalog();
+  source.products=[{asin:'A',name:'Wakodo 100g'}, {asin:'B',name:'SAVAS 1kg'},
+    {asin:'C',name:'Legacy current'}, {asin:'D',name:'Recent title'}];
+  const codex={locale:'vi',name_model:'gpt-6.1-sol',name_generation:'00000000-0000-4000-8000-000000000001',
+    name_revision:'12',status:'success',updated_at:'2026-11-09T00:00:00Z',name_only:false,
+    detail_approved:true,detail:{features:['approved']}};
+  source.product_translations=[
+    {...codex,asin:'A',name:'Wakodo 130g',name_source:{name:'Wakodo 130g'}},
+    {...codex,asin:'B',name:'Đạm 1kg',name_source:{name:'SAVAS 1kg'}},
+    {...codex,asin:'C',name:'Legacy',name_model:'openrouter',name_source:{name:'Legacy old'}},
+    {...codex,asin:'D',name:'Recent',name_revision:null,name_source:{name:'Older title'}}
+  ];
+  const {transferSource,deferredTranslations}=prepareSyncSource(source);
+  assert.deepEqual(deferredTranslations,[{asin:'A',locale:'vi',reason:'source_changed'}]);
+  assert.equal(source.product_translations[0].name,'Wakodo 130g','original snapshot remains immutable');
+  const deferred=transferSource.product_translations[0];
+  assert.equal(deferred.name,null);
+  assert.equal(deferred.status,'pending');
+  assert.equal(deferred.name_revision,null);
+  assert.deepEqual(deferred.detail,{features:['approved']});
+  assert.equal(deferred.detail_approved,true);
+  assert.equal(transferSource.product_translations[1].name,'Đạm 1kg');
+  assert.equal(transferSource.product_translations[2].name,'Legacy');
+  assert.equal(transferSource.product_translations[3].name,'Recent');
+
+  const target=emptyCatalog();
+  target.products=source.products;
+  target.product_translations=[
+    {...codex,asin:'A',name:'Tên cũ VPS',name_source:{name:'Wakodo 130g'}},
+    ...transferSource.product_translations.slice(1).map(row=>({...row}))];
+  assert.equal((await verifyContents(transferSource,catalogClient(target))).mismatched,0,
+    'existing VPS title may be preserved while its new source is queued for translation');
+  target.product_translations[0].detail=null;
+  const missingDetail=await verifyContents(transferSource,catalogClient(target));
+  assert.equal(missingDetail.mismatched,1,
+    'deferred title must never hide missing approved detail');
+  assert.equal(missingDetail.report.find(row=>row.table==='product_translations').sampleAsin,'A');
+  target.product_translations[0].detail={features:['approved']};
+  target.product_translations[1].name=null;
+  assert.equal((await verifyContents(transferSource,catalogClient(target))).mismatched,1,
+    'missing valid title still blocks the batch');
+});
+
 test('verification rejects a missing title despite extra published VPS rows', async () => {
   const source=emptyCatalog(), remote=emptyCatalog();
   source.product_translations=[{asin:'A',locale:'vi',name:'local',status:'success'}];
@@ -108,6 +152,7 @@ test('verification rejects a missing title despite extra published VPS rows', as
   const result=await verifyContents(source,catalogClient(remote));
   assert.equal(result.mismatched,1);
   assert.equal(result.report.find(row=>row.table==='product_translations').missing,1);
+  assert.equal(result.report.find(row=>row.table==='product_translations').sampleAsin,'A');
 });
 
 test('verification identifies missing concise title presentation by ASIN', async () => {

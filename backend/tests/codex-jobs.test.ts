@@ -75,6 +75,11 @@ test('Codex run gates, budgets, bounded retries and outcomes use mocked dependen
         assert.equal(values[1], scenario.count);
         return { rows: products };
       }
+      if (sql.includes('SET completed_at=NULL,attempts=0,last_attempt_at=NULL')) {
+        assert.match(sql, /i\.completed_at IS NOT NULL/);
+        assert.match(sql, /t\.name_source->>'name' IS DISTINCT FROM p\.name/);
+        return { rows: [], rowCount: 0 };
+      }
       if (sql.includes('RETURNING asin') || sql.includes('SELECT asin FROM codex_name_run_items')) return { rows: [{ asin: 'reserved' }] };
       if (sql.includes('SELECT asin,name,brand FROM products')) return { rows: [{
         ...products.find(row => row.asin === values[0]), ...(scenario.mode === 'source' ? { name: 'changed' } : {}) }] };
@@ -100,6 +105,10 @@ test('Codex run gates, budgets, bounded retries and outcomes use mocked dependen
       assert.equal(result.failed, scenario.failed);
       assert.equal(result.reason, scenario.reason);
       assert.equal(requests, scenario.calls);
+      if (!['busy', 'duplicate', 'unresolved', 'quota'].includes(scenario.mode)) {
+        const selection = statements.find(call => call.sql.includes('FROM codex_name_cycle_items i JOIN products'));
+        assert.match(selection?.sql ?? '', /t\.name_source->>'name' IS DISTINCT FROM p\.name THEN -1/);
+      }
       assert.equal(result.skipped, scenario.mode === 'source' ? scenario.count : 0);
       assert.equal(result.warnings, scenario.translated, 'short fallback warnings are durably published');
       assert.ok(released);

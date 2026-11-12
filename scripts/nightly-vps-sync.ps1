@@ -2,6 +2,9 @@
 [CmdletBinding()]
 param([switch]$DryRun)
 $ErrorActionPreference='Stop'
+$runMarker='SYNC_ATTEMPT_START '+[DateTimeOffset]::UtcNow.ToString('o')
+Write-Output $runMarker
+[Console]::Error.WriteLine($runMarker)
 $root=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $runtime=Join-Path $root '.agents/runtime'
 $credentials=Join-Path $runtime 'mita-vps-database-url.dpapi'
@@ -63,7 +66,7 @@ try {
     $partial=@($transfer | Where-Object { $_ -match '^SYNC_COMMIT_OK .*"state":"partial"' }).Count -gt 0
     & node.exe scripts/sync-catalog-vps.mjs --verify
     if ($LASTEXITCODE -ne 0) { throw 'Daily sync committed but content verification failed' }
-    if ($partial) { Write-Output 'Daily sync committed with preserved partial galleries'; exit 2 }
+    if ($partial) { Write-Output 'Daily sync committed with deferred translations and/or preserved partial galleries'; exit 2 }
   } finally { Pop-Location }
 } finally {
   [Environment]::SetEnvironmentVariable('MITA_VPS_DATABASE_URL',$saved,'Process')

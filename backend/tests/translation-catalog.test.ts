@@ -27,6 +27,19 @@ test('successful Vietnamese title remains displayed after source title changes',
   assert.equal(products[0].name, 'Tên cũ');
 });
 
+test('outdated Codex name falls back to current Amazon name while approved detail survives', async () => {
+  const products = [{ asin: 'A000000001', name: 'Wakodo 100 g × 6', brand: 'Wakodo',
+    detail: { ...text, variantAttributes: {}, childAsins: [], sourceObservedAt: '2026-11-09T00:00:00Z',
+      provenance: { sourceUrl: 'https://www.amazon.co.jp/dp/A000000001', adapter: 'http', sections: [] } } }];
+  const oldDetail = { ...text, features: ['Mô tả đã duyệt'] };
+  const client = { query: async () => ({ rows: [{ asin: products[0].asin, name: 'Wakodo 130 g × 6',
+    detail: oldDetail, source_hash: sourceHash(text), name_only: false, name_model: 'gpt-6.1-sol',
+    name_source: { name: 'Wakodo 130 g × 6' } }] }) } as unknown as Pick<PoolClient, 'query'>;
+  await applyTranslations(products, client);
+  assert.equal(products[0].name,'Wakodo 100 g × 6');
+  assert.deepEqual(products[0].detail.features,['Mô tả đã duyệt']);
+});
+
 test('current Vietnamese title remains visible when Amazon changes only product specifications', async () => {
   const products = [{ asin: 'A000000001', name: 'DHC ビタミン 60粒', brand: 'DHC',
     detail: { features: ['特長 A'], ingredients: [], usage: [], specs: { origin: '日本' },
