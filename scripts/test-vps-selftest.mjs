@@ -6,6 +6,8 @@ import { assertDenied, assertVerifiedProduct, parseOptions, percentile, request,
 
 test('Caddy exposes only expected POST Amazon quote and purchase routes', () => {
   const caddy = readFileSync(new URL('../deploy/mita/Caddyfile', import.meta.url), 'utf8');
+  assert.match(caddy, /@gscVerify path \/google9f4ef18a410618a7\.html/);
+  assert.match(caddy, /root \* \/var\/lib\/mita-google-verification/);
   const rule = caddy.match(/@amazonPurchase\s*\{\s*method POST\s*path_regexp ([^\r\n]+)/);
   assert.ok(rule, 'Amazon public matcher must be explicitly limited to POST');
   const allowedPath = new RegExp(rule[1]);

@@ -8,6 +8,13 @@ mitajapanshop.duckdns.org {
     }
 
     route {
+        # Preserve production Google Search Console URL verification.
+        @gscVerify path /google9f4ef18a410618a7.html
+        handle @gscVerify {
+            root * /var/lib/mita-google-verification
+            file_server
+        }
+
         # Administration and customer order details remain local-only.
         @private path /admin /admin/* /api/admin /api/admin/*
         respond @private 404
