@@ -120,6 +120,7 @@ export function parseAmazonQuote(raw: unknown): AmazonQuote {
 }
 
 const messages: Record<string,string> = {
+  browser_capture_expired: "Dữ liệu đã quá 15 phút hoặc thời gian trên thiết bị không đúng. Hãy mở lại sản phẩm và lấy lại thông tin.",
   invalid_browser_capture: "Dữ liệu trình duyệt không hợp lệ. Hãy lấy lại từ đúng trang sản phẩm Amazon.",
   invalid_quote_request: "Yêu cầu không hợp lệ hoặc dữ liệu sản phẩm quá dài. Hãy lấy lại dữ liệu.",
   checkout_disabled: "Mita hiện chưa nhận yêu cầu mua hộ trực tuyến.",

@@ -34,6 +34,13 @@ export function parseBrowserCapture(value: unknown, observedAt = new Date()): Ca
     throw new QuoteError('invalid_browser_capture', 400);
   }
   const page = value.page;
+  const capturedAt = value.capturedAt;
+  if (typeof capturedAt !== 'string' ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(capturedAt) ||
+      !Number.isFinite(Date.parse(capturedAt))) throw new QuoteError('invalid_browser_capture', 400);
+  const elapsed = observedAt.getTime() - Date.parse(capturedAt);
+  if (!Number.isFinite(elapsed)) throw new QuoteError('invalid_browser_capture', 400);
+  if (elapsed < -120000 || elapsed >= 900000) throw new QuoteError('browser_capture_expired', 409);
   if (typeof page.url !== 'string' || page.url.length > 2048) throw new QuoteError('invalid_browser_capture', 400);
   let asin: string;
   try { asin = amazonAsin(page.url); }
@@ -43,7 +50,7 @@ export function parseBrowserCapture(value: unknown, observedAt = new Date()): Ca
   if (!title || !Number.isFinite(observedAt.getTime())) throw new QuoteError('invalid_browser_capture', 400);
   const preview: AmazonProductPreview = {
     asin, title, sourceUrl: `https://www.amazon.co.jp/dp/${asin}`,
-    observedAt: observedAt.toISOString()
+    observedAt: capturedAt
   };
   if (page.priceText !== undefined) {
     const price = content(page.priceText, 80);
@@ -112,7 +119,8 @@ export async function browserCaptureRateLimit(ip: string) {
 
 /** Return a temporary display & unpriced contact request; NEVER return an AmazonQuote or quoteId. */
 export async function createAmazonBrowserPreview(value: unknown) {
-  const { preview, quantity, translateToVietnamese } = parseBrowserCapture(value);
+  const receivedAt = new Date();
+  const { preview, quantity, translateToVietnamese } = parseBrowserCapture(value, receivedAt);
   const policy = await getPricingPolicy();
   const amount = preview.priceJpy === undefined ? undefined : toVnd(preview.priceJpy, policy);
   if (amount !== undefined && (!Number.isSafeInteger(amount) || amount <= 0)) {
@@ -123,7 +131,8 @@ export async function createAmazonBrowserPreview(value: unknown) {
   const requestId = randomUUID();
   const expiresAt = new Date(Date.parse(preview.observedAt) + 900000).toISOString();
   await db.query('INSERT INTO amazon_quotes(id,snapshot,observed_at,expires_at) VALUES($1,$2,$3,$4)',
-    [requestId, JSON.stringify({ kind: 'browser_capture_preview', preview, quantity }),
+    [requestId, JSON.stringify({ kind: 'browser_capture_preview', preview, quantity,
+      receivedAt: receivedAt.toISOString() }),
       preview.observedAt, expiresAt]);
   // Translation sends selected text to a third-party provider. Never do so
   // unless the customer explicitly opted in on Mita after opening their capture.

@@ -42,6 +42,8 @@ export type AmazonSourcePreview = {
 };
 
 export type AmazonBrowserCapture = {
+  /** Time the customer actually viewed the product, not when Mita received it. */
+  capturedAt: string;
   translateToVietnamese?: boolean;
   page: {
     url: string;

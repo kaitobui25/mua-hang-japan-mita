@@ -231,7 +231,7 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
       <h2 id="amazon-browser-title">Lấy thông tin bằng trình duyệt của bạn</h2>
       <p>Mở sản phẩm bằng trình duyệt của bạn, sau đó bấm dấu trang Mita để chuyển thông tin sản phẩm đang hiển thị về Mita. Không cần máy chủ Mita truy cập Amazon. Giá hiển thị chỉ là tạm tính, chưa khóa giá mua hàng.</p>
       <ol>
-        <li>Kéo <a ref={bookmarkRef} onClick={event => event.preventDefault()}>Lấy thông tin cho Mita</a> lên thanh dấu trang của trình duyệt (chỉ cần làm một lần). Hoặc bấm <button type="button" className="inline-link" onClick={async () => {
+        <li>Kéo <a ref={bookmarkRef} onClick={event => event.preventDefault()}>Lấy thông tin cho Mita</a> lên thanh dấu trang của trình duyệt (nếu đã lưu dấu trang cũ, hãy cập nhật lại một lần). Hoặc bấm <button type="button" className="inline-link" onClick={async () => {
           try {
             await navigator.clipboard.writeText(amazonCaptureBookmarklet(window.location.origin + "/mua-ho-amazon"));
             setBookmarkCopied(true);
@@ -250,7 +250,7 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
         <textarea id="amazon-browser-data" value={captureInput} disabled={capturing} onChange={event => { setCaptureInput(event.target.value); setCaptureError(""); }}
           maxLength={AMAZON_CAPTURE_MAX_LENGTH} rows={5} required aria-invalid={Boolean(captureError)} style={{ width: "100%" }}
           aria-describedby="amazon-browser-note amazon-browser-error"/>
-        <p id="amazon-browser-note">Chỉ dán dữ liệu từ dấu trang Mita. Không dán mật khẩu, cookie hoặc thông tin tài khoản.</p>
+        <p id="amazon-browser-note">Chỉ dán dữ liệu mới lấy trong vòng 15 phút từ dấu trang Mita. Không dán mật khẩu, cookie hoặc thông tin tài khoản.</p>
         <label className="amazon-consent"><input type="checkbox" checked={translateToVietnamese}
           onChange={event => setTranslateToVietnamese(event.target.checked)} disabled={capturing}/>
           <span>Tôi đồng ý gửi tên và mô tả sản phẩm đã chọn tới dịch vụ Google Translate để dịch sang tiếng Việt. Không bao gồm cookie, mật khẩu hay thông tin tài khoản. Nếu không chọn, Mita giữ nội dung gốc.</span>

@@ -9,6 +9,7 @@ import { ScraplingSession } from '../src/ingestion/scrapling.js';
 import { QuoteError } from '../src/amazon-quote-source.js';
 
 const asin = 'B08FTSH6KP';
+const fixedCapturedAt = '2026-11-13T00:00:00.000Z';
 const page = {
   url: `https://www.amazon.co.jp/dp/${asin}?ref_=mobile`,
   asin, title: 'テスト商品 ブルー', priceText: '￥3,580', brand: 'テストブランド',
@@ -24,19 +25,27 @@ const safe = disposable && /^mita_test_[a-f0-9]+$/.test(disposable) &&
 after(async () => { await db.end(); });
 
 test('user-browser capture accepts selected product data, not a verified quote', () => {
-  const input = parseBrowserCapture({ page, quantity: 2 }, new Date('2026-11-13T00:00:00Z'));
+  const input = parseBrowserCapture({ capturedAt: fixedCapturedAt, page, quantity: 2 }, new Date(fixedCapturedAt));
   assert.equal(input.preview.asin, asin);
   assert.equal(input.preview.priceJpy, 3580);
   assert.equal(input.preview.sourceUrl, `https://www.amazon.co.jp/dp/${asin}`);
+  assert.equal(input.preview.observedAt, fixedCapturedAt);
   assert.equal(input.preview.observedDetails?.images?.length, 1);
   assert.equal(input.preview.deliveryText, page.deliveryText);
   assert.ok(input.preview.observedDetails?.specifications?.some(v => v.name.includes('Phiên bản') && v.value === '青色'));
   assert.equal(input.quantity, 2);
   assert.equal(input.translateToVietnamese, false);
-  assert.equal(parseBrowserCapture({ page, translateToVietnamese: true }).translateToVietnamese, true);
-  assert.throws(() => parseBrowserCapture({ page, translateToVietnamese: 'true' }),
+  assert.equal(parseBrowserCapture({ capturedAt: fixedCapturedAt, page, translateToVietnamese: true }, new Date(fixedCapturedAt)).translateToVietnamese, true);
+  assert.throws(() => parseBrowserCapture({ capturedAt: fixedCapturedAt, page, translateToVietnamese: 'true' }, new Date(fixedCapturedAt)),
     (error: unknown) => error instanceof QuoteError && error.code === 'invalid_browser_capture');
-  assert.equal(parseBrowserCapture({ page: { ...page, priceText: undefined } }).preview.priceJpy, undefined);
+  assert.equal(parseBrowserCapture({ capturedAt: fixedCapturedAt, page: { ...page, priceText: undefined } }, new Date(fixedCapturedAt)).preview.priceJpy, undefined);
+  assert.equal(parseBrowserCapture({ capturedAt: fixedCapturedAt, page }, new Date('2026-11-13T00:14:59Z')).preview.observedAt, fixedCapturedAt);
+  for (const at of ['2026-11-12T23:44:59.000Z', '2026-11-13T00:02:01.000Z']) {
+    assert.throws(() => parseBrowserCapture({ capturedAt: at, page }, new Date(fixedCapturedAt)),
+      (error: unknown) => error instanceof QuoteError && error.code === 'browser_capture_expired');
+  }
+  assert.throws(() => parseBrowserCapture({ page }, new Date(fixedCapturedAt)),
+    (error: unknown) => error instanceof QuoteError && error.code === 'invalid_browser_capture');
 });
 
 test('user-browser capture rejects mismatches, non-Amazon URLs, ambiguous price and unsafe fields', () => {
@@ -51,7 +60,7 @@ test('user-browser capture rejects mismatches, non-Amazon URLs, ambiguous price 
     { ...page, features: Array.from({ length: 11 }, () => 'foo') },
     { ...page, title: '' }
   ];
-  for (const invalidPage of bad) assert.throws(() => parseBrowserCapture({ page: invalidPage }),
+  for (const invalidPage of bad) assert.throws(() => parseBrowserCapture({ capturedAt: fixedCapturedAt, page: invalidPage }, new Date(fixedCapturedAt)),
     (error: unknown) => error instanceof QuoteError && error.code === 'invalid_browser_capture');
 });
 
@@ -69,13 +78,15 @@ test('browser preview and contact-only checkout work with source quote disabled,
       VALUES('amazon.co.jp','synthetic catalog cooldown',now()+interval '1 day'),
             ('amazon.co.jp:quote','synthetic source quote cooldown',now()+interval '1 day')
       ON CONFLICT(source) DO UPDATE SET reason=EXCLUDED.reason,retry_after_at=EXCLUDED.retry_after_at`);
-    const response = await server.inject({ method: 'POST', url: '/api/amazon/browser-preview', payload: { page, quantity: 2 } });
+    const capturedAt = new Date().toISOString();
+    const response = await server.inject({ method: 'POST', url: '/api/amazon/browser-preview', payload: { capturedAt, page, quantity: 2 } });
     assert.equal(response.statusCode, 200, response.body);
     const result = response.json();
     assert.equal(result.source, 'user_browser');
     assert.equal(result.priceConfirmed, false);
     assert.equal(result.checkoutAllowed, false);
     assert.equal(result.preview.asin, asin);
+    assert.equal(result.preview.observedAt, capturedAt);
     assert.equal(result.preview.priceJpy, 3580);
     assert.ok(result.preview.estimatedPriceVnd > 0);
     assert.match(result.requestId, /^[a-f0-9-]{36}$/);
@@ -84,6 +95,8 @@ test('browser preview and contact-only checkout work with source quote disabled,
     const snapshot = (await db.query('SELECT snapshot FROM amazon_quotes WHERE id=$1', [result.requestId])).rows[0].snapshot;
     assert.equal(snapshot.kind, 'browser_capture_preview');
     assert.equal(snapshot.quantity, 2);
+    assert.equal(snapshot.preview.observedAt, capturedAt);
+    assert.ok(Date.parse(snapshot.receivedAt) >= Date.parse(capturedAt));
 
     const invalidPriced = await server.inject({ method: 'POST', url: '/api/checkout', payload: {
       customer: { name: 'Synthetic browser test', phone: '0901234567', address: 'Synthetic QA address' },
@@ -119,7 +132,7 @@ test('browser preview and contact-only checkout work with source quote disabled,
     assert.equal(source.mock.callCount(), 0);
 
     const missingPrice = await server.inject({ method: 'POST', url: '/api/amazon/browser-preview',
-      payload: { page: { ...page, priceText: undefined } } });
+      payload: { capturedAt: new Date().toISOString(), page: { ...page, priceText: undefined } } });
     assert.equal(missingPrice.statusCode, 200);
     assert.match(missingPrice.json().requestId, /^[a-f0-9-]{36}$/);
     assert.equal(missingPrice.json().preview.priceJpy, undefined);
@@ -131,6 +144,10 @@ test('browser preview and contact-only checkout work with source quote disabled,
       [requestWithoutPrice.json().orderId])).rows[0];
     assert.equal(noPriceOrderLine.price_jpy, 0);
     assert.equal(noPriceOrderLine.quote_snapshot.observedPriceJpy, null);
+    const stale = await server.inject({ method: 'POST', url: '/api/amazon/browser-preview',
+      payload: { capturedAt: new Date(Date.now() - 20 * 60000).toISOString(), page } });
+    assert.equal(stale.statusCode, 409);
+    assert.equal(stale.json().code, 'browser_capture_expired');
     assert.equal((await db.query(`SELECT count(*)::integer AS count FROM source_access_blocks
       WHERE source IN ('amazon.co.jp','amazon.co.jp:quote')`)).rows[0].count, 2);
   } finally {

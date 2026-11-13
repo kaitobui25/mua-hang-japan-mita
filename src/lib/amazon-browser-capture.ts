@@ -42,13 +42,16 @@ function captureProduct(mitaPage: string) {
     read('#desktop_buybox #corePrice_feature_div .a-price:not(.a-text-price) .a-offscreen, #desktop_buybox #price_inside_buybox') ||
     read('#corePriceDisplay_desktop_feature_div .priceToPay .a-offscreen, #corePrice_feature_div .priceToPay .a-offscreen');
   const price = priceText?.match(/^[￥¥]\s*(\d{1,3}(?:,\d{3})+|\d{1,8})(?:\.00)?$/)?.[0];
-  const image = document.querySelector<HTMLImageElement>("#landingImage, #imgBlkFront");
+  const image = Array.from(document.querySelectorAll<HTMLImageElement>("#landingImage, #imgBlkFront"))
+    .find(visible);
   const imageCandidates = [image?.getAttribute("data-old-hires"), image?.currentSrc, image?.src];
   const features = Array.from(document.querySelectorAll("#feature-bullets li .a-list-item"))
     .filter(visible).map(visibleText).filter(value => !!value && value.length <= 400).slice(0, 10);
   const brand = read("#bylineInfo")?.slice(0, 500);
   const seller = read("#sellerProfileTriggerId")?.slice(0, 500);
-  const variantText = read("#twister .selection, #variation_color_name .selection, #variation_size_name .selection")?.slice(0, 300);
+  const variants = Array.from(document.querySelectorAll("#twister .selection, #variation_color_name .selection, #variation_size_name .selection"))
+    .filter(visible).map(visibleText).filter(Boolean);
+  const variantText = [...new Set(variants)].slice(0, 4).join(" / ").slice(0, 300) || undefined;
   const availabilityText = read("#availability span, #availability")?.slice(0, 300);
   const deliveryText = read("#mir-layout-DELIVERY_BLOCK-slot, #mir-layout-DELIVERY_BLOCK")?.slice(0, 400);
   let images: string[] = [];
@@ -64,6 +67,7 @@ function captureProduct(mitaPage: string) {
     } catch { /* Missing image is allowed. */ }
   }
   const capture: AmazonBrowserCapture = {
+    capturedAt: new Date().toISOString(),
     quantity: 1,
     page: { asin, title: title.slice(0, 1000), url: `https://www.amazon.co.jp/dp/${asin}` },
   };
@@ -107,6 +111,11 @@ export function parseAmazonBrowserCapture(input: string, expectedAsin: string): 
   const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
   if (!object(raw) || !object(raw.page)) throw new Error("Không đúng định dạng dữ liệu trình duyệt Mita.");
   const page = raw.page;
+  const at = raw.capturedAt;
+  if (typeof at !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(at) ||
+      !Number.isFinite(Date.parse(at))) throw new Error("Dữ liệu thiếu thời điểm lấy sản phẩm. Hãy cập nhật dấu trang Mita rồi lấy lại.");
+  const age = Date.now() - Date.parse(at);
+  if (age < -120000 || age >= 900000) throw new Error("Dữ liệu đã quá 15 phút hoặc đồng hồ máy chưa đúng. Hãy mở lại sản phẩm và lấy lại.");
   if (typeof page.url !== "string" || amazonInputAsin(page.url) !== expectedAsin || page.asin !== expectedAsin) {
     throw new Error("Dữ liệu không khớp sản phẩm đang xem. Hãy mở đúng link Amazon và lấy lại.");
   }
@@ -139,5 +148,5 @@ export function parseAmazonBrowserCapture(input: string, expectedAsin: string): 
     })) throw new Error("Đường dẫn ảnh sản phẩm không hợp lệ.");
     clean[key] = values;
   }
-  return { page: clean, quantity: 1 };
+  return { capturedAt: at, page: clean, quantity: 1 };
 }

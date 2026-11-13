@@ -7,6 +7,6 @@ export function amazonInputAsin(input: string): string | null {
     const url = new URL(value);
     if (url.protocol !== "https:" || !["amazon.co.jp", "www.amazon.co.jp"].includes(url.hostname) ||
         url.port || url.username || url.password) return null;
-    return url.pathname.match(/\/(?:dp|gp\/product)\/([a-z0-9]{10})(?:\/|$)/i)?.[1].toUpperCase() ?? null;
+    return url.pathname.match(/\/(?:dp|gp\/(?:product|aw\/d))\/([a-z0-9]{10})(?:\/|$)/i)?.[1].toUpperCase() ?? null;
   } catch { return null; }
 }

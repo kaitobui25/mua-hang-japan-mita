@@ -35,11 +35,17 @@ Only then Mita submits `POST /api/amazon/browser-preview`:
     "priceText": "￥3,580",
     "images": ["https://m.media-amazon.com/images/I/example.jpg"]
   },
+  "capturedAt": "2026-11-13T12:00:00.000Z",
   "quantity": 1,
   "translateToVietnamese": false
 }
 ```
 
+The client sends a browser-captured timestamp, validated on both client and
+server; observations older than 15 minutes or substantially in the future
+are rejected instead of being relabeled with Mita's receipt time. Mita
+persists `receivedAt` separately. Earlier saved bookmarklets must be updated.
+This is still user-supplied observation, not authenticated merchandise evidence.
 No cookies, Amazon login credentials, raw HTML, form entries or headers may
 be captured or sent. The bookmarklet refuses a CAPTCHA or sign-in
 page and does not ask a server, proxy, automation or other source to fetch
