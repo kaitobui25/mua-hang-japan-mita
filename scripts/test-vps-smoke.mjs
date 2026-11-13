@@ -302,6 +302,16 @@ export async function run(options, transport = request, log = console.log) {
     assert.equal(result.status, 400);
     return result;
   });
+  await check('POST browser preview rejects empty capture without an Amazon request', async () => {
+    const result = await fetchMita('/api/amazon/browser-preview', {
+      method: 'POST', body: '{}', headers: { 'content-type': 'application/json' }
+    });
+    assert.equal(result.status, 400);
+    return result;
+  });
+  for (const method of ['GET', 'HEAD', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
+    await check(method + ' browser preview denied', () => deny('/api/amazon/browser-preview', { method }));
+  }
   for (const host of ['localhost:3100', '127.0.0.1:3100', 'evil.invalid']) {
     await check('Forged Host cannot reach admin ' + host, () => deny('/admin/login', { headers: { Host: host } }));
     // A local staging Caddy listener can accept wildcard Host values.

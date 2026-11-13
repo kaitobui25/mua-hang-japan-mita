@@ -1,5 +1,5 @@
 import { amazonInputAsin } from "@/lib/amazon-input";
-import type { AmazonQuote, AmazonQuoteDisplay, AmazonObservedDetails, AmazonSourcePreview, AmazonVietnameseText } from "@/types/amazon-quote";
+import type { AmazonQuote, AmazonQuoteDisplay, AmazonObservedDetails, AmazonSourcePreview, AmazonVietnameseText, AmazonBrowserCapture } from "@/types/amazon-quote";
 import type { Customer } from "@/types/catalog";
 
 type DateRange = { start: string; end: string } | null;
@@ -120,6 +120,9 @@ export function parseAmazonQuote(raw: unknown): AmazonQuote {
 }
 
 const messages: Record<string,string> = {
+  invalid_browser_capture: "Dữ liệu trình duyệt không hợp lệ. Hãy lấy lại từ đúng trang sản phẩm Amazon.",
+  invalid_quote_request: "Yêu cầu không hợp lệ hoặc dữ liệu sản phẩm quá dài. Hãy lấy lại dữ liệu.",
+  checkout_disabled: "Mita hiện chưa nhận yêu cầu mua hộ trực tuyến.",
   amazon_quotes_disabled: "Hệ thống tra giá Amazon đang chờ xác minh nguồn. Hiện chưa nhận đơn mua hộ trực tuyến.",
   invalid_amazon_input: "Hãy nhập mã ASIN 10 ký tự hoặc link sản phẩm Amazon.co.jp hợp lệ.",
   offer_not_verified: "Đã nhận thông tin từ Amazon. Báo giá đặt mua tại Mita chưa sẵn sàng.",
@@ -147,7 +150,7 @@ export class AmazonQuoteApiError extends Error {
     public readonly requestExpiresAt: string | null = null) { super(message); }
 }
 
-function parseSourcePreview(value: unknown): AmazonSourcePreview | null {
+export function parseSourcePreview(value: unknown): AmazonSourcePreview | null {
   if (!record(value)) return null;
   const raw = value;
   if (typeof raw.asin !== "string" || !/^[A-Z0-9]{10}$/.test(raw.asin) ||
@@ -193,6 +196,28 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 const jsonHeaders = { "Content-Type": "application/json" };
+export async function createAmazonBrowserPreview(capture: AmazonBrowserCapture): Promise<{
+  preview: AmazonSourcePreview; purchaseRequest: { id: string; expiresAt: string } | null;
+}> {
+  const raw: unknown = await api("/api/amazon/browser-preview", {
+    method: "POST", headers: jsonHeaders, body: JSON.stringify(capture),
+  });
+  if (!record(raw) || raw.source !== "user_browser" || raw.priceConfirmed !== false || raw.checkoutAllowed !== false) {
+    throw new Error("Máy chủ chưa xác nhận bản xem trước từ trình duyệt.");
+  }
+  const preview = parseSourcePreview(raw.preview);
+  if (!preview || preview.asin !== capture.page.asin) throw new Error("Bản xem trước không khớp sản phẩm yêu cầu.");
+  let purchaseRequest: { id: string; expiresAt: string } | null = null;
+  if (raw.requestId !== undefined || raw.expiresAt !== undefined) {
+    if (typeof raw.requestId !== "string" || !/^[a-f0-9-]{36}$/i.test(raw.requestId) || !timestamp(raw.expiresAt) ||
+        Date.parse(raw.expiresAt) <= Date.parse(preview.observedAt)) {
+      throw new Error("Mã yêu cầu mua hộ từ máy chủ không hợp lệ.");
+    }
+    purchaseRequest = { id: raw.requestId, expiresAt: raw.expiresAt };
+  }
+  return { preview: { ...preview, display: undefined, captureSource: "user_browser" }, purchaseRequest };
+}
+
 export function createAmazonQuote(input: string, quantity: number): Promise<AmazonQuote> {
   const asin = amazonInputAsin(input);
   if (!asin) return Promise.reject(new AmazonQuoteApiError(messages.invalid_amazon_input, "invalid_amazon_input"));

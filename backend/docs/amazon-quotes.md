@@ -14,6 +14,60 @@ CAPTCHA/403/429 does not pause catalog work. Both flows retain independent durab
 denial markers, next-day safe retry reservation, and rate/source verification guards.
 Allowing a quote request does not guarantee that Amazon will accept it.
 
+## User-browser product capture (separate from source quote)
+
+On the Mita `/mua-ho-amazon` page, the customer can save the **Lấy thông tin cho
+Mita** bookmark. When clicked on an Amazon.co.jp product page, it extracts a
+small allowlist of product-visible fields (canonical ASIN URL, title, a single
+displayed yen price if present, brand, selected image and bullet text), then
+opens Mita with those fields in a URL **fragment**. The fragment is removed in
+the Mita tab. The customer reviews the captured fields and optionally opts in
+to sending selected product text to **Google Translate** (third-party GET
+service) before pressing Display; translation is **off by default**.
+Only then Mita submits `POST /api/amazon/browser-preview`:
+
+```json
+{
+  "page": {
+    "url": "https://www.amazon.co.jp/dp/B08FTSH6KP",
+    "asin": "B08FTSH6KP",
+    "title": "Visible product title",
+    "priceText": "￥3,580",
+    "images": ["https://m.media-amazon.com/images/I/example.jpg"]
+  },
+  "quantity": 1,
+  "translateToVietnamese": false
+}
+```
+
+No cookies, Amazon login credentials, raw HTML, form entries or headers may
+be captured or sent. The bookmarklet refuses a CAPTCHA or sign-in
+page and does not ask a server, proxy, automation or other source to fetch
+Amazon. Fastify independently validates bounded fields and returns
+`{source:"user_browser", priceConfirmed:false, checkoutAllowed:false, preview,
+requestId?, expiresAt?}`. The translated title and visible product details
+are displayed only as an unverified, temporary product view. Japanese text is
+translated only after opt-in; text may be transmitted to the outside translation
+provider and must not contain account/customer details. If a unique
+positive JPY price was captured, the current Mita pricing policy supplies an
+**estimated VND amount**, not a locked merchandise price or shipping quote.
+If there was no price, no estimate is issued, but the customer can still
+request manual pricing and follow-up (no payment or locked price).
+
+A 15-minute opaque `browser_capture_preview` ID may be submitted through
+`POST /api/amazon/purchase-requests` for **contact-only** follow-up. It
+persists as `status=purchase_request`, `payment_status=unpaid`,
+`merchandise_vnd=0`, with `priceConfirmed=false` and
+`evidenceSource=user_browser_unverified`. The amount is a user observation,
+not verified source evidence. Neither `POST /api/checkout` quoteItems nor
+the quote refresh endpoint accepts this preview as a priced quote.
+
+The browser-preview route and an existing opaque preview's contact request
+work even when `AMAZON_QUOTES_ENABLED=0` and without consulting either
+`source_access_blocks` key. Independent browser rate limits still apply.
+In production, the Caddy POST route allowlist and deployed backend schema
+must both include this functionality; local changes alone do not deploy it.
+
 The old standalone `4010` smoke backend/database is not part of the normal local
 runtime. Do not reuse smoke quote IDs in carts or orders, delete source cooldown rows,
 or apply schema migration automatically at startup. Active schema changes require a

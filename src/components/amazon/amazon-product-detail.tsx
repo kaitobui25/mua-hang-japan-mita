@@ -78,7 +78,8 @@ export function AmazonSourceProductDetail({ preview, purchaseRequest }: {
   preview: AmazonSourcePreview; purchaseRequest?: { id: string; expiresAt: string } | null;
 }) {
   const [selectedImage, setSelectedImage] = useState("");
-  const display = preview.display ?? preview.observedDetails;
+  const browserCapture = preview.captureSource === 'user_browser';
+  const display = browserCapture ? preview.observedDetails : preview.display ?? preview.observedDetails;
   const localized = info(display, preview.translated);
   const title = preview.translated?.title || preview.title;
   const pictures = [...new Set((display?.images ?? []).filter(sourceImage))].slice(0, 10);
@@ -100,17 +101,21 @@ export function AmazonSourceProductDetail({ preview, purchaseRequest }: {
         <SourceRating rating={display?.rating} count={display?.reviewCount}/>
         <p><a href={preview.sourceUrl} target="_blank" rel="noopener noreferrer">Xem sản phẩm gốc trên Amazon Japan ↗</a></p>
         <p className="detail-category">Mua hộ Amazon</p>
+        {browserCapture && <p className="detail-notice" role="status">Thông tin do trình duyệt của bạn cung cấp, chưa được Mita xác minh. Đây là bản xem trước, chưa thể thêm vào giỏ. Yêu cầu mua hộ chỉ để Mita liên hệ xác nhận giá và phí trước khi mua.</p>}
         <div className="detail-price-block">
-          <div className="detail-price">{preview.estimatedPriceVnd ? formatVnd(preview.estimatedPriceVnd) : "Giá đang cập nhật"}</div>
+          <div className="detail-price">{preview.estimatedPriceVnd ? formatVnd(preview.estimatedPriceVnd) : "Chưa có giá — Mita sẽ báo riêng"}</div>
           <small>Giá VND tham khảo theo tỷ giá và phụ phí Mita; chưa phải báo giá chốt.</small>
+          {preview.priceJpy !== undefined && <p>Giá hiển thị trên Amazon: {jpy(preview.priceJpy)}</p>}
         </div>
         <p className="detail-eta"><Icon name="truck" size={18}/> Ngày giao dự kiến tại Nhật: <strong>{preview.advertisedJapanDeliveryDate ? date(preview.advertisedJapanDeliveryDate) : "Chưa xác định"}</strong>
           {preview.advertisedDeliveryConditional && <small> (ưu đãi có điều kiện, chưa chắc áp dụng cho Mita)</small>}
         </p>
+        {preview.deliveryText && <p>{preview.freeDelivery && <strong>Miễn phí vận chuyển theo thông tin Amazon: </strong>}{preview.deliveryText}</p>}
         {purchaseRequest ? <AmazonPurchaseRequest key={purchaseRequest.id} requestId={purchaseRequest.id} expiresAt={purchaseRequest.expiresAt}/> :
           <p className="detail-notice" role="status">Chưa đủ dữ liệu để gửi yêu cầu. Hãy tra lại link Amazon.</p>}
         <div className="detail-facts"><p><Icon name="truck"/> Phí vận chuyển tính riêng, Mita xác nhận trước khi mua.</p></div>
-        <dl className="detail-metadata"><div><dt>Mã sản phẩm</dt><dd>{preview.asin}</dd></div></dl>
+        <dl className="detail-metadata"><div><dt>Mã sản phẩm</dt><dd>{preview.asin}</dd></div>
+          <div><dt>Thời điểm ghi nhận</dt><dd><time dateTime={preview.observedAt}>{deadline(preview.observedAt)}</time></dd></div></dl>
       </div>
     </section>
     {localized && <ProductInformation description={localized.description} detail={localized.detail}

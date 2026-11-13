@@ -117,7 +117,7 @@ export async function refreshAmazonQuote(id: string) {
   if (!uuid.test(id)) throw new QuoteError('invalid_quote_id', 400);
   const found = (await db.query('SELECT snapshot,order_id FROM amazon_quotes WHERE id=$1', [id])).rows[0];
   if (!found) throw new QuoteError('quote_not_found', 404);
-  if (found.snapshot?.kind === 'purchase_request_preview') throw new QuoteError('quote_not_found', 404);
+  if (['purchase_request_preview', 'browser_capture_preview'].includes(found.snapshot?.kind)) throw new QuoteError('quote_not_found', 404);
   if (found.order_id) throw new QuoteError('quote_already_ordered', 409);
   const old = found.snapshot as AmazonQuote;
   const quote = await createAmazonQuote(old.asin, old.quantity);
@@ -141,7 +141,7 @@ export async function loadCheckoutQuotes(client: PoolClient, items: QuoteCartLin
   return result.rows.map(row => {
     // This table also holds contact-only Amazon previews. Their IDs can never
     // be used as confirmed merchandise quotes, even when still unexpired.
-    if (row.snapshot?.kind === 'purchase_request_preview') throw new QuoteError('quote_not_found', 404);
+    if (['purchase_request_preview', 'browser_capture_preview'].includes(row.snapshot?.kind)) throw new QuoteError('quote_not_found', 404);
     if (row.order_id) throw new QuoteError('quote_already_ordered', 409);
     if (!row.valid) throw new QuoteError('quote_expired', 409, { quoteId: row.id });
     const quote = row.snapshot as AmazonQuote;

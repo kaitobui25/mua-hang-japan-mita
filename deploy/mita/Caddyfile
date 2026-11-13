@@ -33,7 +33,7 @@ mitajapanshop.duckdns.org {
         # POST routes; source throttling and quote verification remain in Fastify.
         @amazonPurchase {
             method POST
-            path_regexp ^/api/amazon/(?:quotes(?:/[0-9a-fA-F-]{36}/refresh)?|purchase-requests|orders/[0-9a-fA-F-]{36}/shipping(?:/confirm)?)$
+            path_regexp ^/api/amazon/(?:quotes(?:/[0-9a-fA-F-]{36}/refresh)?|browser-preview|purchase-requests|orders/[0-9a-fA-F-]{36}/shipping(?:/confirm)?)$
         }
         handle @amazonPurchase {
             reverse_proxy 127.0.0.1:3100

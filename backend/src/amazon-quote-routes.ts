@@ -5,6 +5,7 @@ import { amazonQuotesEnabled, config } from './config.js';
 import { createAmazonQuote, refreshAmazonQuote, quoteRateLimit } from './amazon-quotes.js';
 import { QuoteError, uuid, amazonAsin, quoteQuantity } from './amazon-quote-source.js';
 import { createAmazonPurchaseRequest } from './amazon-purchase-requests.js';
+import { browserCaptureRateLimit, createAmazonBrowserPreview, parseBrowserCapture } from './amazon-browser-preview.js';
 
 export async function amazonQuoteRoutes(server: FastifyInstance) {
   server.addHook('onRequest', async (_request, reply) => {
@@ -37,10 +38,18 @@ export async function amazonQuoteRoutes(server: FastifyInstance) {
     await quoteRateLimit(request.ip);
     return refreshAmazonQuote(id);
   });
+  // The customer's own browser forwards only selected visible product fields.
+  // This makes no Amazon request and cannot issue a locked-price quote.
+  server.post('/browser-preview', { bodyLimit: 8192 }, async request => {
+    parseBrowserCapture(request.body); // Reject malformed data before any DB write.
+    await browserCaptureRateLimit(request.ip);
+    return createAmazonBrowserPreview(request.body);
+  });
   // A request to contact Mita, not a priced checkout. A source-backed,
   // unexpired preview ID is mandatory; posted product/price fields are ignored.
   server.post('/purchase-requests', { bodyLimit: 4096 }, async request => {
-    if (!amazonQuotesEnabled()) throw new QuoteError('amazon_quotes_disabled', 503);
+    // A signed-in customer may contact Mita using an already issued opaque
+    // preview ID even if automated Amazon source quotes are disabled on VPS.
     // The source lookup already used the bounded Amazon quote quota. Spending
     // another slot here would strand the last eligible preview at the limit.
     // The 15-minute, unguessable, once-only server ID bounds request creation.

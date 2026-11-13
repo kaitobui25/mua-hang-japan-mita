@@ -21,6 +21,8 @@ export type AmazonVietnameseText = AmazonObservedDetails & { title?: string };
 
 /** Source-backed identity for a product that did not qualify for a purchase quote. */
 export type AmazonSourcePreview = {
+  /** Untrusted user-browser observation; never a server-issued purchase authority. */
+  captureSource?: 'user_browser';
   asin: string;
   title: string;
   sourceUrl: string;
@@ -37,6 +39,24 @@ export type AmazonSourcePreview = {
   freeDelivery?: true;
   /** Only fields specifically permitted by the trusted Amazon source display gate. */
   display?: AmazonQuoteDisplay;
+};
+
+export type AmazonBrowserCapture = {
+  translateToVietnamese?: boolean;
+  page: {
+    url: string;
+    asin: string;
+    title: string;
+    priceText?: string;
+    brand?: string;
+    seller?: string;
+    variantText?: string;
+    availabilityText?: string;
+    deliveryText?: string;
+    images?: string[];
+    features?: string[];
+  };
+  quantity: number;
 };
 
 export type AmazonQuote = {

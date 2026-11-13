@@ -10,7 +10,7 @@ test('Caddy exposes only expected POST Amazon quote and purchase routes', () => 
   assert.ok(rule, 'Amazon public matcher must be explicitly limited to POST');
   const allowedPath = new RegExp(rule[1]);
   const id = '550e8400-e29b-41d4-a716-446655440000';
-  for (const path of ['/api/amazon/quotes', '/api/amazon/purchase-requests',
+  for (const path of ['/api/amazon/quotes', '/api/amazon/browser-preview', '/api/amazon/purchase-requests',
     `/api/amazon/quotes/${id}/refresh`, `/api/amazon/orders/${id}/shipping`,
     `/api/amazon/orders/${id}/shipping/confirm`]) assert.match(path, allowedPath);
   for (const path of ['/api/amazon', '/api/amazon/quotes/private', '/api/amazon/quotes/nope/refresh',
@@ -97,6 +97,10 @@ function fakeTransport({ exposePrivate = false, exposePrivateOnForgedHost = fals
       status = 400;
       type = 'application/json';
       body = JSON.stringify({ code: 'invalid_amazon_input' });
+    } else if (path === '/api/amazon/browser-preview' && method === 'POST' && !forgedHost) {
+      status = 400;
+      type = 'application/json';
+      body = JSON.stringify({ code: 'invalid_browser_capture' });
     } else if ((!forgedHost || (wildcardHomepage && path === '/')) && (method === 'GET' || method === 'HEAD')) {
       if (isHtml) {
         status = 200;
