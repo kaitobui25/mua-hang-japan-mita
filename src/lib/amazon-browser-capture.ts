@@ -43,7 +43,7 @@ function captureProduct(mitaPage: string) {
     read('#corePriceDisplay_desktop_feature_div .priceToPay .a-offscreen, #corePrice_feature_div .priceToPay .a-offscreen');
   const price = priceText?.match(/^[￥¥]\s*(\d{1,3}(?:,\d{3})+|\d{1,8})(?:\.00)?$/)?.[0];
   const image = document.querySelector<HTMLImageElement>("#landingImage, #imgBlkFront");
-  const imageUrl = image?.getAttribute("data-old-hires") || image?.src;
+  const imageCandidates = [image?.getAttribute("data-old-hires"), image?.currentSrc, image?.src];
   const features = Array.from(document.querySelectorAll("#feature-bullets li .a-list-item"))
     .filter(visible).map(visibleText).filter(value => !!value && value.length <= 400).slice(0, 10);
   const brand = read("#bylineInfo")?.slice(0, 500);
@@ -52,11 +52,15 @@ function captureProduct(mitaPage: string) {
   const availabilityText = read("#availability span, #availability")?.slice(0, 300);
   const deliveryText = read("#mir-layout-DELIVERY_BLOCK-slot, #mir-layout-DELIVERY_BLOCK")?.slice(0, 400);
   let images: string[] = [];
-  if (imageUrl) {
+  for (const imageUrl of imageCandidates) {
+    if (!imageUrl) continue;
     try {
       const url = new URL(imageUrl);
       if (url.protocol === "https:" && !url.username && !url.password && !url.port &&
-          /^(?:[a-z0-9-]+\.)*media-amazon\.com$/.test(url.hostname) && url.pathname.startsWith("/images/I/")) images = [imageUrl];
+          /^(?:[a-z0-9-]+\.)*media-amazon\.com$/.test(url.hostname) && url.pathname.startsWith("/images/I/")) {
+        images = [imageUrl];
+        break;
+      }
     } catch { /* Missing image is allowed. */ }
   }
   const capture: AmazonBrowserCapture = {

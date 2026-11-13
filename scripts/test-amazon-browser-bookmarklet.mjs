@@ -22,7 +22,7 @@ const canonical = `https://www.amazon.co.jp/dp/${asin}`;
 const mita = 'https://mitajapanshop.duckdns.org/mua-ho-amazon';
 const script = decodeURIComponent(amazonCaptureBookmarklet(mita).slice('javascript:'.length));
 
-function productPage({ locationUrl = canonical, captcha = false, selected = asin, hidePrice = false } = {}) {
+function productPage({ locationUrl = canonical, captcha = false, selected = asin, hidePrice = false, wrappedHiRes = false } = {}) {
   let target = '';
   const alerts = [];
   const elements = {
@@ -49,7 +49,10 @@ function productPage({ locationUrl = canonical, captcha = false, selected = asin
       if (selector.startsWith('#captchacharacters')) return captcha ? {} : null;
       if (selector === 'input#ASIN') return { value: selected };
       if (selector === '#landingImage, #imgBlkFront') return {
-        src: 'https://m.media-amazon.com/images/I/synthetic.jpg', getAttribute: () => null
+        src: 'https://m.media-amazon.com/images/I/synthetic.jpg',
+        currentSrc: 'https://m.media-amazon.com/images/I/synthetic.jpg',
+        getAttribute: name => name === 'data-old-hires' && wrappedHiRes
+          ? 'https://m.media-amazon.com/images/W/BW_MEDIA/images/I/synthetic-large.jpg' : null
       };
       return null;
     }
@@ -84,6 +87,13 @@ test('bookmarklet does not copy prices hidden by ancestor CSS', () => {
   const result = productPage({ hidePrice: true });
   const json = decodeURIComponent(result.target.split('#browser_capture=')[1]);
   assert.equal(parseAmazonBrowserCapture(json, asin).page.priceText, undefined);
+});
+
+test('Amazon image CDN wrapper does not mask the real displayed product image', () => {
+  const result = productPage({ wrappedHiRes: true });
+  const json = decodeURIComponent(result.target.split('#browser_capture=')[1]);
+  assert.deepEqual(Array.from(parseAmazonBrowserCapture(json, asin).page.images),
+    ['https://m.media-amazon.com/images/I/synthetic.jpg']);
 });
 
 test('bookmarklet refuses challenge, foreign hostname and conflicting selected variant', () => {
