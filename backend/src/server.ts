@@ -81,11 +81,16 @@ export function buildServer(logger = false) {
     if (config.publicReadOnly) return reply.code(404).send({ error: 'Chức năng tạo đơn đang tạm đóng.' });
     try {
       // An unguessable, unexpired Amazon quote was already issued under the
-      // source lookup quota. Checkout makes no Amazon request; charging the
-      // same quota again would strand the last eligible quote at submission.
-      return await createOrder(request.body);
+      // source lookup quota. Only an expired quote's automatic source refresh
+      // spends another lookup slot; valid checkout and idempotent retries do not.
+      return await createOrder(request.body, request.ip);
     } catch (error) {
-      if (error instanceof QuoteError) return reply.code(error.status).send({ code: error.code, ...(error.details ? { details: error.details } : {}) });
+      if (error instanceof QuoteError) {
+        if (error.status === 429) reply.header('Retry-After', '60');
+        return reply.code(error.status).send({ code: error.code,
+          ...(error.details ? { details: error.details } : {}),
+          ...(error.retryAfterAt ? { retryAfterAt: error.retryAfterAt } : {}) });
+      }
       if (error instanceof CheckoutError) return reply.code(422).send({ code: error.code, error: error.message });
       request.log.error({ code: 'checkout_failed' }, 'Checkout persistence failed');
       return reply.code(500).send({ code: 'checkout_failed', error: 'Không thể tạo đơn lúc này. Vui lòng thử lại sau.' });

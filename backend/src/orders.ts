@@ -3,7 +3,7 @@ import { config } from './config.js';
 import { db } from './db/pool.js';
 import { DbProduct, publicProduct, canCheckoutProduct } from './catalog.js';
 import { getPricingPolicy, toVnd } from './pricing.js';
-import { loadCheckoutQuotes, refreshAmazonQuote, validateQuoteCart, type QuoteCartLine } from './amazon-quotes.js';
+import { loadCheckoutQuotes, quoteRateLimit, refreshAmazonQuote, validateQuoteCart, type QuoteCartLine } from './amazon-quotes.js';
 import { QuoteError, uuid } from './amazon-quote-source.js';
 
 type CartLine = { asin: string; quantity: number };
@@ -14,11 +14,12 @@ export class CheckoutError extends Error {
   constructor(public code: string, message: string) { super(message); }
 }
 
-export async function createOrder(body: unknown) {
+export async function createOrder(body: unknown, ip = 'unknown') {
   try { return await persistOrder(body, false); }
   catch (error) {
     if (error instanceof QuoteError && error.code === 'quote_expired' && error.details) {
       const { quoteId } = error.details as { quoteId: string };
+      await quoteRateLimit(ip);
       const replacement = await refreshAmazonQuote(quoteId);
       throw new QuoteError('quote_refresh_required', 409, { ...replacement, previousQuoteId: quoteId });
     }

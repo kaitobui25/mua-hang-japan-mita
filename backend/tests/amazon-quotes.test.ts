@@ -152,16 +152,86 @@ test('Amazon quote checkout and migration regressions in disposable DB only', { 
     });
     await t.test('valid priced checkout remains usable after source lookup quota is exhausted', async () => {
       const extra = await insertQuote();
-      await db.query('DELETE FROM amazon_quote_rate_limits');
-      for (let n = 0; n < 6; n++) await quoteRateLimit('127.0.0.1');
-      await assert.rejects(quoteRateLimit('127.0.0.1'), /quote_rate_limited/);
-      const response = await server.inject({ method: 'POST', url: '/api/checkout', payload: {
-        customer, checkoutKey: randomUUID(), quoteItems: [{ quoteId: extra.id, confirmed: true, acknowledgeMissingEta: true }]
-      } });
-      assert.equal(response.statusCode, 200, response.body);
-      assert.equal(response.json().status, 'pending_confirmation');
-      assert.equal(response.json().payableNowVnd, 0);
-      await db.query('DELETE FROM amazon_quote_rate_limits'); // Disposable database only.
+      const transportMock = t.mock.method(ScraplingSession.prototype, 'quote', async () => { throw new Error('unexpected source request'); });
+      try {
+        await db.query('DELETE FROM amazon_quote_rate_limits');
+        for (let n = 0; n < 6; n++) await quoteRateLimit('127.0.0.1');
+        await assert.rejects(quoteRateLimit('127.0.0.1'), /quote_rate_limited/);
+        const before = (await db.query('SELECT * FROM amazon_quote_rate_limits ORDER BY bucket')).rows;
+        const payload = {
+          customer, checkoutKey: randomUUID(), quoteItems: [{ quoteId: extra.id, confirmed: true, acknowledgeMissingEta: true }]
+        };
+        const response = await server.inject({ method: 'POST', url: '/api/checkout', payload });
+        assert.equal(response.statusCode, 200, response.body);
+        assert.equal(response.json().status, 'pending_confirmation');
+        assert.equal(response.json().payableNowVnd, 0);
+        await db.query("UPDATE amazon_quotes SET observed_at=now()-interval '1 day', expires_at=now()-interval '1 day'+interval '15 minutes' WHERE id=$1", [extra.id]);
+        const retry = await server.inject({ method: 'POST', url: '/api/checkout', payload });
+        assert.equal(retry.statusCode, 200, retry.body);
+        assert.equal(retry.json().status, 'already_submitted');
+        assert.equal(retry.json().orderId, response.json().orderId);
+        assert.deepEqual((await db.query('SELECT * FROM amazon_quote_rate_limits ORDER BY bucket')).rows, before);
+        assert.equal(transportMock.mock.callCount(), 0);
+      } finally {
+        transportMock.mock.restore();
+        await db.query('DELETE FROM amazon_quote_rate_limits'); // Disposable database only.
+      }
+    });
+    for (const quota of ['ip', 'global'] as const) await t.test(`expired checkout respects exhausted ${quota} lookup quota without a source request`, async () => {
+      const expired = await insertQuote(901000);
+      const enabled = process.env.AMAZON_QUOTES_ENABLED; process.env.AMAZON_QUOTES_ENABLED = '1';
+      const transportMock = t.mock.method(ScraplingSession.prototype, 'quote', async () => { throw new Error('unexpected source request'); });
+      const payload = { customer, checkoutKey: randomUUID(), quoteItems: [{ quoteId: expired.id, confirmed: true, acknowledgeMissingEta: true }] };
+      const peer = '198.51.100.42';
+      try {
+        await db.query('DELETE FROM amazon_quote_rate_limits');
+        if (quota === 'ip') {
+          for (let n = 0; n < 6; n++) await quoteRateLimit(peer);
+        } else {
+          for (let n = 0; n < 30; n++) await quoteRateLimit(`synthetic-global-${n}`);
+        }
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const response = await server.inject({ method: 'POST', url: '/api/checkout', remoteAddress: peer, payload });
+          assert.equal(response.statusCode, 429, response.body);
+          assert.equal(response.json().code, 'quote_rate_limited');
+          assert.equal(response.headers['retry-after'], '60');
+        }
+        assert.equal(transportMock.mock.callCount(), 0);
+        assert.equal((await db.query('SELECT 1 FROM orders WHERE checkout_key=$1', [payload.checkoutKey])).rowCount, 0);
+        assert.equal((await db.query('SELECT order_id FROM amazon_quotes WHERE id=$1', [expired.id])).rows[0].order_id, null);
+      } finally {
+        transportMock.mock.restore();
+        await db.query('DELETE FROM amazon_quote_rate_limits');
+        if (enabled === undefined) delete process.env.AMAZON_QUOTES_ENABLED; else process.env.AMAZON_QUOTES_ENABLED = enabled;
+      }
+    });
+    await t.test('expired checkout forwards source denial retryAfterAt and retries obey cooldown', async () => {
+      const expired = await insertQuote(901000);
+      const enabled = process.env.AMAZON_QUOTES_ENABLED; process.env.AMAZON_QUOTES_ENABLED = '1';
+      const retryAfterAt = new Date(Date.now() + 7 * 86400000).toISOString();
+      const transportMock = t.mock.method(ScraplingSession.prototype, 'quote', async () => { throw new QuoteTransportError('amazon_rate_limited', retryAfterAt); });
+      const payload = { customer, checkoutKey: randomUUID(), quoteItems: [{ quoteId: expired.id, confirmed: true, acknowledgeMissingEta: true }] };
+      try {
+        await db.query('DELETE FROM amazon_quote_rate_limits');
+        await db.query('DELETE FROM source_access_blocks WHERE source=$1', [AMAZON_QUOTE_SOURCE]);
+        const denied = await server.inject({ method: 'POST', url: '/api/checkout', payload });
+        assert.equal(denied.statusCode, 503, denied.body);
+        assert.equal(denied.json().code, 'amazon_rate_limited');
+        assert.equal(denied.json().retryAfterAt, retryAfterAt);
+        const retry = await server.inject({ method: 'POST', url: '/api/checkout', payload });
+        assert.equal(retry.statusCode, 503, retry.body);
+        assert.equal(retry.json().code, 'amazon_cooldown');
+        assert.equal(retry.json().retryAfterAt, retryAfterAt);
+        assert.equal(transportMock.mock.callCount(), 1);
+        assert.equal((await db.query('SELECT attempts FROM amazon_quote_rate_limits WHERE bucket=$1', ['global'])).rows[0].attempts, 2);
+        assert.equal((await db.query('SELECT 1 FROM orders WHERE checkout_key=$1', [payload.checkoutKey])).rowCount, 0);
+        assert.equal((await db.query('SELECT order_id FROM amazon_quotes WHERE id=$1', [expired.id])).rows[0].order_id, null);
+      } finally {
+        transportMock.mock.restore();
+        await db.query('DELETE FROM amazon_quote_rate_limits');
+        await db.query('DELETE FROM source_access_blocks WHERE source=$1', [AMAZON_QUOTE_SOURCE]);
+        if (enabled === undefined) delete process.env.AMAZON_QUOTES_ENABLED; else process.env.AMAZON_QUOTES_ENABLED = enabled;
+      }
     });
     await t.test('retry cannot duplicate order and altered request cannot reuse key or consumed quote', async () => {
       const retry = await createOrder(payload);
