@@ -127,24 +127,40 @@ export function AmazonQuoteView({ initialInput = "" }: { initialInput?: string }
   // A user-triggered bookmarklet may open this page with a one-time fragment.
   // Fragments are not transmitted to the web server; remove before processing.
   useEffect(() => {
-    const prefix = "#browser_capture=";
-    if (!window.location.hash.startsWith(prefix)) return;
-    const encoded = window.location.hash.slice(prefix.length);
-    window.history.replaceState(null, "", window.location.pathname + window.location.search);
-    if (encoded.length > 24000) { setError("Dữ liệu trình duyệt quá dài."); return; }
-    try {
-      const json = decodeURIComponent(encoded);
-      const raw: unknown = JSON.parse(json);
-      const page = raw && typeof raw === "object" && "page" in raw ? raw.page : null;
-      const asin = page && typeof page === "object" && "url" in page && typeof page.url === "string"
-        ? amazonInputAsin(page.url) : null;
-      if (!asin) throw new Error("Dữ liệu không có đường dẫn Amazon.co.jp hợp lệ.");
-      parseAmazonBrowserCapture(json, asin);
-      setRecognizedAsin(asin);
-      setInput(`https://www.amazon.co.jp/dp/${asin}`);
-      setCaptureInput(json);
-      setCaptureError("");
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Dữ liệu trình duyệt không hợp lệ."); }
+    const ingestFragment = () => {
+      const prefix = "#browser_capture=";
+      if (!window.location.hash.startsWith(prefix)) return;
+      const encoded = window.location.hash.slice(prefix.length);
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+      if (encoded.length > 24000) { setError("Dữ liệu trình duyệt quá dài."); return; }
+      try {
+        const json = decodeURIComponent(encoded);
+        const raw: unknown = JSON.parse(json);
+        const page = raw && typeof raw === "object" && "page" in raw ? raw.page : null;
+        const asin = page && typeof page === "object" && "url" in page && typeof page.url === "string"
+          ? amazonInputAsin(page.url) : null;
+        if (!asin) throw new Error("Dữ liệu không có đường dẫn Amazon.co.jp hợp lệ.");
+        parseAmazonBrowserCapture(json, asin);
+        requestSequence.current++;
+        setQuote(null);
+        setPreview(null);
+        setPurchaseRequest(null);
+        setLoading(false);
+        setCapturing(false);
+        setSourcePaused(false);
+        setRetryAfterAt(null);
+        setConfirmed(false);
+        setAdded(false);
+        setRecognizedAsin(asin);
+        setInput(`https://www.amazon.co.jp/dp/${asin}`);
+        setCaptureInput(json);
+        setCaptureError("");
+        setError("");
+      } catch (cause) { setError(cause instanceof Error ? cause.message : "Dữ liệu trình duyệt không hợp lệ."); }
+    };
+    ingestFragment();
+    window.addEventListener("hashchange", ingestFragment);
+    return () => window.removeEventListener("hashchange", ingestFragment);
   }, []);
 
   useEffect(() => {
