@@ -273,6 +273,7 @@ export async function run(options, transport = request, log = console.log) {
   const forbidden = [
     '/admin', '/admin/login', '/admin/san-pham', '/api/admin', '/api/admin/session',
     '/api/health', '/api/sync-status',
+    '/api/amazon/quotes', '/api/amazon/purchase-requests',
     '/api/checkout', '/api', '/api/other',
     '/%61dmin/login', '/admin%2Flogin', '/api/%61dmin/session',
     '/api/admin%2Fsession',
@@ -284,11 +285,21 @@ export async function run(options, transport = request, log = console.log) {
       method, headers: method === 'OPTIONS' ? { Origin: 'https://evil.invalid', 'Access-Control-Request-Method': 'POST' } : {}
     }));
   }
+  for (const method of ['HEAD', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
+    await check(method + ' Amazon quote denied', () => deny('/api/amazon/quotes', { method }));
+  }
   await check('POST checkout validates empty body without writing an order', async () => {
     const result = await fetchMita('/api/checkout', {
       method: 'POST', body: '{}', headers: { 'content-type': 'application/json' }
     });
     assert.equal(result.status, 422);
+    return result;
+  });
+  await check('POST Amazon quote validates empty body without source lookup', async () => {
+    const result = await fetchMita('/api/amazon/quotes', {
+      method: 'POST', body: '{}', headers: { 'content-type': 'application/json' }
+    });
+    assert.equal(result.status, 400);
     return result;
   });
   for (const host of ['localhost:3100', '127.0.0.1:3100', 'evil.invalid']) {

@@ -1,7 +1,24 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 import { assertDenied, assertVerifiedProduct, parseOptions, percentile, request, run } from './test-vps-smoke.mjs';
+
+test('Caddy exposes only expected POST Amazon quote and purchase routes', () => {
+  const caddy = readFileSync(new URL('../deploy/mita/Caddyfile', import.meta.url), 'utf8');
+  const rule = caddy.match(/@amazonPurchase\s*\{\s*method POST\s*path_regexp ([^\r\n]+)/);
+  assert.ok(rule, 'Amazon public matcher must be explicitly limited to POST');
+  const allowedPath = new RegExp(rule[1]);
+  const id = '550e8400-e29b-41d4-a716-446655440000';
+  for (const path of ['/api/amazon/quotes', '/api/amazon/purchase-requests',
+    `/api/amazon/quotes/${id}/refresh`, `/api/amazon/orders/${id}/shipping`,
+    `/api/amazon/orders/${id}/shipping/confirm`]) assert.match(path, allowedPath);
+  for (const path of ['/api/amazon', '/api/amazon/quotes/private', '/api/amazon/quotes/nope/refresh',
+    '/api/amazon/orders', `/api/amazon/orders/${id}/private`,
+    '/api/admin/session', '/api/health', '/api/other']) assert.doesNotMatch(path, allowedPath);
+  assert.ok(caddy.indexOf('@private') < caddy.indexOf('@amazonPurchase'));
+  assert.ok(caddy.indexOf('@amazonPurchase') < caddy.indexOf('@otherApi'));
+});
 
 test('options require explicit pre-DNS IP or live-DNS mode', () => {
   assert.equal(parseOptions(['--connect-ip', '217.142.225.255']).connectIp, '217.142.225.255');
@@ -76,6 +93,10 @@ function fakeTransport({ exposePrivate = false, exposePrivateOnForgedHost = fals
       status = 422;
       type = 'application/json';
       body = JSON.stringify({ code: 'invalid_customer' });
+    } else if (path === '/api/amazon/quotes' && method === 'POST' && !forgedHost) {
+      status = 400;
+      type = 'application/json';
+      body = JSON.stringify({ code: 'invalid_amazon_input' });
     } else if ((!forgedHost || (wildcardHomepage && path === '/')) && (method === 'GET' || method === 'HEAD')) {
       if (isHtml) {
         status = 200;

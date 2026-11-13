@@ -29,6 +29,16 @@ mitajapanshop.duckdns.org {
             reverse_proxy 127.0.0.1:3100
         }
 
+        # Public assisted Amazon purchase requests. Accept only the explicit
+        # POST routes; source throttling and quote verification remain in Fastify.
+        @amazonPurchase {
+            method POST
+            path_regexp ^/api/amazon/(?:quotes(?:/[0-9a-fA-F-]{36}/refresh)?|purchase-requests|orders/[0-9a-fA-F-]{36}/shipping(?:/confirm)?)$
+        }
+        handle @amazonPurchase {
+            reverse_proxy 127.0.0.1:3100
+        }
+
         # Scoped owner relay: secret-bearing requests only. Fastify verifies
         # the bearer token; never forward /api/admin or order details publicly.
         @orderAlertRead {
